@@ -10,6 +10,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Base image (docker.io/simplefs/open-switch-base:1.10.12-trixie) is
+# public, so no registry auth is needed for the pull. pull-requests:write
+# is required by bufbuild/buf-action to post format/lint diffs as PR
+# comments — without it the action errors with "Resource not accessible
+# by integration" even though the actual buf lint/format passes.
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   proto-lint:
     name: Proto lint (buf)
@@ -41,8 +50,9 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       # The builder Dockerfile produces /dist/mod/mod_open_switch.so.
-      # We build to a local image and extract artifacts for downstream
-      # test steps.
+      # FROM is docker.io/simplefs/open-switch-base:1.10.12-trixie which
+      # is public + multi-arch (amd64 + arm64) + pre-bakes gRPC so this
+      # step takes ~30s instead of ~14 min.
       - name: Build builder image (ASAN ON)
         run: |
           docker buildx build \
@@ -50,7 +60,7 @@ jobs:
             --build-arg OSW_ENABLE_ASAN=ON \
             --build-arg OSW_BUILD_TESTS=ON \
             --build-arg BUILD_TYPE=Debug \
-            --build-arg UPSTREAM_TAG=v1.10.12 \
+            --build-arg BASE_TAG=1.10.12-trixie \
             --target fs-builder \
             -f deploy/docker/Dockerfile.builder \
             --load \
@@ -144,7 +154,7 @@ jobs:
             --build-arg OSW_ENABLE_TSAN=ON \
             --build-arg OSW_BUILD_TESTS=ON \
             --build-arg BUILD_TYPE=Debug \
-            --build-arg UPSTREAM_TAG=v1.10.12 \
+            --build-arg BASE_TAG=1.10.12-trixie \
             --target fs-builder \
             -f deploy/docker/Dockerfile.builder \
             --load \
@@ -182,7 +192,7 @@ jobs:
             --build-arg OSW_ENABLE_ASAN=OFF \
             --build-arg OSW_BUILD_TESTS=ON \
             --build-arg BUILD_TYPE=Debug \
-            --build-arg UPSTREAM_TAG=v1.10.12 \
+            --build-arg BASE_TAG=1.10.12-trixie \
             --target fs-builder \
             -f deploy/docker/Dockerfile.builder \
             --load \

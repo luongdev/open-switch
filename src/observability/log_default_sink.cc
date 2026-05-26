@@ -31,18 +31,12 @@ namespace {
 // onto DEBUG since FS lacks a separate trace level.
 switch_log_level_t MapLevel(Level lvl) noexcept {
     switch (lvl) {
-        case Level::kTrace:
-            return SWITCH_LOG_DEBUG;
-        case Level::kDebug:
-            return SWITCH_LOG_DEBUG;
-        case Level::kInfo:
-            return SWITCH_LOG_INFO;
-        case Level::kWarn:
-            return SWITCH_LOG_WARNING;
-        case Level::kError:
-            return SWITCH_LOG_ERROR;
-        case Level::kCritical:
-            return SWITCH_LOG_CRIT;
+        case Level::kTrace:    return SWITCH_LOG_DEBUG;
+        case Level::kDebug:    return SWITCH_LOG_DEBUG;
+        case Level::kInfo:     return SWITCH_LOG_INFO;
+        case Level::kWarn:     return SWITCH_LOG_WARNING;
+        case Level::kError:    return SWITCH_LOG_ERROR;
+        case Level::kCritical: return SWITCH_LOG_CRIT;
     }
     return SWITCH_LOG_INFO;
 }
@@ -51,47 +45,39 @@ switch_log_level_t MapLevel(Level lvl) noexcept {
 // userdata is already PII-redacted and prebuilt by log.cc::Logv, so we
 // emit it via the "%s" format slot — NEVER pass user-controlled text
 // as the format argument.
-void DefaultSink(Level level,
-                 std::string_view subsystem,
+void DefaultSink(Level level, std::string_view subsystem,
                  std::string_view traceparent,
                  std::string_view message) noexcept {
     char line[2048];
     int written;
     if (!traceparent.empty()) {
-        written = std::snprintf(line,
-                                sizeof(line),
+        written = std::snprintf(line, sizeof(line),
                                 "[osw:%.*s tp=%.*s] %.*s",
-                                static_cast<int>(subsystem.size()),
-                                subsystem.data(),
-                                static_cast<int>(traceparent.size()),
-                                traceparent.data(),
-                                static_cast<int>(message.size()),
-                                message.data());
+                                static_cast<int>(subsystem.size()), subsystem.data(),
+                                static_cast<int>(traceparent.size()), traceparent.data(),
+                                static_cast<int>(message.size()), message.data());
     } else {
-        written = std::snprintf(line,
-                                sizeof(line),
+        written = std::snprintf(line, sizeof(line),
                                 "[osw:%.*s] %.*s",
-                                static_cast<int>(subsystem.size()),
-                                subsystem.data(),
-                                static_cast<int>(message.size()),
-                                message.data());
+                                static_cast<int>(subsystem.size()), subsystem.data(),
+                                static_cast<int>(message.size()), message.data());
     }
     if (written < 0) {
         return;
     }
 
-    // FF-012: switch_log_printf is thread-safe. We pass the module name
-    // as `file`/`func` because we lack the original caller's
-    // __FILE__/__LINE__ in the wrapper — a future refinement can plumb
-    // those through via a macro at every osw::log::* call site.
-    switch_log_printf(SWITCH_CHANNEL_LOG,
-                      "mod_open_switch",
-                      "osw_log_emit",
-                      0,
-                      nullptr,
-                      MapLevel(level),
-                      "%s\n",
-                      line);
+    // FF-012: switch_log_printf is thread-safe. We use the lower-level
+    // SWITCH_CHANNEL_ID_LOG channel id (a scalar) so we can pass our
+    // own literal file/func/line/userdata. The convenience macro
+    // SWITCH_CHANNEL_LOG would expand to
+    //   SWITCH_CHANNEL_ID_LOG, __FILE__, __SWITCH_FUNC__, __LINE__, NULL
+    // and inserting our literal "mod_open_switch", "osw_log_emit", 0
+    // after that would push them past the level argument and break
+    // the signature. A future refinement can plumb the original
+    // caller's __FILE__/__LINE__ through a macro at every osw::log::*
+    // call site.
+    switch_log_printf(SWITCH_CHANNEL_ID_LOG, "mod_open_switch", "osw_log_emit", 0,
+                      nullptr, MapLevel(level), "%s\n", line);
 }
 
 }  // namespace
