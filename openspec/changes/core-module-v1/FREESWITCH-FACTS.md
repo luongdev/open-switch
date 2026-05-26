@@ -1787,6 +1787,130 @@ SWITCH_DECLARE(switch_status_t) switch_event_unbind_callback(switch_event_callba
 
 ---
 
+## FF-019 — `switch_event_get_header` returns an FS-owned `char*` (lifetime ≤ event)
+
+**Claim.** `switch_event_get_header(event, name)` is a macro that
+expands to `switch_event_get_header_idx(event, name, -1)`. The
+function walks `event->headers` and returns `hp->value` — a pointer
+into the `switch_event_header_t` node's value field, allocated when
+the header was added (via `DUP(value)` inside `switch_event_add_header*`).
+The string is **owned by the event**, freed when `switch_event_destroy`
+runs (`free_header(&this)` at line 1300 of `switch_event.c`). The
+caller MUST NOT `free()` the returned pointer and MUST NOT retain it
+past the lifetime of the event.
+
+`switch_event_get_body(event)` is the symmetric body accessor:
+returns `event->body`, with the same ownership.
+
+A NULL return means "header not present" (or "header_name is NULL").
+
+**Source.**
+
+- Macro: `src/include/switch_event.h:172`
+  (`#define switch_event_get_header(_e, _h) switch_event_get_header_idx(_e, _h, -1)`).
+- `switch_event_get_header_idx`: `src/switch_event.c:846-864`.
+- `switch_event_get_header_ptr`: `src/switch_event.c:825-844`.
+- Header-value lifetime: `src/switch_event.c:1289-1312` (destroy
+  loop — see FF-017 excerpt).
+
+**Permalinks.**
+
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_event.h#L170-L173>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L825-L864>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L1289-L1312>
+
+**Excerpt — macro (lines 170-173 of switch_event.h):**
+
+```c
+SWITCH_DECLARE(switch_event_header_t *) switch_event_get_header_ptr(switch_event_t *event, const char *header_name);
+_Ret_opt_z_ SWITCH_DECLARE(char *) switch_event_get_header_idx(switch_event_t *event, const char *header_name, int idx);
+#define switch_event_get_header(_e, _h) switch_event_get_header_idx(_e, _h, -1)
+```
+
+**Excerpt — `switch_event_get_header_idx` (lines 846-864):**
+
+```c
+SWITCH_DECLARE(char *) switch_event_get_header_idx(switch_event_t *event, const char *header_name, int idx)
+{
+    switch_event_header_t *hp;
+
+    if ((hp = switch_event_get_header_ptr(event, header_name))) {
+        if (idx > -1) {
+            if (idx < hp->idx) {
+                return hp->array[idx];
+            } else {
+                return NULL;
+            }
+        }
+
+        return hp->value;
+    } else if (!strcmp(header_name, "_body")) {
+        return event->body;
+    }
+
+    return NULL;
+}
+```
+
+**Excerpt — `switch_event_get_header_ptr` (lines 825-844):**
+
+```c
+SWITCH_DECLARE(switch_event_header_t *) switch_event_get_header_ptr(switch_event_t *event, const char *header_name)
+{
+    switch_event_header_t *hp;
+    switch_ssize_t hlen = -1;
+    unsigned long hash = 0;
+
+    switch_assert(event);
+
+    if (!header_name)
+        return NULL;
+
+    hash = switch_ci_hashfunc_default(header_name, &hlen);
+
+    for (hp = event->headers; hp; hp = hp->next) {
+        if ((!hp->hash || hash == hp->hash) && !strcasecmp(hp->name, header_name)) {
+            return hp;
+        }
+    }
+    return NULL;
+}
+```
+
+**Implications.**
+
+- Inside the W2 `osw_event_handler` callback, code that reads a
+  header value with `switch_event_get_header(event, "Unique-ID")`
+  obtains a pointer valid for the duration of the callback only.
+  Copy with `std::string` (or `std::string_view` followed by an
+  arena allocation) before the callback returns.
+- A NULL return must NOT be passed to `std::string` constructors
+  that take a `const char*` without length (UB on NULL). The
+  envelope-builder helper `HeaderOr("")` defensively maps NULL to
+  empty string.
+- `switch_event_get_body(event)` has the same lifetime contract;
+  the W2 envelope builder copies the body into `EventEnvelope.body`
+  (a `bytes` field that owns a `std::string`) synchronously.
+- The function uses case-insensitive comparison (`strcasecmp`), so
+  "Unique-ID", "unique-id", and "UNIQUE-ID" all match the same
+  header. The W2 builder uses canonical casing in its constants
+  for readability but is robust to case variation in source events.
+- For `iter`-style enumeration of all headers (needed by the
+  include-list filter), the W2 builder walks `event->headers` directly
+  via the public `switch_event_header_t` chain (`hp->name`,
+  `hp->value`, `hp->next`). This is the only public method the
+  v1.10.12 API exposes for "list all headers"; `switch_event_serialize`
+  exists but allocates a flat string.
+
+**Used by W2 code:**
+
+- `src/events/envelope.cc` — `BuildEnvelope` uses
+  `switch_event_get_header` for the well-known fields (Unique-ID,
+  Event-Date-Timestamp, etc.) and walks `event->headers` directly
+  for the include-list-driven `headers` map.
+
+---
+
 ## How to add a new FF entry
 
 If you find a previously-undocumented FreeSWITCH behaviour that
