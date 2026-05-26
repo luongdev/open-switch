@@ -20,8 +20,18 @@
 #     -t open-switch/builder:0.1.0 \
 #     -f deploy/docker/Dockerfile.builder .
 
+# Upstream image — default ghcr.io. Override at build time if the image
+# lives elsewhere:
+#   docker buildx build \
+#       --build-arg UPSTREAM_IMAGE=ghcr.io/<owner>/freeswitch-builder \
+#       --build-arg UPSTREAM_TAG=v1.10.12 ...
+#
+# If the image is private the runner must `docker login` to the registry
+# first. CI does this in .github/workflows/ci.yml using GHCR_TOKEN secret
+# (a PAT with packages:read scope on the upstream image's repo).
+ARG UPSTREAM_IMAGE=ghcr.io/luongdev/freeswitch-builder
 ARG UPSTREAM_TAG=v1.10.12
-FROM open-gateway/freeswitch-builder:${UPSTREAM_TAG} AS fs-builder
+FROM ${UPSTREAM_IMAGE}:${UPSTREAM_TAG} AS fs-builder
 
 # ─── 1. Install gRPC C++ build deps ──────────────────────────────────
 ARG GRPC_VERSION=v1.74.0
