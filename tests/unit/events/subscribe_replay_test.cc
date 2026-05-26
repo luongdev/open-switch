@@ -43,6 +43,7 @@
 #include "osw/events/binder.h"
 #include "osw/events/ring.h"
 #include "osw/events/subscribe/broadcaster.h"
+#include "osw/events/subscribe/routing.h"
 #include "osw/events/subscribe/subscriber.h"
 #include "osw/events/tier.h"
 #include "osw/observability/health.h"
@@ -60,11 +61,15 @@ using osw::events::Tier;
 
 // Build a minimal serialised envelope. The replay path doesn't parse;
 // it just shuffles shared_ptr<const string> into the send queue.
-std::shared_ptr<const std::string> MakeBytes(std::uint64_t seq) {
+std::shared_ptr<const std::string> MakeBytes(
+    std::uint64_t seq,
+    const std::string& event_name = "CHANNEL_HANGUP_COMPLETE",
+    const std::string& node_id = "node-a") {
     open_switch::events::v1::EventEnvelope env;
     env.set_event_id("ev-" + std::to_string(seq));
     env.set_tier(open_switch::events::v1::TIER_1_CRITICAL);
-    env.set_event_name("CHANNEL_HANGUP_COMPLETE");
+    env.set_event_name(event_name);
+    env.set_node_id(node_id);
     env.set_seq(seq);
     env.set_schema_version(1);
     auto bytes = std::make_shared<std::string>();
@@ -74,6 +79,10 @@ std::shared_ptr<const std::string> MakeBytes(std::uint64_t seq) {
 
 RingEntry MakeEntry(std::uint64_t seq) {
     return RingEntry{seq, MakeBytes(seq)};
+}
+
+RingEntry MakeEntryWithName(std::uint64_t seq, const std::string& event_name) {
+    return RingEntry{seq, MakeBytes(seq, event_name)};
 }
 
 TEST(SubscribeReplayTest, SinceSeqZeroReturnsEmptyWindow) {
@@ -199,6 +208,63 @@ TEST(SubscribeReplayTest, ReplayThenLiveTailDeliversBothToSubscriber) {
     bcast->Stop();
     EXPECT_TRUE(sub->IsClosed());
     EXPECT_EQ(sub->GetKickReason(), KickReason::kShutdown);
+}
+
+TEST(SubscribeReplayTest, ReplayHonoursEventNameFilter) {
+    // Codex W2 C-1: a subscriber that narrowed event_names should
+    // receive ONLY matching entries from the replay window — not the
+    // entire tier slice. The replay path uses the same routing-fields
+    // scanner + MatchesFilter as the broadcaster's live-tail dispatch.
+    Ring ring(64);
+    std::uint64_t dropped = 0;
+    // Mixed events: CHANNEL_ANSWER (1,3,5), CHANNEL_HANGUP_COMPLETE (2,4,6).
+    ring.Push(MakeEntryWithName(1, "CHANNEL_ANSWER"), &dropped);
+    ring.Push(MakeEntryWithName(2, "CHANNEL_HANGUP_COMPLETE"), &dropped);
+    ring.Push(MakeEntryWithName(3, "CHANNEL_ANSWER"), &dropped);
+    ring.Push(MakeEntryWithName(4, "CHANNEL_HANGUP_COMPLETE"), &dropped);
+    ring.Push(MakeEntryWithName(5, "CHANNEL_ANSWER"), &dropped);
+    ring.Push(MakeEntryWithName(6, "CHANNEL_HANGUP_COMPLETE"), &dropped);
+
+    SubscriberFilter f;
+    f.event_name_globs = {"CHANNEL_ANSWER"};
+    auto sub = std::make_shared<Subscriber>("s-filter", f, /*cap=*/16);
+
+    // Mimic the handler's filtered replay step (the same routing.h
+    // scanner + Subscriber::MatchesFilter chain).
+    auto snap = ring.SnapshotFromSeq(0);
+    ASSERT_TRUE(snap.found_in_window);
+    for (const auto& entry : snap.entries) {
+        const auto rf = osw::events::ExtractRoutingFields(*entry.envelope_bytes);
+        if (!sub->MatchesFilter(Tier::k1Critical, rf.event_name, rf.node_id))
+            continue;
+        ASSERT_TRUE(sub->Queue().TryPush(entry.envelope_bytes));
+    }
+    // Only the 3 CHANNEL_ANSWER entries (seqs 1, 3, 5) should be queued.
+    EXPECT_EQ(sub->Queue().Size(), 3u);
+}
+
+TEST(SubscribeReplayTest, ReplayHonoursNodeIdFilter) {
+    Ring ring(64);
+    std::uint64_t dropped = 0;
+    // Alternating node_ids: node-a (1,3,5), node-b (2,4,6).
+    ring.Push(RingEntry{1, MakeBytes(1, "CHANNEL_ANSWER", "node-a")}, &dropped);
+    ring.Push(RingEntry{2, MakeBytes(2, "CHANNEL_ANSWER", "node-b")}, &dropped);
+    ring.Push(RingEntry{3, MakeBytes(3, "CHANNEL_ANSWER", "node-a")}, &dropped);
+    ring.Push(RingEntry{4, MakeBytes(4, "CHANNEL_ANSWER", "node-b")}, &dropped);
+
+    SubscriberFilter f;
+    f.node_id = "node-a";
+    auto sub = std::make_shared<Subscriber>("s-node", f, /*cap=*/16);
+
+    auto snap = ring.SnapshotFromSeq(0);
+    ASSERT_TRUE(snap.found_in_window);
+    for (const auto& entry : snap.entries) {
+        const auto rf = osw::events::ExtractRoutingFields(*entry.envelope_bytes);
+        if (!sub->MatchesFilter(Tier::k1Critical, rf.event_name, rf.node_id))
+            continue;
+        ASSERT_TRUE(sub->Queue().TryPush(entry.envelope_bytes));
+    }
+    EXPECT_EQ(sub->Queue().Size(), 2u);  // only node-a entries
 }
 
 TEST(SubscribeReplayTest, EvictedSinceSeqClosesSubscriber) {

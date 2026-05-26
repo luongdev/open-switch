@@ -26,7 +26,9 @@
  *            tier reports found_in_window=false, the replay point was
  *            evicted → return RESOURCE_EXHAUSTED.
  *          * Pre-load the entries from each tier's snapshot into the
- *            subscriber's send queue (filter-matched), interleaving by
+ *            subscriber's send queue (filter-matched via the same
+ *            ExtractRoutingFields+MatchesFilter the broadcaster uses
+ *            on the live-tail path — Codex W2 C-1), interleaving by
  *            ascending seq within tier (each ring is monotonic). The
  *            client sees the replay in (tier, seq) groups; documented
  *            in the proto.
@@ -93,6 +95,7 @@
 #include "osw/events/binder.h"
 #include "osw/events/ring.h"
 #include "osw/events/subscribe/broadcaster.h"
+#include "osw/events/subscribe/routing.h"
 #include "osw/events/subscribe/subscriber.h"
 #include "osw/events/tier.h"
 #include "osw/observability/audit.h"
@@ -226,20 +229,19 @@ struct FilterResult {
         for (const auto& entry : snap.entries) {
             if (!entry.envelope_bytes)
                 continue;
-            // We do NOT check the subscriber filter here at the routing-
-            // fields level — the replay path is rare and a full
-            // ParseFromString is acceptable. Instead, the writer-loop
-            // filter is implicit: we push EVERY entry from the requested
-            // tier into the queue, and the client receives them. If the
-            // client narrowed event_names/node_id, that filter applies
-            // to the LIVE tail (the broadcaster filters before push),
-            // not to the replay window. This matches the proto's
-            // semantics: since_seq replays "from since_seq+1 to ring
-            // tail", and the operator's narrowing filters apply to the
-            // live stream that follows.
-            //
-            // (A future revision can extract routing fields on replay
-            // too if operators report log-noise from unfiltered replay.)
+            // Codex W2 C-1: apply the subscriber's filter to replay
+            // entries the same way the broadcaster does for live tail.
+            // The routing-fields scanner is a lightweight manual wire-
+            // format walk (osw/events/subscribe/routing.h); cheap enough
+            // to run per replay entry. The effective tier is the ring
+            // we're scanning (entries in tier-N's ring are by definition
+            // tier-N, even if the embedded proto field disagrees).
+            const auto rf = osw::events::ExtractRoutingFields(*entry.envelope_bytes);
+            const osw::events::Tier effective_tier =
+                (t == osw::events::Tier::kUnspecified) ? rf.tier : t;
+            if (!sub.MatchesFilter(effective_tier, rf.event_name, rf.node_id)) {
+                continue;
+            }
             if (!sub.Queue().TryPush(entry.envelope_bytes)) {
                 // Replay overflow → kick before the broadcaster ever
                 // gets to push live entries. send_queue_capacity should

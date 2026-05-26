@@ -50,6 +50,7 @@
 
 #include "osw/events/envelope.h"
 #include "osw/events/ring.h"
+#include "osw/events/subscribe/routing.h"
 #include "osw/events/subscribe/send_queue.h"
 #include "osw/events/subscribe/subscriber.h"
 #include "osw/events/tier.h"
@@ -71,143 +72,10 @@ constexpr std::size_t kBatchMax = 64;
 // stop_requested_ flag promptly; long enough to avoid busy-looping.
 constexpr auto kBatchTimeout = std::chrono::milliseconds(100);
 
-// Parse only the routing-relevant fields from a serialised envelope.
-// We avoid a full proto parse on the hot path (the bytes themselves
-// are forwarded as-is via shared_ptr; the subscriber writer thread does
-// its own full parse).
-//
-// open_switch.events.v1.EventEnvelope tags used:
-//   2: Tier         tier            (enum / varint)
-//   3: string       event_name
-//   5: string       node_id
-//
-// We do a lightweight manual scan over the proto wire format. This is
-// faster than a full ParseFromString + DiscardUnknownFields and avoids
-// allocating a new EventEnvelope per dispatched event per subscriber.
-//
-// Wire format:
-//   key = (field_num << 3) | wire_type
-//   wire_type 0 = varint (enums, ints) — read varint after key
-//   wire_type 2 = length-delimited (strings, bytes) — read varint len, then bytes
-//
-// Any field we don't recognise is skipped via wire-type rules. On any
-// parse error we conservatively return all-zero values; the subscriber
-// filter then treats it as a generic event and the writer will report
-// the proto error when it does its full parse.
-struct RoutingFields {
-    Tier tier = Tier::kUnspecified;
-    std::string_view event_name;
-    std::string_view node_id;
-};
-
-[[nodiscard]] bool ReadVarint(const std::uint8_t*& p,
-                              const std::uint8_t* end,
-                              std::uint64_t& out) noexcept {
-    out = 0;
-    int shift = 0;
-    while (p < end) {
-        const std::uint8_t b = *p++;
-        out |= static_cast<std::uint64_t>(b & 0x7F) << shift;
-        if ((b & 0x80) == 0)
-            return true;
-        shift += 7;
-        if (shift >= 64)
-            return false;  // malformed
-    }
-    return false;
-}
-
-[[nodiscard]] bool SkipField(const std::uint8_t*& p,
-                             const std::uint8_t* end,
-                             int wire_type) noexcept {
-    switch (wire_type) {
-        case 0: {  // varint
-            std::uint64_t tmp = 0;
-            return ReadVarint(p, end, tmp);
-        }
-        case 1: {  // 64-bit fixed
-            if (end - p < 8)
-                return false;
-            p += 8;
-            return true;
-        }
-        case 2: {  // length-delimited
-            std::uint64_t len = 0;
-            if (!ReadVarint(p, end, len))
-                return false;
-            if (static_cast<std::uint64_t>(end - p) < len)
-                return false;
-            p += len;
-            return true;
-        }
-        case 5: {  // 32-bit fixed
-            if (end - p < 4)
-                return false;
-            p += 4;
-            return true;
-        }
-        default:
-            return false;  // unsupported (groups, etc.)
-    }
-}
-
-[[nodiscard]] RoutingFields ExtractRoutingFields(const std::string& bytes) noexcept {
-    RoutingFields rf;
-    const auto* p = reinterpret_cast<const std::uint8_t*>(bytes.data());
-    const auto* end = p + bytes.size();
-    while (p < end) {
-        std::uint64_t key = 0;
-        if (!ReadVarint(p, end, key))
-            break;
-        const int field_num = static_cast<int>(key >> 3);
-        const int wire_type = static_cast<int>(key & 0x7);
-
-        if (field_num == 2 && wire_type == 0) {
-            // tier (enum) — proto3 varint.
-            std::uint64_t v = 0;
-            if (!ReadVarint(p, end, v))
-                break;
-            switch (v) {
-                case 1:
-                    rf.tier = Tier::k1Critical;
-                    break;
-                case 2:
-                    rf.tier = Tier::k2State;
-                    break;
-                case 3:
-                    rf.tier = Tier::k3Ephemeral;
-                    break;
-                default:
-                    rf.tier = Tier::kUnspecified;
-                    break;
-            }
-        } else if (field_num == 3 && wire_type == 2) {
-            // event_name (string)
-            std::uint64_t len = 0;
-            if (!ReadVarint(p, end, len))
-                break;
-            if (static_cast<std::uint64_t>(end - p) < len)
-                break;
-            rf.event_name =
-                std::string_view(reinterpret_cast<const char*>(p), static_cast<std::size_t>(len));
-            p += len;
-        } else if (field_num == 5 && wire_type == 2) {
-            // node_id (string)
-            std::uint64_t len = 0;
-            if (!ReadVarint(p, end, len))
-                break;
-            if (static_cast<std::uint64_t>(end - p) < len)
-                break;
-            rf.node_id =
-                std::string_view(reinterpret_cast<const char*>(p), static_cast<std::size_t>(len));
-            p += len;
-        } else {
-            if (!SkipField(p, end, wire_type))
-                break;
-        }
-    }
-    return rf;
-}
+// The routing-fields scanner lives in `osw/events/subscribe/routing.h`
+// so the SubscribeEvents handler can run the same filter on replay
+// entries (Codex W2 finding C-1). The broadcaster's hot path simply
+// calls ExtractRoutingFields() here.
 
 }  // namespace
 

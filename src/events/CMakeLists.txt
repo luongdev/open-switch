@@ -31,6 +31,7 @@
 add_library(osw_events STATIC
     tier.cc
     ring.cc
+    subscribe/routing.cc
     subscribe/send_queue.cc
     subscribe/subscriber.cc
     subscribe/broadcaster.cc
