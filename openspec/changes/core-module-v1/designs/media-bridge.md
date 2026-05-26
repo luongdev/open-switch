@@ -36,10 +36,10 @@ A media bug can attach with various flags:
 
 | Flag | Stage | Effect |
 |---|---|---|
-| `SMBF_READ_STREAM` | Read tap | Receives copies of read-side frames (read-only tap). |
-| `SMBF_WRITE_STREAM` | Write tap (post-replace) | Receives copies of write-side frames **after** all `WRITE_REPLACE` bugs have run. |
+| `SMBF_READ_STREAM` | Read tap | Receives copies of read-side frames (read-only). See FF-006: read side runs `READ_REPLACE` first as one pass, then `READ_STREAM` as a second pass, so READ_STREAM taps observe post-`READ_REPLACE` audio regardless of chain position. |
+| `SMBF_WRITE_STREAM` | Write tap (in-chain) | Receives a copy of the current `write_frame` at the bug's position in the chain. **Per FF-001 the write side is a single interleaved loop**: a WRITE_STREAM tap positioned before a `WRITE_REPLACE` bug observes the pre-replace frame; positioned after, it observes the post-replace frame. There is no second pass — chain order is what matters. |
 | `SMBF_READ_REPLACE` | Read transform | Replaces read-side frames before further processing. Use to inject audio "as if the caller said it" (rare). |
-| `SMBF_WRITE_REPLACE` | Write transform (pre-stream) | Replaces write-side frames before network send. Use to inject bot speech. |
+| `SMBF_WRITE_REPLACE` | Write transform | Replaces write-side frames before network send. Per FF-001 a `WRITE_REPLACE` bug's mutation is visible to every subsequent iteration of the same write-side loop on the same ptime tick. Use to inject bot speech. |
 | `SMBF_READ_PING` | Read tick | Periodic callback on read side (no frame). |
 | `SMBF_NO_PAUSE` | (modifier) | Bug runs even when channel is on hold. |
 | `SMBF_THREAD_LOCK` | (modifier) | Bug callback is serialised with channel's media thread. |
@@ -74,33 +74,67 @@ There is no numeric priority. Two bugs of the same stage (both
 READ_STREAM, both WRITE_REPLACE, etc.) execute in the order they
 were attached.
 
-### Semantic ordering between stages
+### Semantic ordering between stages (read vs write asymmetry)
 
-The audio chain stages run in a fixed order set by FS, independent
-of bug attach order:
+The read and write sides of a FreeSWITCH channel are **not
+symmetric** in how they iterate the bug chain. Round 2 of the Codex
+review claimed both sides ran in two passes; that was false against
+FS v1.10.12 source. The correct behaviour is:
+
+**Read side — two passes** (FF-006, `src/switch_core_io.c:646-756`):
 
 ```text
 For each ptime tick on read side:
-  1. All SMBF_READ_REPLACE bugs (chain order) — each may replace the frame
-  2. All SMBF_READ_STREAM bugs (chain order) — read-only taps, see post-replace frame
-  3. FS hands the frame upstream to the channel's read consumer
-
-For each ptime tick on write side:
-  1. FS produces the base write frame (e.g. from playback file, hold music, or silence)
-  2. All SMBF_WRITE_REPLACE bugs (chain order) — each may replace the frame
-  3. All SMBF_WRITE_STREAM bugs (chain order) — read-only taps, see post-replace frame
-  4. FS encodes and sends to network
+  Pass 1: walk bugs in chain order; for each bug with SMBF_READ_REPLACE
+          run its callback; the bug may replace read_frame for subsequent
+          iterations (the same loop).
+  Pass 2: walk bugs in chain order; for each bug with SMBF_READ_STREAM
+          buffer the (now post-REPLACE) read_frame and run its callback.
+  Then:   FS hands the (possibly replaced) frame upstream.
 ```
 
-The crucial consequence: a `WRITE_STREAM` tap **always** observes the
-post-injection write frame, regardless of whether it was attached
-before or after the `WRITE_REPLACE` bug. This is why recording
-captures bot audio reliably (provided recording uses `WRITE_STREAM`
-not `WRITE_REPLACE` on its write side — which `record_session` does).
+Because all READ_REPLACE callbacks run before any READ_STREAM
+callback, a READ_STREAM tap observes the post-replace frame
+regardless of chain position. The module does not use READ_REPLACE
+in V1, so this distinction has no operational effect today; reads
+pass through to STT / VAD / AMD taps unchanged.
 
-`READ_STREAM` taps similarly see post-`READ_REPLACE` audio. The
-module does not use `READ_REPLACE` in V1; reads pass through to taps
-unchanged.
+**Write side — single interleaved loop** (FF-001,
+`src/switch_core_media.c:16096-16156`):
+
+```text
+For each ptime tick on write side:
+  FS produces the base write_frame (from playback file, hold music,
+    silence, or upstream bridged leg).
+
+  Single loop over bugs in chain order:
+    For each bug:
+      if SMBF_WRITE_STREAM: buffer the CURRENT write_frame and run
+        callback with SWITCH_ABC_TYPE_WRITE.
+      if SMBF_WRITE_REPLACE: run callback with
+        SWITCH_ABC_TYPE_WRITE_REPLACE; if the callback returns TRUE,
+        mutate write_frame for the NEXT iteration (i.e., for bugs
+        positioned later in the chain).
+
+  Then: FS encodes write_frame and sends to network.
+```
+
+The crucial consequence: a `WRITE_STREAM` tap observes the
+**pre-replace** frame if it is positioned BEFORE the `WRITE_REPLACE`
+bug in the chain, and the **post-replace** frame if it is positioned
+AFTER. Chain order is what matters. There is no FS-side "all
+WRITE_REPLACE bugs run first, then all WRITE_STREAM bugs run"
+two-pass guarantee on the write side.
+
+For our V1 module this means recording captures bot audio **only
+when the recording bug is positioned after all `WRITE_REPLACE` bugs
+(TTS, voicebot-duplex write half) in the chain**. Bug insertion
+follows FF-007 (head-on-`SMBF_FIRST`, tail otherwise), so the
+required chain ordering must be achieved by attach order or by
+`SMBF_FIRST` placement of the recording bug — see the
+MediaBugManager rules below for how we enforce this for bugs we
+own, and `recording-with-bot.md` for the operator-side dialplan
+requirements when `record_session` (FS-native) is in play.
 
 ## Ordering and the MediaBugManager add-order coordinator
 
@@ -119,8 +153,8 @@ Each `Purpose` has an associated **stage rank**:
 | MID_READ | `VOICEBOT_DUPLEX` (read half) | `READ_STREAM` | Tap caller mic after VAD. |
 | INJECT | `TTS_PLAYBACK` | `WRITE_REPLACE` | Inject bot audio onto write side. |
 | INJECT | `VOICEBOT_DUPLEX` (write half) | `WRITE_REPLACE` | Inject bot audio onto write side. |
-| LATE | `RECORDING_RELAY` (read tap) | `READ_STREAM` | Tap caller mic — after STT/VAD see it (cosmetic; READ_STREAM order matters less). |
-| LATE | `RECORDING_RELAY` (write tap) | `WRITE_STREAM` | **Always observes post-INJECT audio per FS semantic — order-independent for the audio outcome.** |
+| LATE | `RECORDING_RELAY` (read tap) | `READ_STREAM` | Tap caller mic. Per FF-006, read-side READ_STREAM runs in a second pass after all READ_REPLACE bugs, so chain position relative to other read taps is cosmetic for the audio outcome. |
+| LATE | `RECORDING_RELAY` (write tap) | `WRITE_STREAM` | **Must be positioned AFTER all INJECT bugs in the chain to observe post-injection audio** (FF-001 — write side is a single interleaved loop, not a two-pass design). The MediaBugManager enforces this for bugs we own by attach-order gating; FS-native `record_session` (operator dialplan) needs `start_bot` BEFORE `record_session` for the same effect (see `recording-with-bot.md`). |
 | LATE | `TEST` / instrumentation | any | Should not perturb production bugs. |
 
 `MediaBugManager.Attach` enforcement:
@@ -179,26 +213,49 @@ clarity and to avoid surprising `READ_STREAM` ordering.
 
 `record_session`, `mod_spy`, native eavesdrop, etc. attach bugs
 directly via `switch_core_media_bug_add` without going through our
-`MediaBugManager`. These appear at the tail of the chain at the
-moment they were added (or head if `SMBF_FIRST`). We document this
-explicitly so operators understand the union of bug sources:
+`MediaBugManager`. They land per FF-007: at the head of the chain
+if `SMBF_FIRST` is set, otherwise at the tail at the moment of
+attach. The MediaBugManager can refuse to attach module-owned bugs
+in a way that would violate the canonical order, but it cannot
+reorder FS-native bugs that operators install from the dialplan.
 
 ```text
-Bug chain at moment of audio processing for a typical bot call:
-  [SMBF_FIRST head] : VAD (osw)  ◀── always at head
-                      STT (osw)
-                      AMD (osw)
-                      TTS WRITE_REPLACE (osw)
-                      record_session READ_STREAM+WRITE_STREAM (FS-native; appears wherever it was added)
-                      RECORDING_RELAY (osw, if used)
+Bug chain at the moment of audio processing for a typical bot call
+(canonical add order: VAD → STT → AMD → TTS → record_session if
+operator follows guidance):
+
+  [head]              VAD (osw)  ◀── always at head via SMBF_FIRST
+                      STT (osw)                                READ_STREAM
+                      AMD (osw)                                READ_STREAM
+                      TTS (osw)                                WRITE_REPLACE
+                      record_session (FS-native, operator-controlled)
+                                                               READ_STREAM + WRITE_STREAM
+                      RECORDING_RELAY (osw, if used)           READ_STREAM + WRITE_STREAM
   [tail]
 ```
 
-The `WRITE_REPLACE` (TTS) and `WRITE_STREAM` (record_session,
-RECORDING_RELAY) outcome is correct by FS semantic regardless of the
-in-chain position. The `READ_STREAM` outcomes (STT, AMD, recording)
-all see the same raw read frame (no `READ_REPLACE` in our design),
-so their relative order is also semantically equivalent.
+**Audio outcome per stage**:
+
+- READ_STREAM bugs (STT, AMD, record_session read-tap,
+  RECORDING_RELAY read-tap): per FF-006 the read side runs
+  READ_REPLACE in a first pass and READ_STREAM in a second pass.
+  Because the V1 module does not use READ_REPLACE, every
+  READ_STREAM tap sees the raw caller frame; relative chain order
+  among them is cosmetic.
+- WRITE_REPLACE (TTS, voicebot-duplex write half): each
+  WRITE_REPLACE runs in its position in the single write-side
+  loop (FF-001). Its mutation is visible to **subsequent**
+  iterations of the same loop only.
+- WRITE_STREAM (record_session, RECORDING_RELAY write-tap):
+  observes `write_frame` AT ITS POSITION IN THE CHAIN. If it
+  precedes TTS, it sees pre-injection audio; if it follows, it
+  sees post-injection audio. **Add order matters.**
+
+The MediaBugManager's stage-rank gate enforces the desired order
+for bugs we own. For FS-native `record_session`, the spec
+`recording-with-bot.md` documents the operator-side dialplan
+ordering requirement: start bot **before** `record_session` if the
+recording must contain bot audio.
 
 ## MediaBugManager
 
@@ -592,7 +649,9 @@ them.
 | `duplicate_purpose_rejected` | Two TTS attaches on the same channel: second returns `ALREADY_EXISTS`. |
 | `out_of_order_attach_rejected` | INJECT then MID_READ without `SMBF_FIRST`: second returns `FAILED_PRECONDITION`. |
 | `vad_first_flag_set` | VAD attach with no flags: manager OR's in `SMBF_FIRST` before forwarding to FS. |
-| `write_stream_observes_post_replace` | TTS bug active + recording WRITE_STREAM attached AFTER: recording captures injected bot frames regardless of add order. |
+| `write_stream_after_write_replace_captures_bot` | TTS WRITE_REPLACE attached FIRST, then RECORDING_RELAY WRITE_STREAM attached SECOND → chain is `[TTS, recording]` → recording's WRITE_STREAM callback observes the post-injection frame (FF-001). Asserts bot audio is in the recording. |
+| `write_stream_before_write_replace_misses_bot` | RECORDING_RELAY WRITE_STREAM attached FIRST, then TTS WRITE_REPLACE attached SECOND via the MediaBugManager → manager returns `FAILED_PRECONDITION` (out-of-order). Asserts the manager refuses to attach an INJECT bug after a LATE bug. (Documents the inverse-case rejection.) |
+| `record_session_before_tts_misses_bot_audio` | Operator dialplan calls `record_session` (FS-native) FIRST, then `start_bot` (which attaches our TTS WRITE_REPLACE). Chain is `[record_session, TTS]` → record_session's WRITE_STREAM tap observes pre-injection frame. Asserts recording does NOT contain bot audio. Documents the operator-side ordering requirement loudly. |
 | `multiple_bugs_per_channel` | STT + TTS + recording attached on one channel. Frames flow on each. |
 | `cancel_on_hangup` | Channel hangup detaches all bugs within 50 ms. |
 | `cancel_on_module_shutdown` | Module unload drains all bugs gracefully. |
