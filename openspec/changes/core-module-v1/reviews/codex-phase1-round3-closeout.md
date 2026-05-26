@@ -93,6 +93,33 @@ buf.yaml path was fixed. Removed in the same commit.
 These two are not in the round-2 review by ID but were strictly
 necessary to make the C-6 fix actually pass CI.
 
+### Additional finding C — Stub module needs `SWITCH_API_VISIBILITY`
+
+While verifying the N6 stub builds end-to-end against real FS
+v1.10.12 headers, `nm -D --defined-only` on the resulting .so
+showed `mod_open_switch_module_interface` as a LOCAL data symbol
+(`d`) rather than GLOBAL (`D`). FreeSWITCH's loader walks
+`dlsym` against `<modname>_module_interface`; a local symbol is
+invisible to dlsym. So the stub would build but `load
+mod_open_switch` would fail at runtime with "Cannot locate
+symbol".
+
+Root cause: per `src/include/switch_platform.h:186-200` of FS
+v1.10.12, `SWITCH_MOD_DECLARE_DATA` is gated by the
+`SWITCH_API_VISIBILITY` define. Without the define, the macro
+expands to empty (line 200), and the project's global
+`-fvisibility=hidden` hides the interface symbol.
+
+Fixed in `b1238d2`: added
+`target_compile_definitions(mod_open_switch PRIVATE SWITCH_API_VISIBILITY=1)`
+in `src/CMakeLists.txt`. Re-verified with rebuild + `nm -D --defined-only`
+showing the symbol as `D`. FREESWITCH-FACTS FF-009 updated to
+document the gate.
+
+This is the kind of FS interop detail that would have been a
+"stub builds but module won't load" surprise during Phase 2;
+catching it while verifying N6 closes the loop.
+
 ## Verification log
 
 For each FS-behaviour claim landed in `FREESWITCH-FACTS.md`, the

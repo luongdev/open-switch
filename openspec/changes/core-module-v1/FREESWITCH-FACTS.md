@@ -677,8 +677,10 @@ symbol is visible to FreeSWITCH's `dlsym`.
 **Source.**
 
 - `src/include/switch_types.h:2607-2647` (macros).
-- `src/include/switch_platform.h:190-200` (visibility attributes on
-  the GCC/Linux path).
+- `src/include/switch_platform.h:184-202` (visibility attributes on
+  the GCC/Linux path; note the `SWITCH_API_VISIBILITY` gate at line
+  186 — without it the macros expand to empty and the module
+  interface data symbol is hidden by `-fvisibility=hidden`).
 
 **Permalinks.**
 
@@ -715,20 +717,31 @@ SWITCH_MOD_DECLARE_DATA switch_loadable_module_function_table_t name##_module_in
         SWITCH_MODULE_DEFINITION_EX(name, load, shutdown, runtime, SMODF_NONE)
 ```
 
-**Excerpt — `switch_platform.h:184-200` (the GCC/Linux branch):**
+**Excerpt — `switch_platform.h:184-204` (the GCC/Linux branch with
+the `SWITCH_API_VISIBILITY` gate):**
 
 ```c
-#elif defined(__GNUC__) && __GNUC__ >= 4
-
-#define SWITCH_MOD_DECLARE(type)        __attribute__((visibility("default"))) type
+#else //not win32
+#define O_BINARY 0
+#if (defined(__GNUC__) || defined(__SUNPRO_CC) || defined (__SUNPRO_C)) && defined(SWITCH_API_VISIBILITY)
+#define SWITCH_DECLARE(type)        __attribute__((visibility("default"))) type
+#define SWITCH_DECLARE_NONSTD(type) __attribute__((visibility("default"))) type
+#define SWITCH_DECLARE_DATA         __attribute__((visibility("default")))
+#define SWITCH_MOD_DECLARE(type)    __attribute__((visibility("default"))) type
 #define SWITCH_MOD_DECLARE_NONSTD(type) __attribute__((visibility("default"))) type
-#define SWITCH_MOD_DECLARE_DATA         __attribute__((visibility("default")))
-
+#define SWITCH_MOD_DECLARE_DATA     __attribute__((visibility("default")))
+#define SWITCH_DECLARE_CLASS        __attribute__((visibility("default")))
 #else
-
+#define SWITCH_DECLARE(type)        type
+#define SWITCH_DECLARE_NONSTD(type) type
+#define SWITCH_DECLARE_DATA
 #define SWITCH_MOD_DECLARE(type)    type
-#define SWITCH_MOD_DECLARE_NONSTD(type)    type
+#define SWITCH_MOD_DECLARE_NONSTD(type) type
 #define SWITCH_MOD_DECLARE_DATA
+#define SWITCH_DECLARE_CLASS
+#endif
+#define SWITCH_THREAD_FUNC
+#endif
 ```
 
 **Implications.**
@@ -745,6 +758,19 @@ For the Phase-1 stub module:
   loadable-module interface symbol so FS can still find it.
 - The runtime arg `NULL` is acceptable; a module without a
   per-tick runtime function passes NULL there.
+- **MUST also define `SWITCH_API_VISIBILITY`** (via
+  `-DSWITCH_API_VISIBILITY=1` or
+  `target_compile_definitions(... SWITCH_API_VISIBILITY=1)`)
+  for the visibility-default attribute to be emitted on the module
+  interface symbol. Without it, `SWITCH_MOD_DECLARE_DATA` expands
+  to empty (line 200 of switch_platform.h) and our global
+  `-fvisibility=hidden` will hide
+  `mod_open_switch_module_interface`. The result is that FS's
+  loader cannot find the symbol and `load mod_open_switch` fails.
+  Verified empirically: building with `-fvisibility=hidden` and
+  WITHOUT `SWITCH_API_VISIBILITY`, `nm -D --defined-only` shows
+  the interface symbol as local (`d`); WITH the define it becomes
+  global (`D`).
 
 A minimal stub returning `SWITCH_STATUS_SUCCESS` from both
 load/shutdown is sufficient for FS to `load mod_open_switch`

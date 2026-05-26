@@ -22,6 +22,20 @@ target_include_directories(mod_open_switch
         ${OSW_FREESWITCH_INCLUDE_DIR}
 )
 
+# SWITCH_API_VISIBILITY gates the SWITCH_MOD_DECLARE_DATA macro
+# (src/include/switch_platform.h:186-193 of FreeSWITCH v1.10.12):
+# with it defined, SWITCH_MOD_DECLARE_DATA expands to
+# __attribute__((visibility("default"))), which is required to
+# export `mod_open_switch_module_interface` as a global data
+# symbol that FreeSWITCH's dlopen+dlsym loader can find.
+# Without it, our global -fvisibility=hidden flag would hide the
+# interface symbol and `load mod_open_switch` would fail with
+# "Cannot locate symbol 'switch_module_load'" or similar.
+target_compile_definitions(mod_open_switch
+    PRIVATE
+        SWITCH_API_VISIBILITY=1
+)
+
 # The output must be named `mod_open_switch.so` exactly (no `lib`
 # prefix) so that FreeSWITCH's loader finds it under MOD_DIR.
 set_target_properties(mod_open_switch PROPERTIES
