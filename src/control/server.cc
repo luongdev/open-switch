@@ -6,7 +6,11 @@
 
 #include "osw/control/server.h"
 
+#include <unistd.h>
+
 #include <chrono>
+#include <cstring>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -24,13 +28,51 @@
 
 namespace osw::control {
 
+namespace {
+
+// Signal-safe-ish diagnostic fallback for the destructor path. Drain
+// allocates inside osw::log; if osw::log itself throws, calling another
+// osw::log::Error from the catch handler would re-enter the allocator
+// while the C++ runtime is mid-unwind. Use ::write(STDERR_FILENO, ...)
+// which is async-signal-safe per POSIX and matches FF-012's documented
+// signal-safe alternative ("use write(STDERR_FILENO, ...) instead").
+//
+// We cannot call switch_log_printf directly: osw_control is the
+// FS-agnostic library (tests link it without <switch.h>). The
+// production module's exception-boundary wrappers in mod_open_switch.cc
+// already log via switch_log_printf at module-shutdown paths; this
+// destructor is the last-line defence for the case where Module::Shutdown
+// was skipped (e.g., FS aborted mid-load).
+void WriteDestructorErrorRaw(const char* msg) noexcept {
+    static constexpr char kPrefix[] =
+        "[osw:control] ~GrpcServer Drain threw: ";
+    (void)::write(STDERR_FILENO, kPrefix, sizeof(kPrefix) - 1);
+    if (msg) {
+        (void)::write(STDERR_FILENO, msg, std::strlen(msg));
+    }
+    (void)::write(STDERR_FILENO, "\n", 1);
+}
+
+}  // namespace
+
 GrpcServer::GrpcServer(Health* health) noexcept
     : health_(health) {}
 
 GrpcServer::~GrpcServer() noexcept {
+    // Per designs/memory-management.md §"Exception-safety boundary":
+    // C++ exceptions must NOT propagate out of a noexcept dtor. Drain
+    // is NOT noexcept (osw::log::Info allocates; std::bad_alloc is
+    // theoretically reachable). Wrap and swallow.
+    //
     // Defensive: if Drain wasn't called explicitly, do it now with a
-    // 0s deadline so the destructor doesn't block indefinitely.
-    Drain(std::chrono::system_clock::now() + std::chrono::seconds(2));
+    // 2s deadline so the destructor doesn't block indefinitely.
+    try {
+        Drain(std::chrono::system_clock::now() + std::chrono::seconds(2));
+    } catch (const std::exception& e) {
+        WriteDestructorErrorRaw(e.what());
+    } catch (...) {
+        WriteDestructorErrorRaw("unknown");
+    }
 }
 
 void GrpcServer::SetVersions(std::string module_version,
