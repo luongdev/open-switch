@@ -1,0 +1,67 @@
+# Clang-tidy config for mod_open_switch.
+#
+# Per designs/memory-management.md §"clang-tidy", these check groups are
+# enabled. Warnings are errors in CI.
+#
+# Notes:
+#   - cppcoreguidelines-* is enabled selectively. Some checks
+#     (pro-bounds-pointer-arithmetic, pro-bounds-constant-array-index,
+#     pro-type-vararg, pro-type-union-access) fire on every call to
+#     FreeSWITCH C APIs that take va_arg, raw pointers, or unions.
+#     Suppressing at the call site would litter the code; we suppress
+#     globally and rely on the RAII helpers + handcoded review.
+#   - llvmlibc-* and fuchsia-* are upstream-specific check groups; off.
+#   - modernize-use-trailing-return-type is purely a style choice; off.
+#   - readability-magic-numbers fires on ASAN constants and gRPC port
+#     numbers. Off; comments explain meaning where needed.
+#
+# Local run:
+#   clang-tidy -p build $(git ls-files 'src/**/*.cc' 'tests/**/*.cc')
+# CI runs the same after the build directory is populated.
+
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  cert-*,
+  -cert-err58-cpp,
+  clang-analyzer-*,
+  concurrency-*,
+  cppcoreguidelines-pro-type-cstyle-cast,
+  cppcoreguidelines-pro-type-member-init,
+  cppcoreguidelines-pro-type-static-cast-downcast,
+  cppcoreguidelines-slicing,
+  cppcoreguidelines-special-member-functions,
+  cppcoreguidelines-init-variables,
+  google-*,
+  -google-readability-todo,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-using,
+  modernize-use-equals-default,
+  modernize-use-equals-delete,
+  modernize-use-emplace,
+  modernize-make-unique,
+  modernize-make-shared,
+  performance-*,
+  -performance-no-int-to-ptr,
+  readability-braces-around-statements,
+  readability-redundant-*,
+  readability-misleading-indentation,
+  readability-uniqueptr-delete-release,
+  readability-static-definition-in-anonymous-namespace,
+  readability-static-accessed-through-instance
+
+WarningsAsErrors: '*'
+
+# Apply to project sources only; skip generated proto code and 3rd-party
+# vendoring under build/proto-gen.
+HeaderFilterRegex: '^(src/|include/osw/|tests/unit/).*\.(h|hpp)$'
+
+CheckOptions:
+  - key:   readability-braces-around-statements.ShortStatementLines
+    value: '1'
+  - key:   cppcoreguidelines-special-member-functions.AllowSoleDefaultDtor
+    value: 'true'
+  - key:   bugprone-argument-comment.StrictMode
+    value: '1'

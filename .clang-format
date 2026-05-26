@@ -1,0 +1,72 @@
+# Clang-format style for mod_open_switch.
+#
+# Goals:
+#   - Match the Google C++ style with project-specific overrides.
+#   - 100-column lines (telecom code routinely has long FS API symbols
+#     and the team prefers slightly wider lines over wrapped arguments).
+#   - 4-space indent matching the existing CMakeLists.txt / Dockerfile
+#     conventions.
+#   - Allow standard headers, FS headers, project headers grouped.
+#
+# CI runs `clang-format --dry-run --Werror`. Reformat violations block
+# merge. Use `clang-format -i src/foo.cc` locally to apply.
+
+---
+Language:        Cpp
+BasedOnStyle:    Google
+
+# Indentation
+IndentWidth:        4
+ContinuationIndentWidth: 4
+TabWidth:           4
+UseTab:             Never
+AccessModifierOffset: -2
+
+# Line width
+ColumnLimit:        100
+
+# Pointer / reference alignment — left attached to type, project preference.
+PointerAlignment:   Left
+ReferenceAlignment: Left
+
+# Braces — attached (Allman style not used).
+BreakBeforeBraces:  Attach
+
+# Includes — three groups: <std>, "switch.h" / 3rd-party, "osw/*" project.
+SortIncludes:       true
+IncludeBlocks:      Regroup
+IncludeCategories:
+  - Regex:           '^<switch\.h>'
+    Priority:        2
+  - Regex:           '^<grpcpp/'
+    Priority:        3
+  - Regex:           '^<google/protobuf/'
+    Priority:        3
+  - Regex:           '^"open_switch/'
+    Priority:        4
+  - Regex:           '^"osw/'
+    Priority:        5
+  - Regex:           '^<[^/]+>'
+    Priority:        1
+  - Regex:           '^<.*>'
+    Priority:        2
+  - Regex:           '.*'
+    Priority:        6
+
+# Misc
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AlwaysBreakTemplateDeclarations: Yes
+BinPackArguments: false
+BinPackParameters: false
+ConstructorInitializerAllOnOneLineOrOnePerLine: true
+Cpp11BracedListStyle: true
+DerivePointerAlignment: false
+FixNamespaceComments: true
+NamespaceIndentation: None
+SortUsingDeclarations: true
+SpaceAfterCStyleCast: false
+SpaceAfterTemplateKeyword: true
+SpacesBeforeTrailingComments: 2
+Standard:        Latest
