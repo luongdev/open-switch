@@ -121,17 +121,23 @@ set(OSW_PROTO_DIR     "${CMAKE_SOURCE_DIR}/proto")
 set(OSW_PROTO_GEN_DIR "${CMAKE_BINARY_DIR}/proto-gen")
 file(MAKE_DIRECTORY "${OSW_PROTO_GEN_DIR}")
 
-# Subdirectory will build the lib once src/ lands.
-# Skeleton stage: protobuf generation script in cmake/proto.cmake (TBD).
-# add_subdirectory(proto)
+# Wires up protoc + grpc_cpp_plugin to emit
+# ${OSW_PROTO_GEN_DIR}/open_switch/{control,events,media}/v1/*.{pb,grpc.pb}.{h,cc}.
+# Produces the internal static library `osw_proto`, plus the
+# `osw_proto_lint` convenience target (non-blocking when `buf` is absent).
+# Generated sources are excluded from clang-tidy via .clang-tidy's
+# HeaderFilterRegex; they live entirely under build/proto-gen.
+include("${CMAKE_SOURCE_DIR}/cmake/proto.cmake")
 
 # ─── Module target ──────────────────────────────────────────────────────
-# Phase-1 stub lives in src/mod_open_switch.cc — minimal load + shutdown
-# that lets FreeSWITCH `load mod_open_switch` without crashing and gives
-# the Dockerfile.builder a real .so to ship to /dist/mod/. The
-# implementation phase replaces the stub with the actual control + event
-# + media subsystems under src/{control,events,media,...}/. See Codex
-# round-2 finding N6 for context.
+# W1 Foundation (this wave): src/ holds the real module shell —
+# `osw::Module` singleton (core/), `osw::log` + `osw::Health`
+# (observability/), `osw::control::GrpcServer` skeleton with Health
+# RPC + UNIMPLEMENTED handlers for the rest (control/), and the
+# header-only RAII helpers under include/osw/raii/. Event plane,
+# control RPC implementations beyond Health, and media bug manager
+# land in subsequent waves (W2, W3, W4).
+# See openspec/changes/core-module-v1/implementation/W1-foundation.md.
 add_subdirectory(src)
 
 # ─── Tests ────────────────────────────────────────────────────────────
