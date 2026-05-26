@@ -325,7 +325,14 @@ bool Module::Shutdown() noexcept {
         if (rings_) {
             const auto deadline = std::chrono::steady_clock::now() +
                                   std::chrono::seconds(config_.event_drain_timeout_seconds);
-            rings_->WaitUntilAllEmpty(deadline);
+            // WaitUntilAllEmpty returns true on full drain, false on
+            // timeout. We could either use that directly or re-check
+            // AllEmpty(); we re-check for the (rare) race where the
+            // last drain notification raced the deadline (the function
+            // already does a final post-timeout peek, but a separate
+            // re-check makes the pending-event accounting below
+            // straightforward).
+            (void)rings_->WaitUntilAllEmpty(deadline);
             const bool pending = !rings_->AllEmpty();
             if (pending) {
                 // FS-log-only audit (Codex W2 B-2). Previously this
