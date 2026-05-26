@@ -1395,6 +1395,191 @@ SWITCH_DECLARE(switch_core_session_t *) switch_core_session_perform_locate(const
 
 ---
 
+## FF-017 — `switch_event_{create,destroy,fire}` ownership semantics
+
+**Claim.** The FreeSWITCH event-lifecycle macros expand to
+`*_detailed` functions that have well-defined ownership transfer
+semantics on the caller's `switch_event_t**` argument:
+
+1. `switch_event_create(event, id)` expands to
+   `switch_event_create_subclass_detailed(__FILE__, __SWITCH_FUNC__,
+   __LINE__, event, id, SWITCH_EVENT_SUBCLASS_ANY)`. On entry it sets
+   `*event = NULL`; on success it returns `SWITCH_STATUS_SUCCESS`
+   with `*event` pointing at a newly-allocated event. On the early
+   subclass-validation failure it returns `SWITCH_STATUS_GENERR`
+   with `*event` already NULL'd from the entry assignment.
+2. `switch_event_destroy(event)` walks the event headers, frees them,
+   then unconditionally sets `*event = NULL` (line 1311). Calling it
+   with `*event == NULL` is a no-op (the `if (ep)` guard at line 1294).
+3. `switch_event_fire(event)` expands to
+   `switch_event_fire_detailed(__FILE__, __SWITCH_FUNC__, __LINE__,
+   event, NULL)`. On every success path the caller's `*event` is
+   set to NULL — either by `switch_event_queue_dispatch_event`
+   (dispatch path) or by `switch_event_deliver_thread_pool`
+   (no-dispatch path). On the `SYSTEM_RUNNING <= 0` and queue-push
+   failure paths, `switch_event_destroy(event)` runs (which also
+   nulls `*event`).
+
+In every success-or-failure return from `switch_event_fire`, the
+caller's `switch_event_t*` is NULL. The RAII helper `osw::EventGuard`
+relies on this: after `fire()` returns, the guard's internal pointer
+is set to nullptr and the destructor does not call
+`switch_event_destroy`.
+
+**Source.**
+
+- Macros: `src/include/switch_event.h:153` (`switch_event_create_subclass`),
+  `:384` (`switch_event_create`), `:413` (`switch_event_fire`).
+- `switch_event_create_subclass_detailed`: `src/switch_event.c:747-787`.
+- `switch_event_destroy`: `src/switch_event.c:1289-1312`.
+- `switch_event_fire_detailed`: `src/switch_event.c:2006-2038`.
+- Inner null-on-success points:
+  `switch_event_queue_dispatch_event` at `src/switch_event.c:391` and
+  `switch_event_deliver_thread_pool` at `src/switch_event.c:293`.
+
+**Permalinks.**
+
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_event.h#L153>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_event.h#L384>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_event.h#L413>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L747-L787>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L1289-L1312>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L2006-L2038>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L281-L297>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L358-L398>
+
+**Excerpt — `switch_event_destroy` (lines 1289-1312):**
+
+```c
+SWITCH_DECLARE(void) switch_event_destroy(switch_event_t **event)
+{
+	switch_event_t *ep = *event;
+	switch_event_header_t *hp, *this;
+
+	if (ep) {
+		for (hp = ep->headers; hp;) {
+			this = hp;
+			hp = hp->next;
+			free_header(&this);
+		}
+		FREE(ep->body);
+		FREE(ep->subclass_name);
+#ifdef SWITCH_EVENT_RECYCLE
+		if (switch_queue_trypush(EVENT_RECYCLE_QUEUE, ep) != SWITCH_STATUS_SUCCESS) {
+			FREE(ep);
+		}
+#else
+		FREE(ep);
+#endif
+
+	}
+	*event = NULL;
+}
+```
+
+**Excerpt — `switch_event_fire_detailed` (lines 2006-2038):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_event_fire_detailed(const char *file, const char *func, int line, switch_event_t **event, void *user_data)
+{
+
+	switch_assert(BLOCK != NULL);
+	switch_assert(RUNTIME_POOL != NULL);
+	switch_assert(EVENT_QUEUE_MUTEX != NULL);
+	switch_assert(RUNTIME_POOL != NULL);
+
+	if (SYSTEM_RUNNING <= 0) {
+		/* sorry we're closed */
+		switch_event_destroy(event);
+		return SWITCH_STATUS_SUCCESS;
+	}
+
+	if (user_data) {
+		(*event)->event_user_data = user_data;
+	}
+
+
+
+	if (runtime.events_use_dispatch) {
+		check_dispatch();
+
+		if (switch_event_queue_dispatch_event(event) != SWITCH_STATUS_SUCCESS) {
+			switch_event_destroy(event);
+			return SWITCH_STATUS_FALSE;
+		}
+	} else {
+		switch_event_deliver_thread_pool(event);
+	}
+
+	return SWITCH_STATUS_SUCCESS;
+}
+```
+
+**Excerpt — `switch_event_queue_dispatch_event` null-on-success
+(lines 388-395):**
+
+```c
+		}
+
+		*eventp = NULL;
+		switch_queue_push(EVENT_DISPATCH_QUEUE, event);
+		event = NULL;
+
+	}
+```
+
+**Excerpt — `switch_event_deliver_thread_pool` null-on-success
+(lines 281-297):**
+
+```c
+static void switch_event_deliver_thread_pool(switch_event_t **event)
+{
+	switch_thread_data_t *td;
+
+	td = malloc(sizeof(*td));
+	switch_assert(td);
+
+	td->alloc = 1;
+	td->func = switch_event_deliver_thread;
+	td->obj = *event;
+	td->pool = NULL;
+
+	*event = NULL;
+
+	switch_thread_pool_launch_thread(&td);
+
+}
+```
+
+**Implications.**
+
+- After `switch_event_fire(&ev)` returns (success or any failure
+  path), `ev` is NULL. Callers MUST NOT re-use the pointer to call
+  `switch_event_destroy` or access fields. The `osw::EventGuard`
+  helper sets its internal pointer to nullptr inside `fire()` to
+  reflect this.
+- `switch_event_destroy` is idempotent: calling it on `*event == NULL`
+  is a no-op due to the `if (ep)` guard. RAII destructors can always
+  call destroy unconditionally as long as they pass the address of
+  a possibly-NULL pointer.
+- `switch_event_create` always sets `*event = NULL` on entry; callers
+  do NOT need to pre-initialise the pointer. The guard's `release()`
+  returns the raw pointer without nulling FS-side state — only the
+  guard's internal slot is cleared.
+
+**Used by W1 code:**
+
+- `include/osw/raii/event_guard.h` — `osw::EventGuard`, exercised by
+  `tests/unit/raii/event_guard_test.cc` (via the FS-mock seam, which
+  emulates the null-on-fire behaviour). The header's adjacent code
+  comment at line 17 references `switch_event.c:391`; this FF entry
+  is the authoritative cite. The mock layer's `next_event_create_status`
+  knob covers the early-failure path described above.
+- W1 ships no production caller for `EventGuard` — the W2 event-plane
+  producer (`SubscribeEvents` source side) is the first user.
+
+---
+
 ## How to add a new FF entry
 
 If you find a previously-undocumented FreeSWITCH behaviour that
