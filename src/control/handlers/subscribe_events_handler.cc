@@ -149,19 +149,24 @@ constexpr auto kPollTimeout = std::chrono::milliseconds(200);
     return std::nullopt;
 }
 
-// Build a SubscriberFilter from the request. Unparseable tier strings
-// are dropped silently (the empty result still works — emptier filter
-// means "match all"). The list of effective tiers we'll replay from is
-// returned separately because the empty case has to mean "all three"
-// for replay but "no filter constraint" for matching.
+// Build a SubscriberFilter from the request. Codex W2 review I-1:
+// if the client supplied at least one `tiers` entry but EVERY one
+// failed to parse, fail INVALID_ARGUMENT rather than silently
+// upgrading them to "all tiers" — that defaulted to the entire event
+// stream, which surprised operators (a client asking for one tier
+// would unexpectedly receive everything). If `tiers` is empty the
+// client opted into all-tiers and we keep the default.
 struct FilterResult {
     osw::events::SubscriberFilter filter;
     std::vector<osw::events::Tier> replay_tiers;  // resolved tiers to scan for replay
+    bool ok = true;                               // false → INVALID_ARGUMENT
+    std::string error;                            // non-empty when !ok
 };
 
 [[nodiscard]] FilterResult BuildFilter(
     const open_switch::control::v1::SubscribeEventsRequest& req) {
     FilterResult out;
+    const bool tiers_requested = req.tiers_size() > 0;
     for (const auto& t_str : req.tiers()) {
         if (auto t = ParseTierString(t_str); t.has_value()) {
             out.filter.tiers.insert(*t);
@@ -170,7 +175,18 @@ struct FilterResult {
             osw::log::Warn(kSubsystem, "ignoring unparseable tier '%s'", t_str.c_str());
         }
     }
+    if (tiers_requested && out.replay_tiers.empty()) {
+        // Every requested tier failed to parse — fail-loud rather
+        // than silently defaulting to all-tiers.
+        out.ok = false;
+        out.error =
+            "no valid tier in `tiers`; allowed values: "
+            "TIER_1_CRITICAL/TIER_2_STATE/TIER_3_EPHEMERAL "
+            "(also 1/2/3 or tier1/tier2/tier3)";
+        return out;
+    }
     if (out.replay_tiers.empty()) {
+        // Empty `tiers` → operator opted in to all tiers.
         out.replay_tiers = {osw::events::Tier::k1Critical,
                             osw::events::Tier::k2State,
                             osw::events::Tier::k3Ephemeral};
@@ -342,8 +358,13 @@ grpc::Status ControlServiceSkeleton::SubscribeEvents(
             return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, "at max_subscribers cap");
         }
 
-        // Build filter and resolve the per-tier replay set.
+        // Build filter and resolve the per-tier replay set. I-1: all
+        // unparseable tier strings → INVALID_ARGUMENT.
         const FilterResult fr = BuildFilter(*req);
+        if (!fr.ok) {
+            osw::log::Warn(kSubsystem, "rejecting SubscribeEvents: %s", fr.error.c_str());
+            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, fr.error);
+        }
 
         // Create the subscriber with a unique-enough id.
         const std::string sub_id = GenerateSubscriberId();
