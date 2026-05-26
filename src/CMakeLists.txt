@@ -20,9 +20,8 @@
 # osw_core_fs, osw_control_fs) are linked exclusively into the .so.
 
 add_subdirectory(observability)
-# core/ and control/ subdirs land in subsequent W1 commits.
-# add_subdirectory(core)
-# add_subdirectory(control)
+add_subdirectory(control)
+add_subdirectory(core)
 
 # --- The module .so ---------------------------------------------------
 
@@ -64,11 +63,11 @@ set_target_properties(mod_open_switch PROPERTIES
 # module's namespace (FREESWITCH-FACTS FF-010 + Codex round-2 N-5).
 #
 # Order matters for static-lib link: list dependents first.
-#
-# osw_control / osw_control_fs / osw_core / osw_core_fs land in
-# subsequent W1 commits and will be appended here when they do.
 target_link_libraries(mod_open_switch
     PRIVATE
+        osw_core_fs
+        osw_core
+        osw_control
         osw_observability_fs
         osw_observability
         osw_proto

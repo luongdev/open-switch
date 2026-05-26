@@ -5,7 +5,5 @@
 
 add_subdirectory(raii)
 add_subdirectory(observability)
-
-# W1 additional unit-test subdirs are registered as they land:
-#   add_subdirectory(core)           -- after config/lifecycle ship
-#   add_subdirectory(control)        -- after gRPC server ships
+add_subdirectory(core)
+add_subdirectory(control)
