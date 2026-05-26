@@ -49,10 +49,9 @@ namespace osw {
 /// release()d) yet. fire() transfers ownership to FS.
 ///
 /// Cited FACTs:
-/// - (general) switch_event_create / _destroy / _fire semantics —
-///   covered by code excerpt in the comments above; no FF-NNN
-///   currently devoted to switch_event_create. If a future Codex
-///   review wants a dedicated entry, add FF-017.
+/// - FF-017: switch_event_create / _destroy / _fire ownership
+///   semantics, including the always-null-on-return-from-fire
+///   property this guard relies on.
 class EventGuard {
  public:
     /// Creates a new event of the given type. On allocation failure
