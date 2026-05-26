@@ -10,13 +10,20 @@
  *
  * Subclass family (W2 ships):
  *   - osw.audit.module_loaded
- *   - osw.audit.module_shutdown_with_pending_events
  *   - osw.audit.subscriber_connected
  *   - osw.audit.subscriber_disconnected
  *   - osw.audit.subscriber_kicked (queue_full / RESOURCE_EXHAUSTED)
  *
  * Subscribers filter by `subclass_name` prefix `osw.audit.` to
  * receive only the audit channel.
+ *
+ * Removed in W2.5 (Codex review B-2): the
+ * `osw.audit.module_shutdown_with_pending_events` audit was
+ * dead-lettered for gRPC subscribers because it was emitted AFTER
+ * Binder::Stop() — the binder was unbound, so switch_event_fire
+ * never re-entered our pipeline. Operators consume the equivalent
+ * signal via the FS-log "module_shutdown_drain_timeout" WARN line
+ * plus the Health.tierN_dropped_total counters.
  *
  * FACTs cited:
  *   - FF-017 (event lifecycle), FF-020 (create_subclass + Event-Subclass).

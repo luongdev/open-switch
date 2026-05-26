@@ -168,10 +168,13 @@ The implementation matches the documented contract:
    completes before this returns.
 3. Wait up to `event_drain_timeout_seconds` for `rings_->AllEmpty()`
    (10ms poll granularity).
-4. If timeout, `osw::audit::Emit("module_shutdown_with_pending_events")`
-   — best-effort; the binder is stopped so this audit event won't
-   re-enter our rings, but it does reach live subscribers via the
-   broadcaster (still running at this point).
+4. If timeout, log a WARN `module_shutdown_drain_timeout` line to the
+   FS log only (Codex W2 B-2). We deliberately do NOT call
+   `osw::audit::Emit` here: the binder is stopped by step 2, so an
+   audit emit at this point is dead-lettered (it never enters our
+   rings, so gRPC subscribers never see it). Operator visibility is
+   served by the FS-log line plus the `tier_dropped_total` Health
+   counters.
 5. `Broadcaster::Stop()` — closes rings, joins worker threads, kicks
    every subscriber with `kShutdown`. Writer loops exit; SubscribeEvents
    handlers return `grpc::Status::OK`.
@@ -231,16 +234,22 @@ These are the areas where I'd most welcome a Codex review pass:
    essentially zero, but Codex may prefer we move UUIDv7 out of
    `osw_events_fs` into a header-only `osw_uuid` helper.
 
-3. **`module_shutdown_with_pending_events` audit emit timing.** It's
-   emitted between Binder::Stop and Broadcaster::Stop, so the audit
-   event reaches live subscribers (the broadcaster is still draining
-   its rings) but does NOT re-enter our rings (binder is unbound).
-   This is the documented best-effort semantics. Codex may want this
-   moved to AFTER Broadcaster::Stop (so we know whether the kick was
-   the cause of the unread tail), or before Binder::Stop (so it lands
-   in the ring). The current placement reflects "the operator wants to
-   know on the subscriber side that we shut down with pending events"
-   — open to a different reading.
+3. **`module_shutdown_with_pending_events` audit emit timing.**
+   ~~It's emitted between Binder::Stop and Broadcaster::Stop, so the
+   audit event reaches live subscribers (the broadcaster is still
+   draining its rings) but does NOT re-enter our rings (binder is
+   unbound). This is the documented best-effort semantics.~~
+
+   **W2.5 fix (Codex B-2):** the claim above was wrong — the audit
+   was dead-lettered for gRPC subscribers because
+   `switch_event_fire → osw_event_handler → ring → broadcaster` is
+   the ONLY path from FS dispatch into our gRPC stream, and the
+   binder is unbound by the time the audit emit runs. The
+   broadcaster sees nothing new to push. The W2.5 fix removes the
+   `osw::audit::Emit` call and replaces it with a WARN-level FS-log
+   line named `module_shutdown_drain_timeout`. Operator visibility
+   is preserved via the FS log + `Health.tierN_dropped_total`
+   counters. gRPC subscribers MUST NOT rely on receiving this audit.
 
 4. **`event_names` globs on the replay path.** Subscriber-side glob
    match is prefix-only (`foo*`). The proto says "event name pattern

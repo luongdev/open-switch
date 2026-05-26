@@ -35,13 +35,13 @@
  *     reach AllEmpty(). Best-effort.
  *   - Broadcaster::Stop() — closes rings, joins worker threads,
  *     kicks every subscriber with kShutdown.
- *   - If rings still non-empty: osw::audit::Emit(
- *     "module_shutdown_with_pending_events", ...) — best-effort,
- *     may itself drop because the binder is stopped (the audit emit
- *     would normally re-enter via switch_event_fire → the binder's
- *     callback, but the binder is unbound; the event still reaches
- *     subscribers if any are connected, but it does NOT land in our
- *     rings).
+ *   - If rings still non-empty after the drain deadline: log a WARN-
+ *     level "module_shutdown_drain_timeout" line (FS log only — Codex
+ *     W2 B-2). We deliberately do NOT call osw::audit::Emit() here:
+ *     the binder is stopped by step 2, so an audit emit at this point
+ *     is dead-lettered (it never enters our rings, so gRPC subscribers
+ *     never see it). Operator visibility is served by the FS log line
+ *     plus the tier_dropped_total counters on Health.
  *   - GrpcServer::Drain(deadline).
  *
  * SPDX-License-Identifier: AGPL-3.0-or-later
@@ -283,17 +283,24 @@ bool Module::Shutdown() noexcept {
             }
             const bool pending = !rings_->AllEmpty();
             if (pending) {
-                // Best-effort audit emit: the binder is stopped so this
-                // CUSTOM event will NOT re-enter our pipeline; it still
-                // reaches any subscriber currently connected via the
-                // broadcaster (which is still running at this point).
+                // FS-log-only audit (Codex W2 B-2). Previously this
+                // called osw::audit::Emit which routes through
+                // switch_event_fire → our own osw_event_handler — but
+                // the binder is stopped at this point (FF-018 unbind
+                // ran above) so that path is dead-lettered: the event
+                // never enters our rings and gRPC SubscribeEvents
+                // subscribers never see it. The audit's purpose is
+                // operator visibility, which is already served by:
+                //   - FS log lines (mod_logfile, mod_console)
+                //   - the tier_dropped_total counters on Health
+                // Renaming the emission to module_shutdown_drain_timeout
+                // makes the FS-log-only semantics explicit. gRPC
+                // subscribers MUST NOT rely on receiving this audit.
                 osw::log::Warn(kSubsystem,
-                               "event rings not fully drained after %us; "
-                               "emitting module_shutdown_with_pending_events",
+                               "module_shutdown_drain_timeout: event rings not fully drained "
+                               "after %us; tier_dropped_total counters on Health reflect any "
+                               "lost events",
                                config_.event_drain_timeout_seconds);
-                osw::audit::Emit("module_shutdown_with_pending_events",
-                                 {{"drain_timeout_seconds",
-                                   std::to_string(config_.event_drain_timeout_seconds)}});
             }
         }
 

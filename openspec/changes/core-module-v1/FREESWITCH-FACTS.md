@@ -2026,12 +2026,18 @@ SWITCH_DECLARE(switch_status_t) switch_event_create_subclass_detailed(const char
   other event_id with a non-NULL subclass returns
   `SWITCH_STATUS_GENERR` and the caller's `ev` stays NULL.
 - The W2 audit subclass family is `osw.audit.*`:
-  `osw.audit.module_loaded`, `osw.audit.module_shutdown_with_pending_events`,
-  `osw.audit.subscriber_connected`,
+  `osw.audit.module_loaded`, `osw.audit.subscriber_connected`,
   `osw.audit.subscriber_disconnected`,
   `osw.audit.subscriber_kicked` (RESOURCE_EXHAUSTED), and any
   future-W3+ control-API audit subclasses (`osw.audit.originate_started`,
-  etc.).
+  etc.). The W2.5 review (Codex B-2) removed
+  `osw.audit.module_shutdown_with_pending_events` because the audit
+  was emitted AFTER `Binder::Stop()` and was therefore dead-lettered
+  for gRPC subscribers (the binder was unbound, so the
+  `switch_event_fire → osw_event_handler → ring` path was broken).
+  Operators now consume the equivalent signal via the FS-log
+  `module_shutdown_drain_timeout` WARN line plus the
+  `Health.tierN_dropped_total` counters.
 - The classifier (`src/events/tier.cc`) recognises subclasses
   matching the glob `osw.audit.*` and routes them to Tier 1
   unconditionally (per W2 default rules).

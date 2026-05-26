@@ -45,8 +45,8 @@ TEST_F(TierTest, AuditSubclassRoutesToTier1) {
     TierClassifier c(osw::events::MakeDefaultRules());
     EXPECT_EQ(c.Classify("CUSTOM", "osw.audit.module_loaded"), Tier::k1Critical);
     EXPECT_EQ(c.Classify("CUSTOM", "osw.audit.subscriber_connected"), Tier::k1Critical);
-    EXPECT_EQ(c.Classify("CUSTOM", "osw.audit.module_shutdown_with_pending_events"),
-              Tier::k1Critical);
+    EXPECT_EQ(c.Classify("CUSTOM", "osw.audit.subscriber_disconnected"), Tier::k1Critical);
+    EXPECT_EQ(c.Classify("CUSTOM", "osw.audit.subscriber_kicked"), Tier::k1Critical);
 }
 
 TEST_F(TierTest, SofiaRegisterExactSubclassRoutesToTier2) {
