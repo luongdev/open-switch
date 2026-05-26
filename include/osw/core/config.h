@@ -90,6 +90,7 @@ struct Config {
     // --- Drain (W1 lifecycle observes the flag; full drain logic lands
     //           in W3/W4 alongside the owning subsystems)
     std::uint32_t drain_timeout_seconds       = 30;
+    // W2 owns this; W1 only stores the config value.
     std::uint32_t event_drain_timeout_seconds = 5;
 
     // --- Terminate handler (Codex round-3 finding N5)
