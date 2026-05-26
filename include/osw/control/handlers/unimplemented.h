@@ -1,5 +1,5 @@
 /*
- * src/control/handlers/unimplemented.h
+ * include/osw/control/handlers/unimplemented.h
  *
  * Shared helper used by ControlServiceSkeleton's stub methods to
  * return a uniform UNIMPLEMENTED status with a "wave WN coming"
