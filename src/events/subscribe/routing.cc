@@ -131,5 +131,4 @@ RoutingFields ExtractRoutingFields(const std::string& bytes) noexcept {
     return rf;
 }
 
-}  // namespace events
-}  // namespace osw
+}  // namespace osw::events

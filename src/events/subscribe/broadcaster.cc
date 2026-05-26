@@ -323,5 +323,4 @@ void Broadcaster::WorkerLoop(Tier tier) noexcept {
     }
 }
 
-}  // namespace events
-}  // namespace osw
+}  // namespace osw::events
