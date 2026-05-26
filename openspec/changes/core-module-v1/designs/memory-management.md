@@ -469,6 +469,13 @@ us a deterministic cleanup point.
   2. Tenant ACL mutex
   3. Event ring mutex (per-tier, may hold concurrently)
   4. Stream registry mutex
+     - W2: the per-subscriber SendQueue mu sits BELOW stream registry
+       mu (broadcaster acquires the roster snapshot first, then pushes
+       into each subscriber's SendQueue). The Codex W2.5 B-1 atomic
+       AddSubscriber path acquires roster mu THEN per-tier ring mu
+       inside `Ring::SnapshotFromSeq`; this is safe because broadcaster
+       workers acquire ring mu and roster mu strictly sequentially
+       (ring → release → roster) and never hold both at once.
   5. Channel-state mutex (acquired last; releasing back to FS holds
      FS-internal locks that must not be held alongside ours)
 

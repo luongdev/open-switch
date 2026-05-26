@@ -37,7 +37,7 @@ eb59eff feat(events): Binder — switch_event_bind wrapper + exception boundary
 f8cba4f feat(control): SubscribeEvents real handler + since_seq replay logic
 ad982d1 feat(core): Module wiring — Binder + RingSet + Broadcaster + Health
 b46470d test(events): CI TSAN gate + W2 closeout
-0103aab chore(events): apply silkeh/clang:18 format to W2 earlier-commit files
+f696174 chore(events): apply silkeh/clang:18 format to W2 earlier-commit files
 ```
 
 13 commits + closeout (the trailing `chore` re-formats 16 files
@@ -251,17 +251,28 @@ These are the areas where I'd most welcome a Codex review pass:
    is preserved via the FS log + `Health.tierN_dropped_total`
    counters. gRPC subscribers MUST NOT rely on receiving this audit.
 
-4. **`event_names` globs on the replay path.** Subscriber-side glob
+4. **`event_names` globs on the replay path.** ~~Subscriber-side glob
    match is prefix-only (`foo*`). The proto says "event name pattern
    (glob)". If a client sends `*.audit.*`, we silently treat it as a
    literal. This is the same semantics as the W2 contract for
-   classifier subclass-globs but operators may be surprised.
+   classifier subclass-globs but operators may be surprised.~~
+   **W2.5 fixes (Codex C-1 + C-2 + I-3):**
+     - Filter narrowing now applies symmetrically to the replay path
+       (`ExtractRoutingFields` + `Subscriber::MatchesFilter` lifted
+       from broadcaster into `osw/events/subscribe/routing.h`).
+     - The proto comment + `specs/control-api/spec.md` § now spell
+       out that V1 supports prefix-wildcard only (trailing `*`);
+       full glob is V2.
 
-5. **`tiers` parse tolerance.** The handler accepts `"TIER_1_CRITICAL"`,
+5. **`tiers` parse tolerance.** ~~The handler accepts `"TIER_1_CRITICAL"`,
    `"1"`, `"tier1"`, `"tier_1_critical"`. Anything else is logged-and-
    dropped (the rest of the request still proceeds — empty filter
    means "all tiers"). Codex may prefer we fail-loud with INVALID_ARGUMENT
-   for unparseable tier strings.
+   for unparseable tier strings.~~ **W2.5 fix (Codex I-1):** if the
+   client supplies at least one `tiers` entry but EVERY one fails to
+   parse, the handler now returns `INVALID_ARGUMENT` rather than
+   silently upgrading to "all tiers". Empty `tiers` still means
+   "all tiers" (operator opt-in).
 
 6. **`config.subscriber_send_queue_capacity` default = 4096 but the
    tests pass cap=64 explicitly.** No bug — just noting that the
