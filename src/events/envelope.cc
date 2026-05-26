@@ -28,6 +28,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <random>
 #include <string>
 #include <string_view>
@@ -316,9 +317,25 @@ open_switch::events::v1::EventEnvelope* BuildEnvelope(switch_event_t* ev,
 
         // Body: switch_event_get_body returns FS-owned char* (FF-019
         // ownership applies). Copy into the proto's bytes field.
+        //
+        // Gemini W2.5 N-4: FreeSWITCH event bodies are text-only — the
+        // `body` slot is a `char*` allocated via `strdup` (DUP) inside
+        // switch_event.c and FS's own serialisers (switch_event_serialize,
+        // _json) measure length with strlen. There is no body-length
+        // field exposed on switch_event_t (v1.10.12 verified). Embedded
+        // NUL bytes are therefore truncated by FS itself before our
+        // handler ever sees the event — the strlen() call below
+        // matches FS's own semantics rather than introducing one.
+        //
+        // We pass the explicit length to proto's set_body(ptr, len)
+        // overload to make the intent obvious to readers and to keep
+        // the call out of the `set_body(const char*) → strlen` overload
+        // that Gemini originally flagged. Subscribers MUST treat
+        // EventEnvelope.body as text. See event-tiers.md §"Event body".
         const char* body = ::osw::raii::fs::EventGetBody(ev);
         if (body != nullptr && body[0] != '\0') {
-            env->set_body(body);
+            const std::size_t body_len = std::strlen(body);
+            env->set_body(body, body_len);
         }
 
         return env;

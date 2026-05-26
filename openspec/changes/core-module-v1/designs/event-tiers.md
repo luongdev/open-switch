@@ -214,7 +214,15 @@ Stable fields (never change tags):
 - `channel_uuid` — for call-related events.
 - `variables` — selected channel variables.
 - `headers` — selected FS event headers.
-- `body` — raw FS event body, for events that have one.
+- `body` — raw FS event body, for events that have one. **Text-only**.
+  FreeSWITCH 1.10.12 stores the body as `char* body` on `switch_event_t`
+  with no companion length field, and FS's own `switch_event_serialize`
+  / `_json` measure it via `strlen`. Subscribers MUST treat
+  `EventEnvelope.body` as a text string; embedded NUL bytes are
+  truncated by FS upstream of the module (Gemini W2.5 N-4).
+  CUSTOM events that need to carry binary payloads should base64
+  (or hex) into a text body, or place the payload in the `headers`
+  map under an explicit `Content-Encoding`-flagged key.
 - `schema_version` — increment only on breaking changes.
 
 Schema evolution policy:
