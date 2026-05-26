@@ -127,23 +127,22 @@ TLS is recommended:
 Per-upstream config under `<media-upstreams>` in `open_switch.conf.xml`
 (land with media-spec implementation phase).
 
-## Event plane: Redis credentials
+## Event plane: subscriber identity
 
-Redis URL supports:
+The module ships events only via gRPC SubscribeEvents (per the post-
+Phase-1-fix-sprint design in
+[`transport-adr.md`](transport-adr.md)). There is no Redis or other
+in-module event transport in V1.
 
-- `redis://user:password@host:port/db` (AUTH)
-- `rediss://...` for TLS
-- Sentinel: `redis-sentinel://...?service=mymaster`
+Each `SubscribeEvents` stream is subject to the same control-plane
+auth (mTLS + API key) as any other RPC. The subscriber's identity
+(from cert CN/SAN or API key alias) is logged at stream open and at
+stream close, plus emitted as an audit Tier 1 event
+`osw::audit::event_subscriber_connected`.
 
-ACL recommended (Redis 6+):
-
-```
-ACL SETUSER osw on >SECRET ~osw.events.* +xadd +publish +ping +info +client
-```
-
-Module connects with this user. Cannot read streams (consumers use
-separate creds), cannot delete keys, cannot touch other key
-namespaces.
+For per-tenant event scoping, subscribers filter `EventEnvelope.tenant_id`
+on their side. The module does not currently restrict which tenants'
+events a subscriber receives (V1.5 consideration).
 
 ## Eavesdrop policy on bot calls
 
@@ -200,73 +199,167 @@ Channel variables are visible to other FS modules and dialplan.
 #### Hooking eavesdrop
 
 FreeSWITCH's `eavesdrop` app is in `mod_dptools`; it doesn't expose a
-"pre-hook" we can plug into. Two enforcement layers:
+"pre-hook" we can plug into. **The prior draft of this section assumed
+`mod_dptools::eavesdrop` sets a channel variable `eavesdrop_uuid` on
+the eavesdropper channel; Phase 1 Codex finding C-3 verified against
+FS source that this is FALSE.** The variable is never set. Any state
+handler that reads it sees NULL and short-circuits. The previous
+"Layer 2 hard enforcement" claim was a no-op.
 
-**Layer 1 — Dialplan recommendation**:
+The corrected enforcement strategy uses three complementary mechanisms.
+None is bullet-proof in isolation; together they cover the realistic
+operator scenarios.
 
-The module includes a dialplan condition snippet for operators to
-include before the `eavesdrop` app:
+**Layer 1 — Pre-app check via custom `osw_eavesdrop` app (PRIMARY)**:
 
-```xml
-<extension name="osw-eavesdrop-guard">
-  <condition field="${osw_get_target_eavesdrop_policy(${eavesdrop_target_uuid})}"
-             expression="^deny$">
-    <action application="set" data="hangup_cause=POLICY_REJECTED"/>
-    <action application="hangup"/>
-  </condition>
-  <condition field="${osw_get_target_eavesdrop_policy(${eavesdrop_target_uuid})}"
-             expression="^audit$">
-    <action application="lua" data="osw_emit_audit_event.lua eavesdrop"/>
-  </condition>
-  <!-- Falls through to operator's existing eavesdrop dialplan -->
-</extension>
-```
-
-`osw_get_target_eavesdrop_policy` is a small API command we register
-that reads the target channel's `osw_eavesdrop_policy` variable.
-
-This relies on the operator including the snippet. It's a soft
-enforcement.
-
-**Layer 2 — State handler on eavesdrop channel**:
-
-When `mod_dptools` spawns the eavesdrop session, it sets channel
-variable `eavesdrop_uuid` on the eavesdropper channel pointing to the
-target. We register a `switch_state_handler_table_t` with an
-`on_init` callback that checks every new channel:
+The module registers its own dialplan application `osw_eavesdrop` that
+wraps and replaces `eavesdrop` for bot-tenant dialplans. Behaviour:
 
 ```cpp
-switch_status_t osw_on_channel_init(switch_core_session_t* sess) {
+SWITCH_STANDARD_APP(osw_eavesdrop_function) {
   try {
-    auto* chan = switch_core_session_get_channel(sess);
-    const char* target_uuid =
-        switch_channel_get_variable(chan, "eavesdrop_uuid");
-    if (!target_uuid) return SWITCH_STATUS_SUCCESS;  // not an eavesdrop
-
-    osw::SessionLock target(target_uuid);
-    if (!target) return SWITCH_STATUS_SUCCESS;  // target gone
-
+    if (zstr(data)) {
+      // data is the target UUID, same arg as mod_dptools::eavesdrop
+      return;
+    }
+    osw::SessionLock target(data);
+    if (!target) {
+      osw::log::Warn("osw_eavesdrop: target {} not found", data);
+      return;
+    }
     const char* policy = switch_channel_get_variable(
         target.channel(), "osw_eavesdrop_policy");
-    if (!policy) return SWITCH_STATUS_SUCCESS;  // not a bot call
 
-    // Emit audit event (Tier 1).
-    osw::events::EmitEavesdropAudit(sess, target.channel(), policy);
-
-    if (std::string_view(policy) == "deny") {
-      switch_channel_hangup(chan, SWITCH_CAUSE_POLICY_REJECTED);
-      return SWITCH_STATUS_FALSE;
+    if (policy && std::string_view(policy) == "deny") {
+      osw::events::EmitEavesdropAudit(
+          session, target.channel(), "deny", /*decision=*/"hangup");
+      switch_channel_hangup(
+          switch_core_session_get_channel(session),
+          SWITCH_CAUSE_POLICY_REJECTED);
+      return;
     }
-    return SWITCH_STATUS_SUCCESS;
+    if (policy && std::string_view(policy) == "audit") {
+      osw::events::EmitEavesdropAudit(
+          session, target.channel(), "audit", /*decision=*/"permitted");
+    }
+    // Delegate to FS native eavesdrop semantics via the public IVR API.
+    switch_ivr_eavesdrop_session(
+        session, data, /* require_group */ nullptr, ED_DEFAULT);
+  } catch (const std::exception& e) {
+    osw::log::Error("osw_eavesdrop: exception: {}", e.what());
   } catch (...) {
-    osw::log::Error("osw_on_channel_init: unknown exception");
-    return SWITCH_STATUS_FALSE;
+    osw::log::Error("osw_eavesdrop: unknown exception");
   }
 }
 ```
 
-This is HARD enforcement — even if the operator forgets the dialplan
-snippet, the state handler runs.
+Operator dialplans for bot tenants use `<action application="osw_eavesdrop"
+data="${target_uuid}"/>` instead of `<action application="eavesdrop"
+.../>`. This is the "primary enforcement" point — the policy check
+happens BEFORE any eavesdrop bug is attached, so denying is clean
+(no in-flight bug to dismantle).
+
+The recommended (and the operator-hardening-checklist-mandatory)
+posture: **ACL-restrict `eavesdrop` per tenant** so bot-tenant
+dialplans cannot call raw `eavesdrop` at all. FS allows this via the
+dialplan ACL (operator config).
+
+**Layer 2 — Bug-attach detector on bot-marked sessions (BACKSTOP)**:
+
+If an operator forgets Layer 1 or uses raw `eavesdrop` from a
+non-bot-tenant dialplan that somehow targets a bot channel, the module
+detects the eavesdrop bug post-attach. Implementation:
+
+The module subscribes to `CHANNEL_CALLSTATE` events (which FS fires
+when a channel changes state, including when it becomes a SIP B-leg
+to an eavesdrop session). On each event for a bot-marked target
+session, the module walks `session->bugs` (via
+`switch_core_media_bug_pop` is not safe; we use a read-only walker
+or `switch_core_media_bug_count` to detect a bug whose function name
+is `"eavesdrop"`):
+
+```cpp
+void OnChannelCallstateEvent(switch_event_t* ev) {
+  try {
+    const char* uuid = switch_event_get_header(ev, "Unique-ID");
+    if (!uuid) return;
+    osw::SessionLock sess(uuid);
+    if (!sess) return;
+    auto* chan = sess.channel();
+    const char* osw_marked = switch_channel_get_variable(chan, "osw_bot_session");
+    if (!osw_marked) return;  // not a bot call; skip
+
+    // Is there an eavesdrop bug on this channel right now?
+    // switch_core_media_bug_count counts bugs by 'function' name.
+    int count = switch_core_media_bug_count(sess.get(), "eavesdrop");
+    if (count == 0) return;  // no eavesdrop attached
+
+    const char* policy = switch_channel_get_variable(chan, "osw_eavesdrop_policy");
+    if (!policy) policy = "deny";  // default
+
+    osw::events::EmitEavesdropAuditByDetection(chan, policy, count);
+
+    if (std::string_view(policy) == "deny") {
+      // Cannot safely hangup the eavesdropper's session from here
+      // (we don't have its UUID directly — the bug callback owns it,
+      //  and racing the bug's own teardown can crash FS). We DO
+      // hangup the target's eavesdrop relationship by removing the
+      // bug:
+      switch_core_media_bug_remove_callback(
+          sess.get(), eavesdrop_callback_fn);
+      // This causes the eavesdrop bug's callback to receive CLOSE
+      // and the eavesdropper session naturally exits the eavesdrop
+      // app, returning to its dialplan. FS handles teardown.
+    }
+  } catch (...) {
+    osw::log::Error("OnChannelCallstateEvent: unknown exception");
+  }
+}
+```
+
+`switch_core_media_bug_remove_callback` is the safe way to detach a
+bug by callback function — it doesn't race the in-flight callback
+because FS holds the channel media lock during removal.
+
+This is the detection-and-disconnect backstop. Slower than Layer 1
+(reactive, after attach), but covers the case where an operator
+misses the `osw_eavesdrop` adoption.
+
+**Layer 3 — Dialplan ACL recommendation (DEFENSE-IN-DEPTH)**:
+
+Operator hardening doc recommends:
+
+```xml
+<!-- Reject raw 'eavesdrop' app from bot-tenant contexts -->
+<context name="bot-tenant-acme">
+  <extension name="block-raw-eavesdrop">
+    <condition field="${current_application}" expression="^eavesdrop$">
+      <action application="log" data="WARNING raw eavesdrop attempted"/>
+      <action application="hangup" data="POLICY_REJECTED"/>
+    </condition>
+  </extension>
+  <!-- The rest of the dialplan; uses osw_eavesdrop where needed -->
+</context>
+```
+
+This catches operator typos that would otherwise rely on Layer 2's
+detection.
+
+### Limitations (honest disclosure)
+
+- **Layer 1 requires operator adoption**: if the operator doesn't
+  install the `osw_eavesdrop` app or doesn't update the dialplan,
+  Layer 1 doesn't run. Operator-hardening checklist enforces this.
+- **Layer 2 is reactive**: there's a brief window (one event
+  callback round-trip, typically < 50 ms) between bug attach and
+  policy enforcement. An audit event records the attempt, but the
+  eavesdropper may have heard up to ~50 ms of audio.
+- **Both layers can be bypassed** by an operator with root or by an
+  FS admin using `uuid_audio` / `uuid_bug` / custom modules. We
+  treat that as out-of-scope (host security is the operator's
+  responsibility).
+- **The previous draft of this section is preserved in git history
+  for traceability of the C-3 correction**.
 
 ### What the audit event contains
 
@@ -291,10 +384,10 @@ fires.
 
 ### What we explicitly do not protect against
 
-- **Operator-side dialplan that bypasses our snippet**: if the
-  operator writes a dialplan that calls `eavesdrop` BEFORE our state
-  handler runs (unlikely — state handlers run before app execution),
-  the dialplan layer is bypassed but the state handler still fires.
+- **Operator-side dialplan that calls raw `eavesdrop`**: Layer 2
+  (bug-attach detector) catches this within ~50 ms of attach;
+  audit event fires; bug is removed if policy=deny. The brief
+  pre-detection window is documented in Limitations above.
 - **Operator-side dialplan that REMOVES the
   `osw_eavesdrop_policy` variable before eavesdrop**: in principle
   possible. We treat this as malicious operator action and don't try
@@ -332,7 +425,11 @@ default (`deny`).
 | `eavesdrop_audit_mode` | Set policy=audit; eavesdrop succeeds + audit event Tier 1 emitted with supervisor identity |
 | `eavesdrop_allow_mode` | Set policy=allow; eavesdrop succeeds + audit event Tier 2 emitted |
 | `eavesdrop_non_bot_unaffected` | Eavesdrop on a call without bot → no policy enforcement, no audit event |
-| `eavesdrop_bypass_attempt_var_removed` | Maliciously remove `osw_eavesdrop_policy` var via dialplan; state handler still emits audit (since the var was originally set) — actually no, we won't detect; document this gap |
+| `eavesdrop_layer1_osw_eavesdrop_deny` | Dialplan calls `osw_eavesdrop` on bot session with policy=deny: eavesdropper hangs up with POLICY_REJECTED + Tier 1 audit event before any bug attaches. |
+| `eavesdrop_layer1_osw_eavesdrop_audit` | Same flow with policy=audit: eavesdrop proceeds (delegates to `switch_ivr_eavesdrop_session`) + Tier 1 audit event with supervisor identity. |
+| `eavesdrop_layer2_raw_eavesdrop_detected` | Dialplan uses raw `eavesdrop` on bot session: CHANNEL_CALLSTATE handler detects bug within 50 ms, emits Tier 1 audit, removes bug via `switch_core_media_bug_remove_callback` if policy=deny. |
+| `eavesdrop_layer2_policy_audit_no_remove` | Raw `eavesdrop` + policy=audit: bug stays attached; audit event fired; no remove call. |
+| `eavesdrop_var_removed_after_attach` | Operator removes `osw_eavesdrop_policy` channel variable after eavesdrop attaches. Layer 2 reads NULL → falls back to default policy (deny). Documented behaviour. |
 | `tenant_override_allow` | Tenant ACL allow_eavesdrop=true overrides module default deny |
 | `audit_event_routed_tier1` | Audit event lands on Tier 1 sink, not Tier 2 |
 | `audit_supervisor_identity_logged` | When mTLS client cert is in use, CN/SAN is in audit event |

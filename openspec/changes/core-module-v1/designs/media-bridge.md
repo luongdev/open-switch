@@ -20,8 +20,9 @@ the same time:
 
 If a single media bug handled all of these, the ordering and isolation
 would be impossible to reason about. We use one FreeSWITCH media bug
-per logical concern, with explicit priority (= position in the audio
-chain).
+per logical concern. Ordering is governed by attach order (and the
+`SMBF_FIRST` flag for head-of-chain), not by a numeric priority — see
+the primer below for the FS-side mechanism.
 
 ## FreeSWITCH media bug primer
 
@@ -33,40 +34,171 @@ A channel has two sides:
 
 A media bug can attach with various flags:
 
-| Flag | Effect |
-|---|---|
-| `SMBF_READ_STREAM` | Receives copies of read-side frames (read-only tap). |
-| `SMBF_WRITE_STREAM` | Receives copies of write-side frames (read-only tap). |
-| `SMBF_READ_REPLACE` | Replaces read-side frames before further processing. Use to inject audio "as if the caller said it" (rare). |
-| `SMBF_WRITE_REPLACE` | Replaces write-side frames. Use to inject bot speech. |
-| `SMBF_READ_PING` | Periodic callback on read side (no frame). |
-| `SMBF_NO_PAUSE` | Bug runs even when channel is on hold. |
-| `SMBF_THREAD_LOCK` | Bug callback is serialised with channel's media thread. |
+| Flag | Stage | Effect |
+|---|---|---|
+| `SMBF_READ_STREAM` | Read tap | Receives copies of read-side frames (read-only tap). |
+| `SMBF_WRITE_STREAM` | Write tap (post-replace) | Receives copies of write-side frames **after** all `WRITE_REPLACE` bugs have run. |
+| `SMBF_READ_REPLACE` | Read transform | Replaces read-side frames before further processing. Use to inject audio "as if the caller said it" (rare). |
+| `SMBF_WRITE_REPLACE` | Write transform (pre-stream) | Replaces write-side frames before network send. Use to inject bot speech. |
+| `SMBF_READ_PING` | Read tick | Periodic callback on read side (no frame). |
+| `SMBF_NO_PAUSE` | (modifier) | Bug runs even when channel is on hold. |
+| `SMBF_THREAD_LOCK` | (modifier) | Bug callback is serialised with channel's media thread. |
+| `SMBF_FIRST` | (modifier) | Prepend to head of bug chain instead of appending to tail. |
 
-Bug priority is set at `switch_core_media_bug_add` via the `flags`
-field (high byte) and via add-order. The earlier-added bug runs
-earlier in the chain. We use an explicit priority allocator (below)
-rather than depending on add-order.
+### Add-order, NOT numeric priority
 
-## Priority allocation
+A prior draft of this section claimed `switch_core_media_bug_add`
+takes a numeric priority via the high byte of `flags`. **That is
+false.** Verified against `signalwire/freeswitch`
+`src/switch_core_media_bug.c` (Phase 1 Codex finding C-1):
 
-Lower priority number = runs earlier in the chain.
+```c
+if (!session->bugs) {
+    session->bugs = bug;          // first bug: head
+} else if (switch_test_flag(bug, SMBF_FIRST)) {
+    bug->next = session->bugs;    // SMBF_FIRST: prepend
+    session->bugs = bug;
+} else {
+    for (bp = session->bugs; bp->next; bp = bp->next) {}
+    bp->next = bug;                // default: append to tail
+}
+```
 
-| Priority | Purpose | Flags | Notes |
+The ONLY ordering controls are:
+
+1. **Add order** — bugs are walked head→tail in attach order, except
+2. **`SMBF_FIRST`** — bug is prepended to head (used to ensure a bug
+   sees raw frames before any other tap or transform).
+
+There is no numeric priority. Two bugs of the same stage (both
+READ_STREAM, both WRITE_REPLACE, etc.) execute in the order they
+were attached.
+
+### Semantic ordering between stages
+
+The audio chain stages run in a fixed order set by FS, independent
+of bug attach order:
+
+```text
+For each ptime tick on read side:
+  1. All SMBF_READ_REPLACE bugs (chain order) — each may replace the frame
+  2. All SMBF_READ_STREAM bugs (chain order) — read-only taps, see post-replace frame
+  3. FS hands the frame upstream to the channel's read consumer
+
+For each ptime tick on write side:
+  1. FS produces the base write frame (e.g. from playback file, hold music, or silence)
+  2. All SMBF_WRITE_REPLACE bugs (chain order) — each may replace the frame
+  3. All SMBF_WRITE_STREAM bugs (chain order) — read-only taps, see post-replace frame
+  4. FS encodes and sends to network
+```
+
+The crucial consequence: a `WRITE_STREAM` tap **always** observes the
+post-injection write frame, regardless of whether it was attached
+before or after the `WRITE_REPLACE` bug. This is why recording
+captures bot audio reliably (provided recording uses `WRITE_STREAM`
+not `WRITE_REPLACE` on its write side — which `record_session` does).
+
+`READ_STREAM` taps similarly see post-`READ_REPLACE` audio. The
+module does not use `READ_REPLACE` in V1; reads pass through to taps
+unchanged.
+
+## Ordering and the MediaBugManager add-order coordinator
+
+Since FS gives us add-order + `SMBF_FIRST` and nothing else, the
+`MediaBugManager` enforces a **canonical attach order** and refuses
+attaches that would violate it.
+
+Each `Purpose` has an associated **stage rank**:
+
+| Stage rank | Purpose | Flags | Why this rank |
 |---|---|---|---|
-| 100 | VAD / barge-in detector | `READ_STREAM` | Tap raw read first; cheap analysis. |
-| 200 | STT | `READ_STREAM` | Tap raw read for ASR; ASR sees same audio VAD sees. |
-| 300 | AMD detector | `READ_STREAM` | Tap raw read for AMD (mutually exclusive with full voicebot in practice). |
-| 500 | Bot TTS write | `WRITE_REPLACE` | Inject bot speech onto write side. |
-| 700 | Recording (read tap) | `READ_STREAM` | Tap read AFTER all read-side analysis. |
-| 750 | Recording (write tap) | `WRITE_STREAM` | Tap write AFTER bot inject — so recording captures bot. |
-| 900 | Test/instrumentation | `READ_STREAM` / `WRITE_STREAM` | For debug / load-test bugs. |
+| EARLY | `VAD_BARGE_IN` | `READ_STREAM` + `SMBF_FIRST` | Must see raw mic audio before any other read tap (cheap, latency-sensitive). |
+| EARLY | (FS-internal eavesdrop bugs) | `READ_STREAM + WRITE_STREAM` | FS attaches these via `mod_dptools`; we don't control them. |
+| MID_READ | `STT_TRANSCRIBE` | `READ_STREAM` | Tap caller mic after VAD. |
+| MID_READ | `AMD_DETECT` | `READ_STREAM` | Tap caller mic after VAD. |
+| MID_READ | `VOICEBOT_DUPLEX` (read half) | `READ_STREAM` | Tap caller mic after VAD. |
+| INJECT | `TTS_PLAYBACK` | `WRITE_REPLACE` | Inject bot audio onto write side. |
+| INJECT | `VOICEBOT_DUPLEX` (write half) | `WRITE_REPLACE` | Inject bot audio onto write side. |
+| LATE | `RECORDING_RELAY` (read tap) | `READ_STREAM` | Tap caller mic — after STT/VAD see it (cosmetic; READ_STREAM order matters less). |
+| LATE | `RECORDING_RELAY` (write tap) | `WRITE_STREAM` | **Always observes post-INJECT audio per FS semantic — order-independent for the audio outcome.** |
+| LATE | `TEST` / instrumentation | any | Should not perturb production bugs. |
 
-Priority 0-99: reserved for FreeSWITCH-internal modules.
+`MediaBugManager.Attach` enforcement:
 
-The MediaBugManager rejects priority overlap (two bugs requesting the
-same priority value) at registration time — operators add their own
-bugs at non-default priorities to avoid collisions.
+- The first attach for a session is unrestricted.
+- Subsequent attaches must have a stage rank ≥ all already-attached
+  bugs' ranks. (You may add LATE after MID_READ; you may not add
+  EARLY after MID_READ unless `SMBF_FIRST` is set, in which case
+  the manager passes `SMBF_FIRST` to FS to prepend — sound but
+  documented.)
+- `VAD_BARGE_IN` always attaches with `SMBF_FIRST` to ensure it
+  prepends regardless of add timing.
+- A duplicate `Purpose` per channel is rejected with
+  `INVALID_ARGUMENT` (one VAD, one STT, etc. per channel).
+
+The manager keeps a tiny stage-rank-per-bug record. On `Attach`:
+
+```cpp
+Result<BugHandle> MediaBugManager::Attach(
+    switch_core_session_t* session,
+    const BugConfig& cfg) {
+  auto& reg = sessions_[uuid];
+  if (HasPurpose(reg, cfg.purpose)) {
+    return Err(ALREADY_EXISTS, "purpose already attached");
+  }
+  uint32_t this_rank = StageRank(cfg.purpose);
+  uint32_t max_existing_rank = MaxRank(reg);
+  uint32_t flags = cfg.flags;
+  if (cfg.purpose == Purpose::VAD_BARGE_IN) {
+    flags |= SMBF_FIRST;
+  } else if (this_rank < max_existing_rank) {
+    return Err(FAILED_PRECONDITION,
+        "out-of-order attach: expected stage rank >= existing");
+  }
+  // ... create lease, register, return handle
+}
+```
+
+### Operator contract: dialplan / orchestration order
+
+Operators starting bugs from the dialplan or via control RPCs must
+respect the stage ordering:
+
+1. Start VAD (if used).
+2. Start STT / AMD / voicebot read half.
+3. Start TTS / voicebot write half (INJECT).
+4. Start recording relay (if used) LAST.
+
+The dialplan recipe in `recording-with-bot.md` documents this for
+the recording case. For the WRITE_STREAM recording specifically,
+the order is enforced by FS semantic rather than by us — but the
+manager still asks operators to follow the canonical sequence for
+clarity and to avoid surprising `READ_STREAM` ordering.
+
+### FreeSWITCH-native bugs the module does not control
+
+`record_session`, `mod_spy`, native eavesdrop, etc. attach bugs
+directly via `switch_core_media_bug_add` without going through our
+`MediaBugManager`. These appear at the tail of the chain at the
+moment they were added (or head if `SMBF_FIRST`). We document this
+explicitly so operators understand the union of bug sources:
+
+```text
+Bug chain at moment of audio processing for a typical bot call:
+  [SMBF_FIRST head] : VAD (osw)  ◀── always at head
+                      STT (osw)
+                      AMD (osw)
+                      TTS WRITE_REPLACE (osw)
+                      record_session READ_STREAM+WRITE_STREAM (FS-native; appears wherever it was added)
+                      RECORDING_RELAY (osw, if used)
+  [tail]
+```
+
+The `WRITE_REPLACE` (TTS) and `WRITE_STREAM` (record_session,
+RECORDING_RELAY) outcome is correct by FS semantic regardless of the
+in-chain position. The `READ_STREAM` outcomes (STT, AMD, recording)
+all see the same raw read frame (no `READ_REPLACE` in our design),
+so their relative order is also semantically equivalent.
 
 ## MediaBugManager
 
@@ -92,8 +224,7 @@ enum class Purpose {
 
 struct BugConfig {
   Purpose purpose;
-  uint32_t priority;
-  uint32_t flags;          // SMBF_* combinations
+  uint32_t flags;          // SMBF_* combinations (manager may OR in SMBF_FIRST)
   uint32_t target_rate_hz; // 8000 / 16000 / 24000 / 48000
   std::string upstream_endpoint;
   std::string tenant_id;
@@ -105,8 +236,9 @@ class MediaBugManager {
   // Attach a bug to the channel. Returns a handle; releasing the
   // handle removes the bug.
   //
-  // Returns an error if a bug for the same purpose already exists,
-  // or if priority collides with an existing bug.
+  // Returns an error if a bug for the same purpose already exists on
+  // this channel, or if the attach would violate the canonical stage
+  // ordering (FAILED_PRECONDITION).
   Result<BugHandle> Attach(switch_core_session_t* session,
                           const BugConfig& cfg);
 
@@ -385,8 +517,9 @@ Aggregated into the `Health` RPC response as `active_media_bugs`.
 | Receive queue overflow | Ring full on inbound | Drop oldest frame; counter; Tier-2 event (rate-limited). |
 | Resample failure | Resampler returns 0 samples | Drop frame; counter; warning log. |
 | Channel ends mid-frame | State handler `on_hangup` | DetachAll; in-flight frames are abandoned. |
-| Two purposes with same priority | Attach validation | Reject second Attach with INVALID_ARGUMENT. |
-| Bug count limit hit | Configurable max per channel (default 8) | Reject Attach with RESOURCE_EXHAUSTED. |
+| Duplicate `Purpose` on same channel | Attach validation | Reject second Attach with `ALREADY_EXISTS`. |
+| Out-of-order attach (e.g. INJECT then EARLY without `SMBF_FIRST`) | Stage-rank check | Reject Attach with `FAILED_PRECONDITION`; operator fixes ordering or uses `SMBF_FIRST` explicitly. |
+| Bug count limit hit | Configurable max per channel (default 8) | Reject Attach with `RESOURCE_EXHAUSTED`. |
 
 ## Performance budget
 
@@ -413,7 +546,10 @@ them.
 | Test | What it proves |
 |---|---|
 | `attach_detach_no_leak` | 1000 attach/detach cycles, ASAN+LSAN clean. |
-| `priority_collision_rejected` | Attach with same priority returns error. |
+| `duplicate_purpose_rejected` | Two TTS attaches on the same channel: second returns `ALREADY_EXISTS`. |
+| `out_of_order_attach_rejected` | INJECT then MID_READ without `SMBF_FIRST`: second returns `FAILED_PRECONDITION`. |
+| `vad_first_flag_set` | VAD attach with no flags: manager OR's in `SMBF_FIRST` before forwarding to FS. |
+| `write_stream_observes_post_replace` | TTS bug active + recording WRITE_STREAM attached AFTER: recording captures injected bot frames regardless of add order. |
 | `multiple_bugs_per_channel` | STT + TTS + recording attached on one channel. Frames flow on each. |
 | `cancel_on_hangup` | Channel hangup detaches all bugs within 50 ms. |
 | `cancel_on_module_shutdown` | Module unload drains all bugs gracefully. |

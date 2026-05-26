@@ -3,69 +3,108 @@
 ## The question
 
 When a FreeSWITCH call has a bot participant (TTS injecting audio via
-our media bug at priority 500, WRITE_REPLACE), does call recording
-**capture the bot's audio**? And what if the operator wants caller and
-bot on **separate channels** for easier QA / analytics?
+our media bug with `SMBF_WRITE_REPLACE`), does call recording
+**capture the bot's audio**? And what if the operator wants caller
+and bot on **separate channels** for easier QA / analytics?
 
-This document answers both.
+This document answers both. The answer hinges on a FreeSWITCH media
+pipeline detail that the prior draft of this spec got wrong (see Phase
+1 Codex finding C-2): bug **chain position** does NOT determine
+whether recording captures bot audio. What determines it is the
+distinction between `SMBF_WRITE_REPLACE` (transform) and
+`SMBF_WRITE_STREAM` (post-transform tap).
 
 ## Quick answer
 
-Yes, recording captures bot audio if the FS recording bug runs **after**
-our TTS write-replace bug in the chain. We arrange priorities to make
-this the default.
+**Yes, recording captures bot audio** — but for a different reason
+than "bug priority puts recording after TTS" (which was the prior
+incorrect explanation). The actual reason:
+
+`SMBF_WRITE_STREAM` callbacks are invoked by FreeSWITCH **after** all
+`SMBF_WRITE_REPLACE` bugs on the channel have had a chance to replace
+the frame. This is a fixed semantic of the FS media pipeline, not a
+property of chain order. So a recording bug using `WRITE_STREAM` will
+always observe the post-injection write frame, whether it was attached
+before or after the TTS bug.
+
+`switch_ivr_record_session_event` (FS native, what
+`record_session` dialplan app calls) attaches with flags
+`SMBF_READ_STREAM | SMBF_WRITE_STREAM | SMBF_READ_PING`. The
+`WRITE_STREAM` half is what makes it pick up bot audio. **Add order
+does not matter for this case.**
 
 For caller+bot **stereo** (L=caller, R=bot), we provide a built-in
 `RECORDING_RELAY` purpose in the media bridge that produces a
-synchronized stereo PCM stream. Operators can write this to a file
-via a recording service, or to a long-term store via the gRPC stream.
+synchronised stereo PCM stream. The R channel is the post-injection
+write frame, which is "bot + IVR audio + any other WRITE_REPLACE
+contribution mixed together" — typically just bot for a bot-only
+call, but operators should know that the R channel reflects the
+caller's earpiece, not bot-isolated audio.
 
-For caller+bot **mono mixed** (default FS behavior), no extra config
-needed — operators use `record_session` as they always have, and our
-priority defaults ensure bot audio is included.
+For caller+bot **mono mixed** (default FS behaviour), no extra config
+needed — operators use `record_session` as they always have. The
+FS semantic above guarantees bot audio is in the recording regardless
+of dialplan order between `record_session` and `start_bot`.
 
-## Bug priority ordering for recording
+## How `WRITE_STREAM` post-injection observation works
 
-Recall the priority table from [`media-bridge.md`](media-bridge.md):
-
-| Priority | Purpose | Flags |
-|---|---|---|
-| 100 | VAD / barge-in | `READ_STREAM` |
-| 200 | STT | `READ_STREAM` |
-| 300 | AMD | `READ_STREAM` |
-| 500 | TTS playback | `WRITE_REPLACE` |
-| 700 | Recording — read tap | `READ_STREAM` |
-| 750 | Recording — write tap | `WRITE_STREAM` |
-| 900 | Test/instrumentation | — |
-
-`record_session` (FS native) attaches at FS's default priority — which
-ends up near 700-750. So recording's read tap sees the same audio STT
-sees (caller's mic), and recording's write tap sees the channel write
-side **after** our TTS injection (priority 500 runs first). Result:
-recording captures the bot's voice.
-
-If operators add custom bugs at unusual priorities, they need to be
-aware of this ordering. The module's `mediabug` debug command lists
-all bugs and their priorities for verification.
-
-## Mono mixed recording (default FS behavior)
+FreeSWITCH's media pipeline for write side is (simplified):
 
 ```text
-Caller mic ──▶ FS read pipeline ──▶ STT bug @ 200 (tap, no modify)
-                                  │
-                                  ▼
-                                  recording read tap @ ~700 (FS native)
-                                          │
-                                          ▼
-                                          mixed into recording file's L+R or mono
-                                          ────────────────────────────────────────
-Bot TTS ──▶ TTS bug @ 500 (WRITE_REPLACE) ──▶ FS write pipeline
-                                                │
-                                                ▼
-                                                recording write tap @ ~750 (FS native)
-                                                          │
-                                                          ▼
-                                                          mixed into recording file
+For each ptime tick on write side:
+  base_frame = produce_from(playback_file | hold_music | silence)
+
+  for each bug in chain order:
+    if bug.flags has SMBF_WRITE_REPLACE:
+      bug.callback(WRITE_REPLACE)
+        → may call switch_core_media_bug_set_write_replace_frame
+        → if set, replaces the current frame for next iteration
+
+  # at this point all WRITE_REPLACE bugs have run; the frame is "final"
+
+  for each bug in chain order:
+    if bug.flags has SMBF_WRITE_STREAM:
+      bug.callback(WRITE)
+        → receives the final frame (read-only)
+
+  network.send(final_frame)
+```
+
+The two passes are independent. A `WRITE_STREAM` callback never
+runs interleaved with `WRITE_REPLACE` callbacks. So:
+
+- TTS bug (`WRITE_REPLACE`) replaces the frame with bot audio.
+- Recording bug (`WRITE_STREAM`) observes the replaced frame.
+
+The order in which these two bugs were attached changes only the
+order their callbacks fire within their respective pass. The
+post-injection observation property holds either way.
+
+Read-side has the symmetric structure: `READ_REPLACE` runs before
+`READ_STREAM`. The module does not use `READ_REPLACE` in V1, so
+`READ_STREAM` taps see raw caller audio.
+
+The `media-bridge.md` document covers the broader add-order story
+(VAD-at-head via `SMBF_FIRST`, etc.). For recording specifically,
+the FS semantic above is what matters.
+
+## Mono mixed recording (default FS behaviour)
+
+```text
+Caller mic ──▶ FS read pipeline
+              │
+              ├──▶ STT bug          (SMBF_READ_STREAM tap)
+              ├──▶ AMD bug          (SMBF_READ_STREAM tap)
+              ├──▶ record_session   (SMBF_READ_STREAM tap, FS native)
+              ▼
+              FS hands frame upstream
+
+Bot TTS ──▶ TTS bug (SMBF_WRITE_REPLACE) ──▶ frame replaced
+                                              │
+                                              ▼ WRITE_STREAM pass:
+                                              ├──▶ record_session   (SMBF_WRITE_STREAM, sees BOT frame)
+                                              ▼
+                                              FS encodes + sends to network
 ```
 
 Output: a single `.wav` (or `.mp3` via mod_shout) file with caller
@@ -88,7 +127,9 @@ and bot mixed together.
 ```
 
 This is **standard FreeSWITCH**. The module doesn't add anything; the
-existing priority ordering ensures bot audio is in the recording.
+`WRITE_STREAM`-vs-`WRITE_REPLACE` semantic ensures bot audio is in
+the recording **regardless of dialplan order** (record_session first
+then start_bot, or vice versa).
 
 ## Stereo split recording (recommended for AI ops)
 
@@ -122,24 +163,32 @@ setup for other reasons.
 ### Option B (recommended) — Module-provided stereo relay
 
 Use the `RECORDING_RELAY` media purpose with stereo split. The module
-attaches TWO bugs:
+attaches TWO bugs (LATE stage rank — see `media-bridge.md`):
 
-- Bug at priority 700: `SMBF_READ_STREAM` — taps caller's mic.
-- Bug at priority 750: `SMBF_WRITE_STREAM` — taps write side AFTER
-  TTS injection.
+- Read bug: `SMBF_READ_STREAM` — taps caller's mic (raw, since no
+  `READ_REPLACE` is in use).
+- Write bug: `SMBF_WRITE_STREAM` — taps write side after TTS injection
+  per the FS semantic described above.
 
 Both feed into a single gRPC stream with `StreamStart.side=STEREO`.
 The module:
 
 - Receives caller frame on read-tap callback → buffer as L channel.
-- Receives mixed-with-bot frame on write-tap callback → buffer as R.
-- When both L and R frames arrive (or a watchdog fires after 25 ms),
-  interleave samples into a single AudioFrame with channel=BOTH_INTERLEAVED:
+- Receives post-injection write frame on write-tap callback → buffer
+  as R channel. **What's actually in R**: bot's TTS audio PLUS any
+  other write-side audio (hold music if active, mod_dptools
+  playback if running). For a bot-only conversation, R ≈ bot. For an
+  IVR menu that plays a prompt then yields to bot, R is whichever
+  source produced the frame at that instant.
+- When both L and R frames arrive (they fire on the same FS media
+  thread for the same ptime window; see "Sync of L and R" below),
+  interleave samples into a single AudioFrame with
+  channel=BOTH_INTERLEAVED:
   `[L0][R0][L1][R1]...[L159][R159]` for 20 ms at 8 kHz.
 - Send over gRPC.
 
-The external recording service writes to a stereo WAV file or to S3
-or to whatever durable store, with caller on L and bot on R.
+The external recording service writes to a stereo WAV file or S3 or
+whatever durable store, with caller on L and bot-side mix on R.
 
 This is a **module-side feature**: control RPC `StartRecordingRelay`:
 
@@ -159,10 +208,17 @@ Parameters:
 ## Sync of L and R for stereo relay
 
 Caller's mic frame arrives on read-tap callback. Write-side frame
-arrives on write-tap callback. These two callbacks fire on the same
-FS media thread, but in alternating order; the write frame for time T
-arrives shortly after the read frame for time T (typically same ptime
-boundary).
+arrives on write-tap callback. **Both callbacks fire on the same FS
+media thread**, single-threaded per channel (Phase 1 Codex finding
+I-15). They alternate within each ptime tick: the read callback fires
+when FS processes the read frame; the write callback fires when FS
+processes the write frame; for a given ptime window these are
+sequential on one thread, not concurrent across threads.
+
+So the L/R pairer does NOT need cross-thread synchronisation. The
+small ring per side is for ordering within the same thread (in case
+FS emits multiple frames before our pairer consumes them — rare but
+possible during bursts).
 
 We pair them by timestamp:
 
@@ -207,8 +263,8 @@ THEN starts recording. The bot's first words are missed.
 
 Best practice (operator side): start recording immediately after
 `answer`, BEFORE any `start_bot` / `start_tts`. The recording bug
-attaches at priority 700; once it's attached, every subsequent write
-frame is captured.
+attaches as a LATE-stage bug; once it's attached, every subsequent
+write frame is captured by its `WRITE_STREAM` tap.
 
 If the operator needs perfect coverage from the first millisecond,
 they should:
@@ -242,7 +298,8 @@ not all deployments want recording on every call).
 | `record_stereo_split` | StartRecordingRelay stereo=true; relay receives L=caller, R=bot; correct interleaving. |
 | `record_after_bot_start_misses_pre` | Start bot, then start recording; first N ms of bot audio missed. Documented behavior. |
 | `record_stop_finalises` | StopRecordingRelay (or hangup); relay receives end-of-stream; final frame numbered correctly. |
-| `record_priority_order` | Verify bugs attached in any order end up in correct priority order (priority allocation is independent of add order). |
+| `record_write_stream_observes_post_replace` | Attach TTS WRITE_REPLACE first, then record WRITE_STREAM. Verify record frames contain TTS-injected audio. |
+| `record_attach_order_independent` | Reverse: attach record first, then TTS. Verify record STILL contains TTS audio (FS WRITE_STREAM-after-WRITE_REPLACE semantic). |
 | `record_lr_desync_warning` | Inject artificial 30 ms delay on one side; verify warning + metric. |
 | `record_overflow_drops_oldest` | Slow relay; ring fills; oldest dropped; counter increments. |
 
@@ -260,5 +317,5 @@ not all deployments want recording on every call).
 - HTTP-PUT chunked uploads (instead of gRPC stream) as an alternative
   recording sink for operators who prefer object storage directly.
 - Conference recording (when bot is part of a multi-party conference)
-  — V1 doesn't address this; the priority model and pairer
+  — V1 doesn't address this; the stage-rank model and pairer
   abstraction extend to it but it's not on the V1 path.
