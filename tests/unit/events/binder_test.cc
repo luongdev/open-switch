@@ -35,6 +35,8 @@
 
 #include <gtest/gtest.h>
 
+#include "open_switch/events/v1/events.pb.h"
+
 #include "osw/events/envelope.h"
 #include "osw/events/ring.h"
 #include "osw/events/tier.h"

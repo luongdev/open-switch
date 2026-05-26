@@ -68,33 +68,9 @@ std::size_t TierIndex(Tier t) noexcept {
 }  // namespace
 
 // --- RingSet ---------------------------------------------------------
-
-RingSet::RingSet(std::size_t cap1, std::size_t cap2, std::size_t cap3)
-    : tier1_(cap1), tier2_(cap2), tier3_(cap3) {}
-
-Ring* RingSet::Get(Tier t) noexcept {
-    switch (t) {
-        case Tier::k1Critical:
-            return &tier1_;
-        case Tier::k2State:
-            return &tier2_;
-        case Tier::k3Ephemeral:
-            return &tier3_;
-        case Tier::kUnspecified:
-        default:
-            return nullptr;
-    }
-}
-
-void RingSet::CloseAll() noexcept {
-    tier1_.Close();
-    tier2_.Close();
-    tier3_.Close();
-}
-
-bool RingSet::AllEmpty() const noexcept {
-    return tier1_.Size() == 0 && tier2_.Size() == 0 && tier3_.Size() == 0;
-}
+// Definitions live in src/events/ring_set.cc so they end up in
+// osw_events (the FS-agnostic library) — Broadcaster references them
+// and the FS-agnostic test executables link only osw_events.
 
 // --- Binder ----------------------------------------------------------
 
