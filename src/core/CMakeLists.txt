@@ -36,6 +36,8 @@ target_compile_definitions(osw_core_fs PRIVATE SWITCH_API_VISIBILITY=1)
 target_link_libraries(osw_core_fs PUBLIC
     osw_core
     osw_control          # Module::Load owns the GrpcServer
+    osw_events           # RingSet + Broadcaster + TierClassifier
+    osw_events_fs        # Binder (switch_event_bind shim)
     osw_observability
     osw_observability_fs
 )

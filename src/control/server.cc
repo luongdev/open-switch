@@ -6,8 +6,6 @@
 
 #include "osw/control/server.h"
 
-#include <unistd.h>
-
 #include <chrono>
 #include <cstring>
 #include <exception>
@@ -15,6 +13,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unistd.h>
 #include <utility>
 
 #include <grpcpp/grpcpp.h>
@@ -24,6 +23,7 @@
 #include "osw/core/config.h"
 #include "osw/observability/health.h"
 #include "osw/observability/log.h"
+
 #include "src/control/control_service_skeleton.h"
 
 namespace osw::control {
@@ -44,8 +44,7 @@ namespace {
 // destructor is the last-line defence for the case where Module::Shutdown
 // was skipped (e.g., FS aborted mid-load).
 void WriteDestructorErrorRaw(const char* msg) noexcept {
-    static constexpr char kPrefix[] =
-        "[osw:control] ~GrpcServer Drain threw: ";
+    static constexpr char kPrefix[] = "[osw:control] ~GrpcServer Drain threw: ";
     (void)::write(STDERR_FILENO, kPrefix, sizeof(kPrefix) - 1);
     if (msg) {
         (void)::write(STDERR_FILENO, msg, std::strlen(msg));
@@ -55,8 +54,7 @@ void WriteDestructorErrorRaw(const char* msg) noexcept {
 
 }  // namespace
 
-GrpcServer::GrpcServer(Health* health) noexcept
-    : health_(health) {}
+GrpcServer::GrpcServer(Health* health) noexcept : health_(health) {}
 
 GrpcServer::~GrpcServer() noexcept {
     // Per designs/memory-management.md §"Exception-safety boundary":
@@ -75,9 +73,8 @@ GrpcServer::~GrpcServer() noexcept {
     }
 }
 
-void GrpcServer::SetVersions(std::string module_version,
-                             std::string freeswitch_version) {
-    module_version_     = std::move(module_version);
+void GrpcServer::SetVersions(std::string module_version, std::string freeswitch_version) {
+    module_version_ = std::move(module_version);
     freeswitch_version_ = std::move(freeswitch_version);
 }
 
@@ -100,39 +97,36 @@ bool GrpcServer::Start(const Config& config) {
     // it into the member after BuildAndStart succeeds.
     if (config.grpc_max_concurrent_streams > 0) {
         builder.SetResourceQuota(grpc::ResourceQuota("osw_quota"));
-        builder.AddChannelArgument(
-            GRPC_ARG_MAX_CONCURRENT_STREAMS,
-            static_cast<int>(config.grpc_max_concurrent_streams));
+        builder.AddChannelArgument(GRPC_ARG_MAX_CONCURRENT_STREAMS,
+                                   static_cast<int>(config.grpc_max_concurrent_streams));
     }
 
     server_ = builder.BuildAndStart();
     if (!server_) {
-        osw::log::Error("control",
-                        "BuildAndStart failed for address %s",
-                        config.grpc_listen_address.c_str());
+        osw::log::Error(
+            "control", "BuildAndStart failed for address %s", config.grpc_listen_address.c_str());
         service_.reset();
         creds_.reset();
         return false;
     }
     bound_address_ = config.grpc_listen_address;
-    bound_port_    = bound_port;
+    bound_port_ = bound_port;
     // If operator used port 0, the actual bound port is in bound_port_.
     // Preserve the original config string but log the resolved port for
     // diagnostics.
     osw::log::Info("control",
                    "gRPC server listening on %s (bound port=%d)",
-                   bound_address_.c_str(), bound_port_);
+                   bound_address_.c_str(),
+                   bound_port_);
 
     // Worker thread that blocks in Wait(). Drain joins it.
     worker_ = std::thread([this]() {
         try {
             server_->Wait();
         } catch (const std::exception& e) {
-            osw::log::Error("control",
-                            "grpc::Server::Wait threw: %s", e.what());
+            osw::log::Error("control", "grpc::Server::Wait threw: %s", e.what());
         } catch (...) {
-            osw::log::Error("control",
-                            "grpc::Server::Wait threw an unknown exception");
+            osw::log::Error("control", "grpc::Server::Wait threw an unknown exception");
         }
     });
 
@@ -170,6 +164,24 @@ std::string GrpcServer::BoundAddress() const noexcept {
 
 int GrpcServer::BoundPort() const noexcept {
     return bound_port_;
+}
+
+void GrpcServer::SetEventPlane(events::Broadcaster* broadcaster,
+                               events::RingSet* rings,
+                               std::uint32_t max_subscribers,
+                               std::uint32_t subscriber_send_queue_capacity) noexcept {
+    // The service is constructed in Start(); SetEventPlane is called
+    // by Module::Load AFTER Start() returns. If the operator called
+    // us out of order (service_ still null), log and no-op — the
+    // SubscribeEvents handler will return UNIMPLEMENTED until the
+    // bridges are injected.
+    if (!service_) {
+        osw::log::Warn("control",
+                       "GrpcServer::SetEventPlane called before Start; "
+                       "SubscribeEvents will return UNIMPLEMENTED until rewired");
+        return;
+    }
+    service_->SetEventPlane(broadcaster, rings, max_subscribers, subscriber_send_queue_capacity);
 }
 
 }  // namespace osw::control

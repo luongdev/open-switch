@@ -30,6 +30,7 @@
 #define OSW_CONTROL_SERVER_H_
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -42,21 +43,26 @@ namespace osw {
 class Health;
 struct Config;
 
+namespace events {
+class Broadcaster;
+class RingSet;
+}  // namespace events
+
 namespace control {
 
 class ControlServiceSkeleton;
 
 class GrpcServer {
- public:
+  public:
     /// `health` is the module-wide Health aggregator. The server holds
     /// a non-owning view; the Module owns the Health.
     explicit GrpcServer(Health* health) noexcept;
     ~GrpcServer() noexcept;
 
-    GrpcServer(const GrpcServer&)            = delete;
+    GrpcServer(const GrpcServer&) = delete;
     GrpcServer& operator=(const GrpcServer&) = delete;
-    GrpcServer(GrpcServer&&)                 = delete;
-    GrpcServer& operator=(GrpcServer&&)      = delete;
+    GrpcServer(GrpcServer&&) = delete;
+    GrpcServer& operator=(GrpcServer&&) = delete;
 
     /// Builds + starts the gRPC server bound at `address`. The address
     /// format is "host:port" (matches grpc::ServerBuilder::AddListeningPort).
@@ -82,21 +88,36 @@ class GrpcServer {
     /// Set the module + freeswitch version strings the Health RPC
     /// should report. Called by Module::Load before Start so that
     /// Snapshot includes the right values.
-    void SetVersions(std::string module_version,
-                     std::string freeswitch_version);
+    void SetVersions(std::string module_version, std::string freeswitch_version);
 
- private:
-    Health*                                 health_;
+    /// Inject the W2 event-plane bridges (Broadcaster + RingSet)
+    /// into the ControlServiceSkeleton so that the SubscribeEvents
+    /// handler can route. Called by Module::Load AFTER Broadcaster +
+    /// RingSet are constructed and Start()-ed. Pre-W2 builds and
+    /// tests that don't exercise SubscribeEvents leave these as
+    /// nullptr; SubscribeEvents then returns UNIMPLEMENTED rather
+    /// than crashing.
+    ///
+    /// Pointers are non-owning. The Module singleton outlives the
+    /// gRPC server's RPC threads (Drain joins them before tearing
+    /// down Module-owned subsystems).
+    void SetEventPlane(events::Broadcaster* broadcaster,
+                       events::RingSet* rings,
+                       std::uint32_t max_subscribers,
+                       std::uint32_t subscriber_send_queue_capacity) noexcept;
+
+  private:
+    Health* health_;
     std::shared_ptr<grpc::ServerCredentials> creds_;
-    std::unique_ptr<ControlServiceSkeleton>  service_;
-    std::unique_ptr<grpc::Server>            server_;
-    std::thread                              worker_;
-    std::mutex                               drain_mu_;
-    bool                                     drained_   = false;
-    std::string                              bound_address_;
-    int                                      bound_port_   = -1;
-    std::string                              module_version_;
-    std::string                              freeswitch_version_;
+    std::unique_ptr<ControlServiceSkeleton> service_;
+    std::unique_ptr<grpc::Server> server_;
+    std::thread worker_;
+    std::mutex drain_mu_;
+    bool drained_ = false;
+    std::string bound_address_;
+    int bound_port_ = -1;
+    std::string module_version_;
+    std::string freeswitch_version_;
 };
 
 }  // namespace control
