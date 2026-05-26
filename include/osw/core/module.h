@@ -49,6 +49,13 @@ namespace control {
 class GrpcServer;  // forward; defined in osw/control/server.h
 }
 
+namespace events {
+class Binder;          // forward; defined in osw/events/binder.h
+class Broadcaster;     // forward; defined in osw/events/subscribe/broadcaster.h
+class RingSet;         // forward; defined in osw/events/binder.h
+class TierClassifier;  // forward; defined in osw/events/tier.h
+}  // namespace events
+
 class Module {
   public:
     /// Returns the singleton instance (lazy-initialised on first call).
@@ -89,6 +96,18 @@ class Module {
     Health health_;
     Lifecycle lifecycle_;
     std::unique_ptr<control::GrpcServer> grpc_server_;
+
+    // W2 event-plane subsystems. Construction order in Module::Load:
+    //   1. classifier_  (FS-agnostic; built from tier rules)
+    //   2. rings_       (per-tier MPSC FIFO rings)
+    //   3. binder_      (switch_event_bind shim; Init() registers with FS)
+    //   4. broadcaster_ (3 worker threads draining rings into subscribers)
+    // Destruction order is the reverse: broadcaster.Stop() → binder.Stop()
+    // → rings.~RingSet → classifier.~TierClassifier. See Module::Shutdown.
+    std::unique_ptr<events::TierClassifier> classifier_;
+    std::unique_ptr<events::RingSet> rings_;
+    std::unique_ptr<events::Binder> binder_;
+    std::unique_ptr<events::Broadcaster> broadcaster_;
 };
 
 }  // namespace osw
