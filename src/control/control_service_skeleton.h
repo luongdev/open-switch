@@ -63,11 +63,17 @@ class ControlServiceSkeleton final : public open_switch::control::v1::ControlSer
 
     /// Per-subscriber default send-queue capacity (set via SetEventPlane).
     [[nodiscard]] std::uint32_t SubscriberSendQueueCapacity() const noexcept {
-        return subscriber_send_queue_capacity_;
+        return subscriber_send_queue_capacity_.load(std::memory_order_acquire);
     }
-    [[nodiscard]] std::uint32_t MaxSubscribers() const noexcept { return max_subscribers_; }
-    [[nodiscard]] events::Broadcaster* Broadcaster() const noexcept { return broadcaster_; }
-    [[nodiscard]] events::RingSet* RingSet() const noexcept { return rings_; }
+    [[nodiscard]] std::uint32_t MaxSubscribers() const noexcept {
+        return max_subscribers_.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] events::Broadcaster* Broadcaster() const noexcept {
+        return broadcaster_.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] events::RingSet* RingSet() const noexcept {
+        return rings_.load(std::memory_order_acquire);
+    }
 
     // --- Health (real impl) ----------------------------------------
     grpc::Status Health(grpc::ServerContext* ctx,
@@ -121,10 +127,20 @@ class ControlServiceSkeleton final : public open_switch::control::v1::ControlSer
     std::string module_version_;
     std::string freeswitch_version_;
     // W2 event-plane bridges. nullptr in W1-only builds + tests.
-    events::Broadcaster* broadcaster_ = nullptr;
-    events::RingSet* rings_ = nullptr;
-    std::uint32_t max_subscribers_ = 0;
-    std::uint32_t subscriber_send_queue_capacity_ = 4096;
+    //
+    // Codex W2 review C-3: these are written by `SetEventPlane`
+    // (Module::Load step 7) and read by every SubscribeEvents RPC
+    // handler. The grpc server starts accepting RPCs in step 6, so
+    // any RPC that wins the step-6→step-7 race reads the default-
+    // initialised value while another thread writes the bridge in.
+    // Plain pointer reads/writes are NOT atomic per the C++ memory
+    // model — TSAN strict mode will flag this. Use `std::atomic`
+    // with acquire/release so the write happens-before the read on
+    // any architecture.
+    std::atomic<events::Broadcaster*> broadcaster_{nullptr};
+    std::atomic<events::RingSet*> rings_{nullptr};
+    std::atomic<std::uint32_t> max_subscribers_{0};
+    std::atomic<std::uint32_t> subscriber_send_queue_capacity_{4096};
 };
 
 }  // namespace control

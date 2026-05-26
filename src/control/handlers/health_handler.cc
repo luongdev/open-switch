@@ -79,10 +79,19 @@ void ControlServiceSkeleton::SetEventPlane(events::Broadcaster* broadcaster,
                                            events::RingSet* rings,
                                            std::uint32_t max_subscribers,
                                            std::uint32_t subscriber_send_queue_capacity) noexcept {
-    broadcaster_ = broadcaster;
-    rings_ = rings;
-    max_subscribers_ = max_subscribers;
-    subscriber_send_queue_capacity_ = subscriber_send_queue_capacity;
+    // Codex W2 review C-3: release-stores so any SubscribeEvents
+    // handler that subsequently acquires sees the new values. Order
+    // the writes so handlers either see (broadcaster, rings, caps) as
+    // a consistent set or all defaults — never partial. The
+    // SubscribeEvents handler reads broadcaster_ first and bails on
+    // null, so storing capacities first and broadcaster_ last
+    // guarantees a non-null broadcaster_ implies the capacities are
+    // also visible.
+    max_subscribers_.store(max_subscribers, std::memory_order_relaxed);
+    subscriber_send_queue_capacity_.store(subscriber_send_queue_capacity,
+                                          std::memory_order_relaxed);
+    rings_.store(rings, std::memory_order_release);
+    broadcaster_.store(broadcaster, std::memory_order_release);
 }
 
 }  // namespace osw::control

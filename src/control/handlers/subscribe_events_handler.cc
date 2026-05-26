@@ -316,17 +316,29 @@ grpc::Status ControlServiceSkeleton::SubscribeEvents(
         if (req == nullptr || writer == nullptr) {
             return grpc::Status(grpc::StatusCode::INTERNAL, "null request or writer");
         }
-        if (broadcaster_ == nullptr) {
+        // Codex W2 C-3: acquire-load the event-plane bridges. The
+        // store side in SetEventPlane uses release-stores so a
+        // non-null broadcaster_ implies rings_ and the caps are
+        // visible to this thread. We snapshot all four into locals
+        // so subsequent reads in this RPC see a consistent set even
+        // if SetEventPlane is called again concurrently (it's not in
+        // practice, but the atomic discipline is cheap).
+        osw::events::Broadcaster* const bcast = broadcaster_.load(std::memory_order_acquire);
+        if (bcast == nullptr) {
             // Pre-W2 build or test harness that didn't call SetEventPlane.
             return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "event plane not initialised");
         }
+        osw::events::RingSet* const rings = rings_.load(std::memory_order_acquire);
+        const std::uint32_t max_subscribers = max_subscribers_.load(std::memory_order_acquire);
+        const std::uint32_t queue_capacity =
+            subscriber_send_queue_capacity_.load(std::memory_order_acquire);
 
         // Cap on active subscribers. The roster_size check is racy by
         // design (we might briefly exceed the cap by 1 under high arrival
         // rate); the next subscriber gets rejected promptly.
-        if (max_subscribers_ > 0 && broadcaster_->SubscriberCount() >= max_subscribers_) {
+        if (max_subscribers > 0 && bcast->SubscriberCount() >= max_subscribers) {
             osw::log::Warn(
-                kSubsystem, "rejecting SubscribeEvents: at max_subscribers=%u", max_subscribers_);
+                kSubsystem, "rejecting SubscribeEvents: at max_subscribers=%u", max_subscribers);
             return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, "at max_subscribers cap");
         }
 
@@ -335,8 +347,7 @@ grpc::Status ControlServiceSkeleton::SubscribeEvents(
 
         // Create the subscriber with a unique-enough id.
         const std::string sub_id = GenerateSubscriberId();
-        const std::size_t cap =
-            subscriber_send_queue_capacity_ == 0 ? 4096 : subscriber_send_queue_capacity_;
+        const std::size_t cap = queue_capacity == 0 ? 4096 : queue_capacity;
         auto sub = std::make_shared<osw::events::Subscriber>(sub_id, fr.filter, cap);
 
         // Atomic snapshot+add (Codex W2 B-1). The broadcaster holds
@@ -352,9 +363,9 @@ grpc::Status ControlServiceSkeleton::SubscribeEvents(
         // dedup on `seq` per (node, tier), as documented in
         // SubscribeEventsRequest.since_seq.
         bool replay_ok = true;
-        broadcaster_->AddSubscriberAtomic(sub, [&](osw::events::Subscriber& s) {
+        bcast->AddSubscriberAtomic(sub, [&](osw::events::Subscriber& s) {
             if (req->since_seq() > 0) {
-                if (!ReplaySinceSeq(rings_, fr.replay_tiers, req->since_seq(), s)) {
+                if (!ReplaySinceSeq(rings, fr.replay_tiers, req->since_seq(), s)) {
                     replay_ok = false;
                 }
             }
@@ -365,7 +376,7 @@ grpc::Status ControlServiceSkeleton::SubscribeEvents(
             // closed; we Remove + return the matching status. The
             // broadcaster's IsClosed gate prevents any further push to
             // its SendQueue.
-            broadcaster_->RemoveSubscriber(sub_id);
+            bcast->RemoveSubscriber(sub_id);
             return KickReasonToStatus(sub->GetKickReason(), "during since_seq replay");
         }
         osw::audit::Emit(
@@ -386,7 +397,7 @@ grpc::Status ControlServiceSkeleton::SubscribeEvents(
 
         // Unwind.
         const auto reason = sub->GetKickReason();
-        broadcaster_->RemoveSubscriber(sub_id);
+        bcast->RemoveSubscriber(sub_id);
 
         if (reason == osw::events::KickReason::kQueueFull ||
             reason == osw::events::KickReason::kReplayEvicted) {
