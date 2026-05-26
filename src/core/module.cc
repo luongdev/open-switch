@@ -9,16 +9,54 @@
  *   - FF-014 — switch_loadable_module_create_module_interface pool
  *     ownership (the caller — mod_open_switch.cc — passes us the
  *     already-created interface*; we store it as a non-owning view).
+ *   - FF-018 — switch_event_bind lifecycle; consumed by W2 Binder.
+ *
+ * W2 wiring (Module::Load AFTER grpc_server_->Start()):
+ *   - TierClassifier from operator-config tier-rules (W2 uses
+ *     MakeDefaultRules() for now; operator overrides land with the
+ *     config-extension commit).
+ *   - RingSet(config.event_ring_capacity_tier{1,2,3}).
+ *   - Binder(rings, classifier, envelope_cfg, node_id, &health_)
+ *     and Binder::Init() — registers switch_event_bind for
+ *     SWITCH_EVENT_ALL (FF-018). Producers start delivering after.
+ *   - Broadcaster(rings, &health_); Broadcaster::Start() — three
+ *     worker threads, one per tier.
+ *   - GrpcServer::SetEventPlane(broadcaster, rings, max_subscribers,
+ *     send_queue_capacity) so the SubscribeEvents handler sees the
+ *     event plane.
+ *   - osw::audit::Emit("module_loaded", ...) — re-enters the event
+ *     pipeline via the Binder we just installed.
+ *
+ * W2 teardown (Module::Shutdown):
+ *   - Lifecycle::SignalDrain → Health::DRAINING.
+ *   - Binder::Stop() — FF-018 unbind under wrlock; in-flight dispatch
+ *     completes before this returns. No more producers.
+ *   - Wait up to config.event_drain_timeout_seconds for rings to
+ *     reach AllEmpty(). Best-effort.
+ *   - Broadcaster::Stop() — closes rings, joins worker threads,
+ *     kicks every subscriber with kShutdown.
+ *   - If rings still non-empty after the drain deadline: log a WARN-
+ *     level "module_shutdown_drain_timeout" line (FS log only — Codex
+ *     W2 B-2). We deliberately do NOT call osw::audit::Emit() here:
+ *     the binder is stopped by step 2, so an audit emit at this point
+ *     is dead-lettered (it never enters our rings, so gRPC subscribers
+ *     never see it). Operator visibility is served by the FS log line
+ *     plus the tier_dropped_total counters on Health.
+ *   - GrpcServer::Drain(deadline).
  *
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
 #include "osw/core/module.h"
 
+#include <array>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <regex>
 #include <string>
+#include <thread>
+#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -26,6 +64,12 @@
 
 #include "osw/control/server.h"
 #include "osw/core/config_fs.h"
+#include "osw/events/binder.h"
+#include "osw/events/envelope.h"
+#include "osw/events/ring.h"
+#include "osw/events/subscribe/broadcaster.h"
+#include "osw/events/tier.h"
+#include "osw/observability/audit.h"
 #include "osw/observability/log.h"
 
 namespace osw {
@@ -57,6 +101,19 @@ std::string FreeSwitchVersionString() {
     // v1.10.12. We use it verbatim; the Health proto field is free-form.
     const char* v = switch_version_full();
     return v ? std::string(v) : std::string("unknown");
+}
+
+std::string ResolveNodeId() {
+    // W2 default: use the host's name. Operators can override via a
+    // future config knob (W2's contract reserved the slot but didn't
+    // wire a knob; gethostname() is the documented default for now).
+    // The EventEnvelope.node_id field is free-form so this is safe
+    // even with weird hostnames; subscribers filter by exact match.
+    char buf[256] = {0};
+    if (gethostname(buf, sizeof(buf) - 1) == 0) {
+        return std::string(buf);
+    }
+    return std::string("unknown-node");
 }
 
 }  // namespace
@@ -123,13 +180,108 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
             return false;
         }
 
-        // 7. Flip lifecycle to Serving. Health status is set inside.
+        // 7. Wire the W2 event plane. Order matters:
+        //   classifier → rings → binder.Init() → broadcaster.Start()
+        //   → grpc_server.SetEventPlane → audit emit module_loaded.
+        // The Binder MUST be Init()'d BEFORE the broadcaster threads
+        // start so the first event reaching the broadcaster has a
+        // corresponding subscriber path; conversely the broadcaster
+        // MUST be Start()'d before SubscribeEvents handlers can match
+        // (the gRPC server is already accepting RPCs but
+        // ControlServiceSkeleton::broadcaster_ is still null at this
+        // point — the SubscribeEvents handler short-circuits with
+        // UNIMPLEMENTED for the brief window until SetEventPlane runs).
+        classifier_ = std::make_unique<events::TierClassifier>(events::MakeDefaultRules());
+        rings_ = std::make_unique<events::RingSet>(config_.event_ring_capacity_tier1,
+                                                   config_.event_ring_capacity_tier2,
+                                                   config_.event_ring_capacity_tier3);
+
+        const std::string node_id = ResolveNodeId();
+        binder_ = std::make_unique<events::Binder>(rings_.get(),
+                                                   classifier_.get(),
+                                                   events::MakeDefaultEnvelopeConfig(),
+                                                   node_id,
+                                                   &health_);
+        if (!binder_->Init()) {
+            osw::log::Error(kSubsystem, "events::Binder::Init failed; aborting load");
+            binder_.reset();
+            rings_.reset();
+            classifier_.reset();
+            grpc_server_->Drain(std::chrono::system_clock::now() + std::chrono::seconds(2));
+            grpc_server_.reset();
+            return false;
+        }
+
+        // Codex W2 I-5: RAII guard for the partial-init window. If
+        // anything between here and the `commit()` call below throws
+        // (e.g. broadcaster_->Start() failing with std::system_error
+        // on thread-creation under resource exhaustion), the guard
+        // calls Binder::Stop() (and Broadcaster::Stop() if it got
+        // constructed) on unwind. Without this, the binder stays
+        // bound: FS keeps delivering events to our handler, which
+        // pushes into rings whose Broadcaster is half-constructed.
+        // Events would leak into the ring and rot until process
+        // shutdown (the Module destructor's defensive cleanup runs
+        // only at process exit — could be hours later).
+        struct PartialLoadCleanup {
+            events::Binder* binder = nullptr;
+            events::Broadcaster* broadcaster = nullptr;
+            bool committed = false;
+            void commit() noexcept { committed = true; }
+            ~PartialLoadCleanup() noexcept {
+                if (committed)
+                    return;
+                if (broadcaster) {
+                    try {
+                        broadcaster->Stop();
+                    } catch (...) {
+                        // best-effort
+                    }
+                }
+                if (binder) {
+                    try {
+                        binder->Stop();
+                    } catch (...) {
+                        // best-effort
+                    }
+                }
+            }
+        };
+        PartialLoadCleanup load_guard;
+        load_guard.binder = binder_.get();
+
+        broadcaster_ = std::make_unique<events::Broadcaster>(rings_.get(), &health_);
+        broadcaster_->Start();
+        load_guard.broadcaster = broadcaster_.get();
+
+        grpc_server_->SetEventPlane(broadcaster_.get(),
+                                    rings_.get(),
+                                    config_.max_subscribers,
+                                    config_.subscriber_send_queue_capacity);
+
+        // 8. Flip lifecycle to Serving. Health status is set inside.
         lifecycle_.TransitionToServing();
         loaded_ = true;
+        load_guard.commit();
+
+        // 9. Audit emit module_loaded — re-enters the binder we just
+        //    installed; lands in Tier-1 ring + flows to any subscriber
+        //    that connected before us (none on first load; relevant on
+        //    a SIGHUP/reload sequence).
+        osw::audit::Emit("module_loaded",
+                         {{"module_version", kModuleVersion},
+                          {"freeswitch_version", fs_ver},
+                          {"node_id", node_id}});
+
         osw::log::Info(kSubsystem,
-                       "mod_open_switch v%s loaded; gRPC bound at %s",
+                       "mod_open_switch v%s loaded; gRPC bound at %s "
+                       "(node_id='%s', rings=[%u/%u/%u])",
                        kModuleVersion,
-                       config_.grpc_listen_address.c_str());
+                       config_.grpc_listen_address.c_str(),
+                       node_id.c_str(),
+                       config_.event_ring_capacity_tier1,
+                       config_.event_ring_capacity_tier2,
+                       config_.event_ring_capacity_tier3);
         return true;
     } catch (const std::exception& e) {
         osw::log::Error(kSubsystem, "Module::Load threw: %s", e.what());
@@ -149,11 +301,72 @@ bool Module::Shutdown() noexcept {
     try {
         osw::log::Info(kSubsystem, "mod_open_switch shutdown initiated");
 
-        // 1. Signal drain. W1 sets the flag; W2+ event flush, W3+
-        //    Originate refusal, W4+ media bug close happens here.
+        // 1. Signal drain — Lifecycle → kDraining; Health → kDraining.
         lifecycle_.SignalDrain();
 
-        // 2. Drain the gRPC server.
+        // 2. Stop the producer side first. FF-018 unbind-under-wrlock
+        //    waits for in-flight HandleEvent calls to complete before
+        //    returning. After this, no new entries land in any ring.
+        if (binder_) {
+            binder_->Stop();
+        }
+
+        // 3. Wait up to event_drain_timeout_seconds for the rings to
+        //    empty (the broadcaster's worker threads are still running;
+        //    they should drain the tail of in-flight events to
+        //    subscribers).
+        //
+        // Gemini W2.5 I-4: condvar-based wait (RingSet::WaitUntilAllEmpty)
+        // replaces the previous `sleep_for(10ms)` busy-poll. The
+        // broadcaster's per-tier WaitAndPopBatch fires a drain-notifier
+        // when a ring transitions to empty; the condvar wakes the
+        // shutdown wait promptly and the deadline still bounds the
+        // wait absolutely.
+        if (rings_) {
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds(config_.event_drain_timeout_seconds);
+            // WaitUntilAllEmpty returns true on full drain, false on
+            // timeout. We could either use that directly or re-check
+            // AllEmpty(); we re-check for the (rare) race where the
+            // last drain notification raced the deadline (the function
+            // already does a final post-timeout peek, but a separate
+            // re-check makes the pending-event accounting below
+            // straightforward).
+            (void)rings_->WaitUntilAllEmpty(deadline);
+            const bool pending = !rings_->AllEmpty();
+            if (pending) {
+                // FS-log-only audit (Codex W2 B-2). Previously this
+                // called osw::audit::Emit which routes through
+                // switch_event_fire → our own osw_event_handler — but
+                // the binder is stopped at this point (FF-018 unbind
+                // ran above) so that path is dead-lettered: the event
+                // never enters our rings and gRPC SubscribeEvents
+                // subscribers never see it. The audit's purpose is
+                // operator visibility, which is already served by:
+                //   - FS log lines (mod_logfile, mod_console)
+                //   - the tier_dropped_total counters on Health
+                // Renaming the emission to module_shutdown_drain_timeout
+                // makes the FS-log-only semantics explicit. gRPC
+                // subscribers MUST NOT rely on receiving this audit.
+                osw::log::Warn(kSubsystem,
+                               "module_shutdown_drain_timeout: event rings not fully drained "
+                               "after %us; tier_dropped_total counters on Health reflect any "
+                               "lost events",
+                               config_.event_drain_timeout_seconds);
+            }
+        }
+
+        // 4. Stop the broadcaster. Closes the rings (any remaining
+        //    pop wakes), joins the 3 worker threads, kicks every live
+        //    subscriber with kShutdown (writer loops exit; handler
+        //    returns grpc::Status::OK).
+        if (broadcaster_) {
+            broadcaster_->Stop();
+        }
+
+        // 5. Drain the gRPC server. SubscribeEvents writer threads have
+        //    already exited via the kShutdown kick; this catches any
+        //    in-flight unary RPCs.
         if (grpc_server_) {
             const auto deadline = std::chrono::system_clock::now() +
                                   std::chrono::seconds(config_.grpc_drain_deadline_seconds);
@@ -161,7 +374,14 @@ bool Module::Shutdown() noexcept {
             grpc_server_.reset();
         }
 
-        // 3. Mark Lifecycle stopped + Health NOT_SERVING.
+        // 6. Tear down the event-plane subsystems in reverse-construction
+        //    order.
+        broadcaster_.reset();
+        binder_.reset();
+        rings_.reset();
+        classifier_.reset();
+
+        // 7. Mark Lifecycle stopped + Health NOT_SERVING.
         lifecycle_.MarkStopped();
         loaded_ = false;
 

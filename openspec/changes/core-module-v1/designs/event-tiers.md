@@ -214,7 +214,15 @@ Stable fields (never change tags):
 - `channel_uuid` — for call-related events.
 - `variables` — selected channel variables.
 - `headers` — selected FS event headers.
-- `body` — raw FS event body, for events that have one.
+- `body` — raw FS event body, for events that have one. **Text-only**.
+  FreeSWITCH 1.10.12 stores the body as `char* body` on `switch_event_t`
+  with no companion length field, and FS's own `switch_event_serialize`
+  / `_json` measure it via `strlen`. Subscribers MUST treat
+  `EventEnvelope.body` as a text string; embedded NUL bytes are
+  truncated by FS upstream of the module (Gemini W2.5 N-4).
+  CUSTOM events that need to carry binary payloads should base64
+  (or hex) into a text body, or place the payload in the `headers`
+  map under an explicit `Content-Encoding`-flagged key.
 - `schema_version` — increment only on breaking changes.
 
 Schema evolution policy:
@@ -312,6 +320,29 @@ Replay window depends on ring size:
 | 1 | 16384 | ~25 min @ 10 ev/s |
 | 2 | 8192 | ~3 min @ 40 ev/s |
 | 3 | 4096 | ~20 s @ 200 ev/s |
+
+**Audit-channel quirks (operator notes).**
+
+- `osw.audit.module_loaded` is emitted during `Module::Load` BEFORE
+  any subscriber can attach (the gRPC server only just started, and
+  the audit fires synchronously after `SetEventPlane`). On a fresh
+  load there are zero subscribers; the audit lands in the Tier-1
+  ring and stays there until evicted. On a reload (FS `unload`
+  followed by `load`) the ring is brand-new and empty; an existing
+  reconnecting subscriber's `since_seq` will report
+  `RESOURCE_EXHAUSTED` (the new ring's min is past their resume
+  point), they reconnect without `since_seq`, and attach at live
+  tail AFTER `module_loaded`. **Subscribers should treat the absence
+  of `module_loaded` in their stream as normal; do NOT build
+  "did the module restart" detectors on this signal.** Use
+  `Health.module_version` + a monotonic process-start timestamp for
+  that purpose (Codex W2.5 I-2).
+- `osw.audit.module_shutdown_drain_timeout` is **FS-log only** — it
+  is NOT emitted into the event pipeline (the binder is unbound by
+  the time the drain timeout fires; an audit emit would be
+  dead-lettered). gRPC subscribers see no envelope for this event.
+  Operator visibility comes from the FS log + the
+  `Health.tierN_dropped_total` counters (Codex W2.5 B-2).
 
 Operators tune via config (`event_ring_capacity_tierN`).
 

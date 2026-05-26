@@ -166,4 +166,22 @@ int GrpcServer::BoundPort() const noexcept {
     return bound_port_;
 }
 
+void GrpcServer::SetEventPlane(events::Broadcaster* broadcaster,
+                               events::RingSet* rings,
+                               std::uint32_t max_subscribers,
+                               std::uint32_t subscriber_send_queue_capacity) noexcept {
+    // The service is constructed in Start(); SetEventPlane is called
+    // by Module::Load AFTER Start() returns. If the operator called
+    // us out of order (service_ still null), log and no-op — the
+    // SubscribeEvents handler will return UNIMPLEMENTED until the
+    // bridges are injected.
+    if (!service_) {
+        osw::log::Warn("control",
+                       "GrpcServer::SetEventPlane called before Start; "
+                       "SubscribeEvents will return UNIMPLEMENTED until rewired");
+        return;
+    }
+    service_->SetEventPlane(broadcaster, rings, max_subscribers, subscriber_send_queue_capacity);
+}
+
 }  // namespace osw::control

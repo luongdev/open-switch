@@ -10,12 +10,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Workflow needs packages:read so the build-and-asan job can pull the
-# upstream FreeSWITCH builder image from GHCR using the auto GITHUB_TOKEN
-# (fallback when GHCR_TOKEN secret isn't configured).
+# Base image (docker.io/simplefs/open-switch-base:1.10.12-trixie) is
+# public, so no registry auth is needed for the pull. pull-requests:write
+# is required by bufbuild/buf-action to post format/lint diffs as PR
+# comments — without it the action errors with "Resource not accessible
+# by integration" even though the actual buf lint/format passes.
 permissions:
   contents: read
-  packages: read
+  pull-requests: write
 
 jobs:
   proto-lint:
@@ -47,24 +49,10 @@ jobs:
       - name: Set up buildx
         uses: docker/setup-buildx-action@v3
 
-      # Log in to GHCR so the builder Dockerfile can pull the private
-      # upstream FreeSWITCH base image. UPSTREAM_IMAGE defaults to
-      # ghcr.io/luongdev/freeswitch-builder; if the image is in another
-      # registry or another owner, override the env var below at the
-      # workflow level.
-      # NOTE: requires repository secret GHCR_TOKEN with packages:read
-      # scope on the upstream image's repo. If the image is public, this
-      # step is harmless (login succeeds, no auth needed for pull).
-      - name: Log in to GHCR (for upstream image pull)
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
-
       # The builder Dockerfile produces /dist/mod/mod_open_switch.so.
-      # We build to a local image and extract artifacts for downstream
-      # test steps.
+      # FROM is docker.io/simplefs/open-switch-base:1.10.12-trixie which
+      # is public + multi-arch (amd64 + arm64) + pre-bakes gRPC so this
+      # step takes ~30s instead of ~14 min.
       - name: Build builder image (ASAN ON)
         run: |
           docker buildx build \
@@ -72,8 +60,7 @@ jobs:
             --build-arg OSW_ENABLE_ASAN=ON \
             --build-arg OSW_BUILD_TESTS=ON \
             --build-arg BUILD_TYPE=Debug \
-            --build-arg UPSTREAM_IMAGE=ghcr.io/luongdev/freeswitch-builder \
-            --build-arg UPSTREAM_TAG=v1.10.12 \
+            --build-arg BASE_TAG=1.10.12-trixie \
             --target fs-builder \
             -f deploy/docker/Dockerfile.builder \
             --load \
@@ -140,6 +127,48 @@ jobs:
             bash -c "nm -D --defined-only /dist/mod/mod_open_switch.so \
                        | grep ' mod_open_switch_module_interface$'"
 
+  tsan-race-check:
+    name: TSAN race check (events)
+    runs-on: ubuntu-24.04
+    # Mutually exclusive with ASAN per the root CMakeLists guard. We
+    # build a separate image with OSW_ENABLE_TSAN=ON and run the
+    # race-prone unit tests (per-tier ring, broadcaster, replay).
+    #
+    # Gating policy (W2 closeout): TSAN runs in fail-soft mode for the
+    # initial W2 land. Once the suite has shaken out on real CI runs
+    # for at least one wave we flip continue-on-error to false and
+    # gate strictly. The Ring + Broadcaster code was designed with
+    # explicit lock-order discipline (tier ring mu → roster mu →
+    # SendQueue mu) so the expectation is that TSAN passes cleanly.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build builder image (TSAN ON)
+        run: |
+          docker buildx build \
+            --build-arg OSW_ENABLE_ASAN=OFF \
+            --build-arg OSW_ENABLE_TSAN=ON \
+            --build-arg OSW_BUILD_TESTS=ON \
+            --build-arg BUILD_TYPE=Debug \
+            --build-arg BASE_TAG=1.10.12-trixie \
+            --target fs-builder \
+            -f deploy/docker/Dockerfile.builder \
+            --load \
+            -t open-switch/builder:tsan-${{ github.sha }} \
+            .
+
+      - name: Run race-sensitive unit tests under TSAN
+        run: |
+          docker run --rm \
+            -e TSAN_OPTIONS=halt_on_error=1:report_signal_unsafe=0 \
+            open-switch/builder:tsan-${{ github.sha }} \
+            ctest --test-dir /usr/src/open-switch/build --output-on-failure \
+                  -R 'ring_test|broadcaster_test|subscribe_replay_test|binder_test'
+
   static-analysis:
     name: clang-format + clang-tidy
     runs-on: ubuntu-24.04
@@ -163,7 +192,7 @@ jobs:
             --build-arg OSW_ENABLE_ASAN=OFF \
             --build-arg OSW_BUILD_TESTS=ON \
             --build-arg BUILD_TYPE=Debug \
-            --build-arg UPSTREAM_TAG=v1.10.12 \
+            --build-arg BASE_TAG=1.10.12-trixie \
             --target fs-builder \
             -f deploy/docker/Dockerfile.builder \
             --load \

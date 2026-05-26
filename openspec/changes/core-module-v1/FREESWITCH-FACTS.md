@@ -1580,6 +1580,497 @@ static void switch_event_deliver_thread_pool(switch_event_t **event)
 
 ---
 
+## FF-018 — `switch_event_bind` lifecycle + callback ownership
+
+**Claim.** `switch_event_bind(id, event, subclass_name, callback,
+user_data)` registers a `switch_event_callback_t` (typedef
+`void (*)(switch_event_t *)`) into the per-event-id `EVENT_NODES[]`
+linked list under a global rwlock. Once registered, the callback is
+invoked by any of the up-to-64 dispatch threads (FF-004) from
+`switch_event_deliver(switch_event_t **event)` which:
+
+1. Acquires `RWLOCK` for read.
+2. Walks `EVENT_NODES[event->event_id]` and then `EVENT_NODES[SWITCH_EVENT_ALL]`.
+3. For each matching node, sets `(*event)->bind_user_data = node->user_data`
+   then calls `node->callback(*event)` — passing a **single
+   pointer**, not a pointer-to-pointer.
+4. After the loop, releases `RWLOCK`.
+5. Calls `switch_event_destroy(event)` — FS destroys the event
+   itself after all bound callbacks have run.
+
+The callback therefore receives a borrowed `switch_event_t *` whose
+lifetime extends only until the callback returns. The callback MUST
+NOT retain the pointer, free it, fire it, or queue it for later
+consumption from a different thread. The callback MUST read what it
+needs synchronously (or copy it) before returning.
+
+Unbinding is by `switch_event_unbind(&node)` (the
+`event_node` returned via `switch_event_bind_removable`) or
+`switch_event_unbind_callback(callback)` which walks all events and
+removes every node whose `callback == callback`. Both take the
+RWLOCK in write mode, which serialises with active dispatch.
+After unbind returns, the callback is guaranteed not to be invoked
+again — any in-flight dispatch was reading under the rdlock, and
+the wrlock waited for those readers to release.
+
+**Source.**
+
+- Callback typedef: `src/include/switch_types.h:2477`.
+- Bind: `src/switch_event.c:2060-2125`
+  (`switch_event_bind_removable`) and `:2127-2131`
+  (`switch_event_bind` thin wrapper).
+- Dispatcher: `src/switch_event.c:299-345` (`switch_event_dispatch_thread`
+  body) and `:400-422` (`switch_event_deliver`).
+- Unbind: `src/switch_event.c:2134-2173` (`switch_event_unbind_callback`)
+  and `:2175-2210` (`switch_event_unbind`).
+
+**Permalinks.**
+
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_types.h#L2477>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L2060-L2131>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L400-L422>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L2134-L2210>
+
+**Excerpt — callback typedef (line 2477 of switch_types.h):**
+
+```c
+typedef void (*switch_event_callback_t) (switch_event_t *);
+```
+
+**Excerpt — `switch_event_bind_removable` insertion path (lines
+2095-2120):**
+
+```c
+if (event <= SWITCH_EVENT_ALL) {
+    switch_zmalloc(event_node, sizeof(*event_node));
+    switch_thread_rwlock_wrlock(RWLOCK);
+    switch_mutex_lock(BLOCK);
+    /* <LOCKED> ----------------------------------------------- */
+    event_node->id = DUP(id);
+    event_node->event_id = event;
+    if (subclass_name) {
+        event_node->subclass_name = DUP(subclass_name);
+    }
+
+    event_node->callback = callback;
+    event_node->user_data = user_data;
+
+    if (EVENT_NODES[event]) {
+        event_node->next = EVENT_NODES[event];
+    }
+
+    EVENT_NODES[event] = event_node;
+    switch_mutex_unlock(BLOCK);
+    switch_thread_rwlock_unlock(RWLOCK);
+    /* </LOCKED> ----------------------------------------------- */
+
+    if (node) {
+        *node = event_node;
+    }
+
+    return SWITCH_STATUS_SUCCESS;
+}
+```
+
+**Excerpt — `switch_event_deliver` callback invocation (lines
+400-422):**
+
+```c
+SWITCH_DECLARE(void) switch_event_deliver(switch_event_t **event)
+{
+    switch_event_types_t e;
+    switch_event_node_t *node;
+
+    if (SYSTEM_RUNNING) {
+        switch_thread_rwlock_rdlock(RWLOCK);
+        for (e = (*event)->event_id;; e = SWITCH_EVENT_ALL) {
+            for (node = EVENT_NODES[e]; node; node = node->next) {
+                if (switch_events_match(*event, node)) {
+                    (*event)->bind_user_data = node->user_data;
+                    node->callback(*event);
+                }
+            }
+
+            if (e == SWITCH_EVENT_ALL) {
+                break;
+            }
+        }
+        switch_thread_rwlock_unlock(RWLOCK);
+    }
+
+    switch_event_destroy(event);
+}
+```
+
+**Excerpt — `switch_event_unbind_callback` (lines 2134-2173):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_event_unbind_callback(switch_event_callback_t callback)
+{
+    switch_event_node_t *n, *np, *lnp = NULL;
+    switch_status_t status = SWITCH_STATUS_FALSE;
+    int id;
+
+    switch_thread_rwlock_wrlock(RWLOCK);
+    switch_mutex_lock(BLOCK);
+    /* <LOCKED> ----------------------------------------------- */
+    for (id = 0; id <= SWITCH_EVENT_ALL; id++) {
+        lnp = NULL;
+
+        for (np = EVENT_NODES[id]; np;) {
+            n = np;
+            np = np->next;
+            if (n->callback == callback) {
+                if (lnp) {
+                    lnp->next = n->next;
+                } else {
+                    EVENT_NODES[n->event_id] = n->next;
+                }
+
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Event Binding deleted for %s:%s\n", n->id, switch_event_name(n->event_id));
+                FREE(n->subclass_name);
+                FREE(n->id);
+                FREE(n);
+                status = SWITCH_STATUS_SUCCESS;
+            } else {
+                lnp = n;
+            }
+        }
+    }
+    switch_mutex_unlock(BLOCK);
+    switch_thread_rwlock_unlock(RWLOCK);
+    /* </LOCKED> ----------------------------------------------- */
+
+    return status;
+}
+```
+
+**Implications.**
+
+- The W2 `osw::events::Binder` calls `switch_event_bind("mod_open_switch",
+  SWITCH_EVENT_ALL, NULL, osw_event_handler, this)` once at module
+  load. The handler signature MUST be exactly
+  `void osw_event_handler(switch_event_t *)` (or, with `extern "C"`,
+  a C-linkage function pointer compatible with that typedef).
+- The pointer passed in is **owned by FS**. Implementations must read
+  headers / body synchronously into module-owned structures (e.g.
+  serialise to a `shared_ptr<const std::string>`) BEFORE returning.
+  Holding the `switch_event_t*` past return is a use-after-free —
+  FS calls `switch_event_destroy(event)` (line 422) right after the
+  callback chain.
+- The callback runs under FS's rdlock. Doing slow work (acquiring
+  contended locks, blocking I/O) inside the callback will stall ALL
+  dispatch threads — measure with the synthetic `OSW_DEBUG_TIMING=1`
+  histogram and keep the steady-state below 50µs (see W2 contract).
+- Multiple dispatch threads may invoke the same callback concurrently
+  (FF-004). The callback body MUST be reentrant; per-tier producer
+  state needs MPSC-safe synchronisation (mutex + deque + condvar in
+  V1).
+- Unbind under wrlock waits for in-flight readers — therefore the
+  drain order "Binder::Stop() (unbind) → drain rings" is safe: after
+  unbind returns, no new event will be enqueued. There is no need
+  for a "stop accepting" flag in the callback itself.
+- Exceptions: the typedef is C linkage. An exception escaping the
+  callback will propagate into FS's C dispatcher, which is undefined
+  behaviour. The W2 callback MUST wrap its entire body in
+  `try { ... } catch (...) { ... }` and never let an exception escape.
+  Standard C++ EH unwinding through a C activation frame violates
+  the C ABI used by `switch_thread_t` / APR threads.
+
+**Used by W2 code:**
+
+- `src/events/binder.cc` — the production `osw_event_handler`
+  C-linkage shim, wrapped around the C++ `Binder::HandleEvent` body.
+- `tests/unit/events/binder_test.cc` — exception-boundary test:
+  a stub callback that throws is caught by the wrapper and logged,
+  not propagated into a (mocked) caller.
+
+---
+
+## FF-019 — `switch_event_get_header` returns an FS-owned `char*` (lifetime ≤ event)
+
+**Claim.** `switch_event_get_header(event, name)` is a macro that
+expands to `switch_event_get_header_idx(event, name, -1)`. The
+function walks `event->headers` and returns `hp->value` — a pointer
+into the `switch_event_header_t` node's value field, allocated when
+the header was added (via `DUP(value)` inside `switch_event_add_header*`).
+The string is **owned by the event**, freed when `switch_event_destroy`
+runs (`free_header(&this)` at line 1300 of `switch_event.c`). The
+caller MUST NOT `free()` the returned pointer and MUST NOT retain it
+past the lifetime of the event.
+
+`switch_event_get_body(event)` is the symmetric body accessor:
+returns `event->body`, with the same ownership.
+
+A NULL return means "header not present" (or "header_name is NULL").
+
+**Source.**
+
+- Macro: `src/include/switch_event.h:172`
+  (`#define switch_event_get_header(_e, _h) switch_event_get_header_idx(_e, _h, -1)`).
+- `switch_event_get_header_idx`: `src/switch_event.c:846-864`.
+- `switch_event_get_header_ptr`: `src/switch_event.c:825-844`.
+- Header-value lifetime: `src/switch_event.c:1289-1312` (destroy
+  loop — see FF-017 excerpt).
+
+**Permalinks.**
+
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_event.h#L170-L173>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L825-L864>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L1289-L1312>
+
+**Excerpt — macro (lines 170-173 of switch_event.h):**
+
+```c
+SWITCH_DECLARE(switch_event_header_t *) switch_event_get_header_ptr(switch_event_t *event, const char *header_name);
+_Ret_opt_z_ SWITCH_DECLARE(char *) switch_event_get_header_idx(switch_event_t *event, const char *header_name, int idx);
+#define switch_event_get_header(_e, _h) switch_event_get_header_idx(_e, _h, -1)
+```
+
+**Excerpt — `switch_event_get_header_idx` (lines 846-864):**
+
+```c
+SWITCH_DECLARE(char *) switch_event_get_header_idx(switch_event_t *event, const char *header_name, int idx)
+{
+    switch_event_header_t *hp;
+
+    if ((hp = switch_event_get_header_ptr(event, header_name))) {
+        if (idx > -1) {
+            if (idx < hp->idx) {
+                return hp->array[idx];
+            } else {
+                return NULL;
+            }
+        }
+
+        return hp->value;
+    } else if (!strcmp(header_name, "_body")) {
+        return event->body;
+    }
+
+    return NULL;
+}
+```
+
+**Excerpt — `switch_event_get_header_ptr` (lines 825-844):**
+
+```c
+SWITCH_DECLARE(switch_event_header_t *) switch_event_get_header_ptr(switch_event_t *event, const char *header_name)
+{
+    switch_event_header_t *hp;
+    switch_ssize_t hlen = -1;
+    unsigned long hash = 0;
+
+    switch_assert(event);
+
+    if (!header_name)
+        return NULL;
+
+    hash = switch_ci_hashfunc_default(header_name, &hlen);
+
+    for (hp = event->headers; hp; hp = hp->next) {
+        if ((!hp->hash || hash == hp->hash) && !strcasecmp(hp->name, header_name)) {
+            return hp;
+        }
+    }
+    return NULL;
+}
+```
+
+**Implications.**
+
+- Inside the W2 `osw_event_handler` callback, code that reads a
+  header value with `switch_event_get_header(event, "Unique-ID")`
+  obtains a pointer valid for the duration of the callback only.
+  Copy with `std::string` (or `std::string_view` followed by an
+  arena allocation) before the callback returns.
+- A NULL return must NOT be passed to `std::string` constructors
+  that take a `const char*` without length (UB on NULL). The
+  envelope-builder helper `HeaderOr("")` defensively maps NULL to
+  empty string.
+- `switch_event_get_body(event)` has the same lifetime contract;
+  the W2 envelope builder copies the body into `EventEnvelope.body`
+  (a `bytes` field that owns a `std::string`) synchronously.
+- The function uses case-insensitive comparison (`strcasecmp`), so
+  "Unique-ID", "unique-id", and "UNIQUE-ID" all match the same
+  header. The W2 builder uses canonical casing in its constants
+  for readability but is robust to case variation in source events.
+- For `iter`-style enumeration of all headers (needed by the
+  include-list filter), the W2 builder walks `event->headers` directly
+  via the public `switch_event_header_t` chain (`hp->name`,
+  `hp->value`, `hp->next`). This is the only public method the
+  v1.10.12 API exposes for "list all headers"; `switch_event_serialize`
+  exists but allocates a flat string.
+
+**Used by W2 code:**
+
+- `src/events/envelope.cc` — `BuildEnvelope` uses
+  `switch_event_get_header` for the well-known fields (Unique-ID,
+  Event-Date-Timestamp, etc.) and walks `event->headers` directly
+  for the include-list-driven `headers` map.
+
+---
+
+## FF-020 — `switch_event_create_subclass` requires `SWITCH_EVENT_CUSTOM` + non-NULL subclass, adds `Event-Subclass` header
+
+**Claim.** `switch_event_create_subclass(event, event_id, subclass_name)`
+is a macro that expands to
+`switch_event_create_subclass_detailed(__FILE__, __SWITCH_FUNC__,
+__LINE__, event, event_id, subclass_name)`. The
+detailed function:
+
+1. Sets `*event = NULL` unconditionally on entry.
+2. Returns `SWITCH_STATUS_GENERR` (without allocating) if
+   `event_id` is neither `SWITCH_EVENT_CLONE` nor `SWITCH_EVENT_CUSTOM`
+   AND `subclass_name` is non-NULL. (Translation: only CUSTOM /
+   CLONE events may carry a subclass name; the function refuses
+   to set a subclass on, e.g., a `SWITCH_EVENT_CHANNEL_HANGUP`
+   event.)
+3. Allocates a new event (or pops from the recycle queue),
+   memsets to zero, sets `event_id`.
+4. If `subclass_name != NULL`: stores `subclass_name` (DUP'd) into
+   `(*event)->subclass_name` AND calls
+   `switch_event_add_header_string(*event, SWITCH_STACK_BOTTOM,
+   "Event-Subclass", subclass_name)` so the wire form carries
+   the subclass under the `Event-Subclass` header.
+5. Returns `SWITCH_STATUS_SUCCESS`.
+
+The wire-side subclass identifier is therefore the
+`Event-Subclass` header value. Subscribers / handlers that filter
+on subclass match against this header.
+
+Subclass names that you intend to FIRE (publish) should be
+reserved up-front via `switch_event_reserve_subclass(name)` at
+module load — but reservation is optional for FIRING (only required
+for FS internal accounting). Reservation IS required to bind to a
+specific subclass via `switch_event_bind(..., SWITCH_EVENT_CUSTOM,
+subclass_name, ...)`. Our W2 module binds to `SWITCH_EVENT_ALL` and
+filters in-process, so we do not need to reserve our `osw.audit.*`
+subclasses to receive them — but reserving is still polite and
+audit-friendly (the bind path in `switch_event_bind_removable` at
+lines 2071-2079 auto-reserves on demand, so a missed reservation is
+not catastrophic).
+
+**Source.**
+
+- Macro: `src/include/switch_event.h:150-153`.
+- `switch_event_create_subclass_detailed`: `src/switch_event.c:747-787`.
+- `switch_event_reserve_subclass_detailed`: `src/switch_event.c:485-522`.
+
+**Permalinks.**
+
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_event.h#L150-L153>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L747-L787>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L485-L522>
+
+**Excerpt — macro (lines 150-153 of switch_event.h):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_event_create_subclass_detailed(const char *file, const char *func, int line,
+                                                                      switch_event_t **event, switch_event_types_t event_id, const char *subclass_name);
+#define switch_event_create_subclass(_e, _eid, _sn) switch_event_create_subclass_detailed(__FILE__, (const char * )__SWITCH_FUNC__, __LINE__, _e, _eid, _sn)
+```
+
+**Excerpt — `switch_event_create_subclass_detailed` (lines 747-787):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_event_create_subclass_detailed(const char *file, const char *func, int line,
+                                                                      switch_event_t **event, switch_event_types_t event_id, const char *subclass_name)
+{
+#ifdef SWITCH_EVENT_RECYCLE
+    void *pop;
+#endif
+
+    *event = NULL;
+
+    if ((event_id != SWITCH_EVENT_CLONE && event_id != SWITCH_EVENT_CUSTOM) && subclass_name) {
+        return SWITCH_STATUS_GENERR;
+    }
+#ifdef SWITCH_EVENT_RECYCLE
+    if (EVENT_RECYCLE_QUEUE && switch_queue_trypop(EVENT_RECYCLE_QUEUE, &pop) == SWITCH_STATUS_SUCCESS && pop) {
+        *event = (switch_event_t *) pop;
+    } else {
+#endif
+        *event = ALLOC(sizeof(switch_event_t));
+        switch_assert(*event);
+#ifdef SWITCH_EVENT_RECYCLE
+    }
+#endif
+
+    memset(*event, 0, sizeof(switch_event_t));
+
+    if (event_id == SWITCH_EVENT_REQUEST_PARAMS || event_id == SWITCH_EVENT_CHANNEL_DATA || event_id == SWITCH_EVENT_MESSAGE) {
+        (*event)->flags |= EF_UNIQ_HEADERS;
+    }
+
+    if (event_id != SWITCH_EVENT_CLONE) {
+        (*event)->event_id = event_id;
+        switch_event_prep_for_delivery_detailed(file, func, line, *event);
+    }
+
+    if (subclass_name) {
+        (*event)->subclass_name = DUP(subclass_name);
+        switch_event_add_header_string(*event, SWITCH_STACK_BOTTOM, "Event-Subclass", subclass_name);
+    }
+
+    return SWITCH_STATUS_SUCCESS;
+}
+```
+
+**Implications.**
+
+- The W2 audit helper `osw::audit::Emit(name, headers)` calls
+  `switch_event_create_subclass(&ev, SWITCH_EVENT_CUSTOM, full_subclass)`
+  where `full_subclass = "osw.audit." + name`. It must pass
+  `SWITCH_EVENT_CUSTOM` (not `SWITCH_EVENT_ALL` or another id); any
+  other event_id with a non-NULL subclass returns
+  `SWITCH_STATUS_GENERR` and the caller's `ev` stays NULL.
+- The W2 audit subclass family is `osw.audit.*`:
+  `osw.audit.module_loaded`, `osw.audit.subscriber_connected`,
+  `osw.audit.subscriber_disconnected`,
+  `osw.audit.subscriber_kicked` (RESOURCE_EXHAUSTED), and any
+  future-W3+ control-API audit subclasses (`osw.audit.originate_started`,
+  etc.). The W2.5 review (Codex B-2) removed
+  `osw.audit.module_shutdown_with_pending_events` because the audit
+  was emitted AFTER `Binder::Stop()` and was therefore dead-lettered
+  for gRPC subscribers (the binder was unbound, so the
+  `switch_event_fire → osw_event_handler → ring` path was broken).
+  Operators now consume the equivalent signal via the FS-log
+  `module_shutdown_drain_timeout` WARN line plus the
+  `Health.tierN_dropped_total` counters.
+- The classifier (`src/events/tier.cc`) recognises subclasses
+  matching the glob `osw.audit.*` and routes them to Tier 1
+  unconditionally (per W2 default rules).
+- Subscribers that filter by `subclass_name` on the envelope side
+  (the `EventEnvelope.subclass_name` field, populated from the
+  `Event-Subclass` header in the envelope builder) will receive
+  the dotted-namespace string we passed in. There is no FS-side
+  case normalisation; ours stays lowercase by convention.
+- We deliberately do NOT call `switch_event_reserve_subclass`
+  at module load for the `osw.audit.*` family. We bind to
+  `SWITCH_EVENT_ALL` so reservation is unnecessary for our own
+  receive path, and the auto-reservation in
+  `switch_event_bind_removable:2071-2079` would only fire if some
+  third party tried to bind to our exact subclass — which is
+  fine. If a future caller wants to bind a SPECIFIC subclass
+  filter at the FS level, we will need to reserve it first; the
+  cost is negligible and the entry would be tracked in
+  `src/events/binder.cc::Init()`.
+
+**Used by W2 code:**
+
+- `src/observability/audit.cc` — `osw::audit::Emit` builds the
+  CUSTOM event with `Event-Subclass = "osw.audit." + name`, adds
+  caller-supplied headers, and fires via `osw::EventGuard::fire()`.
+  The event then re-enters our own pipeline via the binder
+  callback (Tier 1 by classifier rule) and ships to subscribers.
+- `tests/unit/observability/audit_test.cc` — exercises the helper
+  against the FS-mock seam; verifies `Event-Subclass` is set to the
+  full dotted name and the subclass-name slot on the envelope is
+  populated.
+
+---
+
 ## How to add a new FF entry
 
 If you find a previously-undocumented FreeSWITCH behaviour that

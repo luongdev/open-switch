@@ -105,13 +105,6 @@ grpc::Status ControlServiceSkeleton::BlindTransfer(
     return handlers::Unimplemented("BlindTransfer", "W3");
 }
 
-// --- W2-bound: events streaming -----------------------------------------
-
-grpc::Status ControlServiceSkeleton::SubscribeEvents(
-    grpc::ServerContext*,
-    const open_switch::control::v1::SubscribeEventsRequest*,
-    grpc::ServerWriter<open_switch::events::v1::EventEnvelope>*) {
-    return handlers::Unimplemented("SubscribeEvents", "W2");
-}
+// W2-bound `SubscribeEvents` lives in subscribe_events_handler.cc.
 
 }  // namespace osw::control

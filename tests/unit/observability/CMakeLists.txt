@@ -18,3 +18,14 @@ osw_add_unit_test(
     SOURCES health_test.cc
     LIBS    osw_observability
 )
+
+# Audit helper test — links the FS-mock-seam variant of audit.cc
+# (osw_audit_test_helpers, defined in src/observability/CMakeLists.txt).
+# OSW_TEST_FS_MOCK is forwarded by that lib's PUBLIC compile-definition
+# so the test TU pulls in fs_mock.h instead of <switch.h>.
+osw_add_unit_test(
+    NAME    audit_test
+    LABEL   "observability;unit"
+    SOURCES audit_test.cc
+    LIBS    osw_audit_test_helpers osw_observability
+)

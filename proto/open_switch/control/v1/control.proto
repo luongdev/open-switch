@@ -298,7 +298,12 @@ message SubscribeEventsRequest {
   RequestHeader header = 1;
   // Filter by tier (e.g. "TIER_1_CRITICAL"). Empty = all tiers.
   repeated string tiers = 2;
-  // Filter by event name pattern (glob). Empty = all events.
+  // Filter by event name pattern. V1 supports PREFIX-WILDCARD only:
+  // a trailing `*` matches any suffix (e.g. `CHANNEL_*` matches
+  // `CHANNEL_HANGUP_COMPLETE`); anything else is an exact match.
+  // Generic glob syntax (`*` anywhere, `?`, `[abc]` character classes)
+  // is NOT supported in V1 — see the W2.5 review (Codex C-2) and
+  // `specs/control-api/spec.md` §SubscribeEvents. Empty = all events.
   repeated string event_names = 3;
   // Replay from this sequence (exclusive). The module replays from
   // since_seq+1 to ring tail if still in the replay ring, then
@@ -313,6 +318,19 @@ message SubscribeEventsRequest {
   // (relevant only if the gRPC server fronts multiple module
   // instances; in single-node deploys leave empty).
   string node_id = 5;
+  // Glob patterns matched against the `Event-Subclass` header (for
+  // CUSTOM events). Empty list = match all subclasses (subscription
+  // is unfiltered on the subclass axis). Uses the SAME prefix-wildcard
+  // semantics as `event_names`: a trailing `*` is a prefix glob
+  // (e.g. `osw.audit.*` matches `osw.audit.module_loaded`); anything
+  // else is an exact match. Generic glob syntax is not supported.
+  //
+  // The filter is applied AND-style with `event_names` and `tiers`:
+  // an envelope must satisfy all set filters to be delivered. Note
+  // that non-CUSTOM events have an empty subclass; if `subclass_globs`
+  // is set, an event with an empty subclass matches only if `""` (or
+  // an exact-empty pattern) appears in the list.
+  repeated string subclass_globs = 6;
 }
 
 // ─── Health ──────────────────────────────────────────────────────────

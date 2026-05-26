@@ -31,12 +31,18 @@ namespace {
 // onto DEBUG since FS lacks a separate trace level.
 switch_log_level_t MapLevel(Level lvl) noexcept {
     switch (lvl) {
-        case Level::kTrace:    return SWITCH_LOG_DEBUG;
-        case Level::kDebug:    return SWITCH_LOG_DEBUG;
-        case Level::kInfo:     return SWITCH_LOG_INFO;
-        case Level::kWarn:     return SWITCH_LOG_WARNING;
-        case Level::kError:    return SWITCH_LOG_ERROR;
-        case Level::kCritical: return SWITCH_LOG_CRIT;
+        case Level::kTrace:
+            return SWITCH_LOG_DEBUG;
+        case Level::kDebug:
+            return SWITCH_LOG_DEBUG;
+        case Level::kInfo:
+            return SWITCH_LOG_INFO;
+        case Level::kWarn:
+            return SWITCH_LOG_WARNING;
+        case Level::kError:
+            return SWITCH_LOG_ERROR;
+        case Level::kCritical:
+            return SWITCH_LOG_CRIT;
     }
     return SWITCH_LOG_INFO;
 }
@@ -45,22 +51,30 @@ switch_log_level_t MapLevel(Level lvl) noexcept {
 // userdata is already PII-redacted and prebuilt by log.cc::Logv, so we
 // emit it via the "%s" format slot — NEVER pass user-controlled text
 // as the format argument.
-void DefaultSink(Level level, std::string_view subsystem,
+void DefaultSink(Level level,
+                 std::string_view subsystem,
                  std::string_view traceparent,
                  std::string_view message) noexcept {
     char line[2048];
     int written;
     if (!traceparent.empty()) {
-        written = std::snprintf(line, sizeof(line),
+        written = std::snprintf(line,
+                                sizeof(line),
                                 "[osw:%.*s tp=%.*s] %.*s",
-                                static_cast<int>(subsystem.size()), subsystem.data(),
-                                static_cast<int>(traceparent.size()), traceparent.data(),
-                                static_cast<int>(message.size()), message.data());
+                                static_cast<int>(subsystem.size()),
+                                subsystem.data(),
+                                static_cast<int>(traceparent.size()),
+                                traceparent.data(),
+                                static_cast<int>(message.size()),
+                                message.data());
     } else {
-        written = std::snprintf(line, sizeof(line),
+        written = std::snprintf(line,
+                                sizeof(line),
                                 "[osw:%.*s] %.*s",
-                                static_cast<int>(subsystem.size()), subsystem.data(),
-                                static_cast<int>(message.size()), message.data());
+                                static_cast<int>(subsystem.size()),
+                                subsystem.data(),
+                                static_cast<int>(message.size()),
+                                message.data());
     }
     if (written < 0) {
         return;
@@ -76,8 +90,14 @@ void DefaultSink(Level level, std::string_view subsystem,
     // the signature. A future refinement can plumb the original
     // caller's __FILE__/__LINE__ through a macro at every osw::log::*
     // call site.
-    switch_log_printf(SWITCH_CHANNEL_ID_LOG, "mod_open_switch", "osw_log_emit", 0,
-                      nullptr, MapLevel(level), "%s\n", line);
+    switch_log_printf(SWITCH_CHANNEL_ID_LOG,
+                      "mod_open_switch",
+                      "osw_log_emit",
+                      0,
+                      nullptr,
+                      MapLevel(level),
+                      "%s\n",
+                      line);
 }
 
 }  // namespace

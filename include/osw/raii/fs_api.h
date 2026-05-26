@@ -89,6 +89,66 @@ inline switch_status_t EventFire(switch_event_t** ev) noexcept {
     return switch_event_fire(ev);
 }
 
+// --- Event create-subclass + header add (FF-020) ---------------------
+//
+// FF-020 — switch_event_create_subclass is the canonical entry point
+// for CUSTOM events that carry a subclass_name. The macro expands to
+// switch_event_create_subclass_detailed which (a) refuses any event_id
+// other than CUSTOM/CLONE when subclass_name is non-NULL, (b) DUP's the
+// subclass into (*event)->subclass_name, and (c) adds an
+// "Event-Subclass" header carrying the same string.
+//
+// switch_event_add_header_string DUP's the value into the event's own
+// allocation; the caller does NOT need to keep the source buffer alive
+// past the call. The header name is also DUP'd internally.
+
+inline switch_status_t EventCreateSubclass(switch_event_t** out,
+                                           switch_event_types_t type,
+                                           const char* subclass_name) noexcept {
+    return switch_event_create_subclass(out, type, subclass_name);
+}
+
+inline switch_status_t EventAddHeaderString(switch_event_t* ev,
+                                            switch_stack_t stack,
+                                            const char* name,
+                                            const char* value) noexcept {
+    return switch_event_add_header_string(ev, stack, name, value);
+}
+
+// --- Event bind / unbind (FF-018) ------------------------------------
+//
+// FF-018 — switch_event_bind registers `callback` for `event` (with
+// optional `subclass_name` filter, NULL = match all subclasses).
+// switch_event_unbind_callback removes every registration whose
+// `callback` matches under the FS rwlock; after it returns no further
+// dispatch will invoke the callback.
+
+inline switch_status_t EventBind(const char* id,
+                                 switch_event_types_t event,
+                                 const char* subclass_name,
+                                 switch_event_callback_t callback,
+                                 void* user_data) noexcept {
+    return switch_event_bind(id, event, subclass_name, callback, user_data);
+}
+
+inline switch_status_t EventUnbindCallback(switch_event_callback_t callback) noexcept {
+    return switch_event_unbind_callback(callback);
+}
+
+// --- Event-header read (FF-019) --------------------------------------
+//
+// FF-019 — switch_event_get_header returns an FS-owned char* whose
+// lifetime is the event's. Caller MUST NOT free or retain past the
+// callback's return. switch_event_get_body has identical ownership.
+
+inline const char* EventGetHeader(switch_event_t* ev, const char* name) noexcept {
+    return switch_event_get_header(ev, name);
+}
+
+inline const char* EventGetBody(switch_event_t* ev) noexcept {
+    return switch_event_get_body(ev);
+}
+
 // --- Media bug add / remove ------------------------------------------
 //
 // `switch_core_media_bug_add(...)` allocates and inserts a bug into
