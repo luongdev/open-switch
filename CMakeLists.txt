@@ -1,7 +1,10 @@
 # open-switch — mod_open_switch.so build
 #
-# Builds a FreeSWITCH module that bridges FS to external services via gRPC,
-# with Redis Streams / Pub/Sub event delivery.
+# Builds a FreeSWITCH module that bridges FS to external services via gRPC.
+# Events are delivered via gRPC SubscribeEvents (in-memory per-tier rings,
+# broadcast to subscribers). There is no in-module Redis / Kafka / NATS
+# producer; subscribers persist as they choose. See
+# openspec/changes/core-module-v1/designs/transport-adr.md.
 #
 # Required system deps (provided by the builder image, see deploy/docker/Dockerfile.builder):
 #   - FreeSWITCH headers (linked from /usr/local/include/freeswitch by default)
@@ -10,11 +13,6 @@
 #   - Abseil (gRPC dep)
 #   - OpenSSL
 #   - libuuid
-#
-# Note: as of the Phase-1-fix-sprint (post-Codex C-4), the module no
-# longer ships any direct event-bus producer (no Redis, no Kafka). Events
-# are delivered via gRPC SubscribeEvents only. If future versions reintroduce
-# in-module event producers, those deps are added under new feature flags.
 #
 # Build (in builder container):
 #   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -127,8 +125,14 @@ file(MAKE_DIRECTORY "${OSW_PROTO_GEN_DIR}")
 # Skeleton stage: protobuf generation script in cmake/proto.cmake (TBD).
 # add_subdirectory(proto)
 
-# ─── Module target (filled in by src/ subdirectory once implementation lands) ───
-# add_subdirectory(src)
+# ─── Module target ──────────────────────────────────────────────────────
+# Phase-1 stub lives in src/mod_open_switch.cc — minimal load + shutdown
+# that lets FreeSWITCH `load mod_open_switch` without crashing and gives
+# the Dockerfile.builder a real .so to ship to /dist/mod/. The
+# implementation phase replaces the stub with the actual control + event
+# + media subsystems under src/{control,events,media,...}/. See Codex
+# round-2 finding N6 for context.
+add_subdirectory(src)
 
 # ─── Tests ────────────────────────────────────────────────────────────
 if(OSW_BUILD_TESTS)
