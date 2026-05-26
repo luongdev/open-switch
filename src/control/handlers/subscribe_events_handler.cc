@@ -304,8 +304,10 @@ void WriterLoop(grpc::ServerContext* ctx,
         if (!bytes)
             continue;
         arena.Reset();
-        auto* env =
-            google::protobuf::Arena::CreateMessage<open_switch::events::v1::EventEnvelope>(&arena);
+        // Arena::Create<T> replaces the deprecated CreateMessage<T> in
+        // protobuf 4.x; the protoc generated headers shipped with the
+        // FS builder image expose the new API only.
+        auto* env = google::protobuf::Arena::Create<open_switch::events::v1::EventEnvelope>(&arena);
         if (!env->ParseFromString(*bytes)) {
             osw::log::Warn(kSubsystem,
                            "subscriber id=%s: failed to parse envelope bytes (size=%zu); "

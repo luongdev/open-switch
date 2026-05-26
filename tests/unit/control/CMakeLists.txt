@@ -9,5 +9,8 @@ osw_add_unit_test(
     NAME    server_test
     LABEL   "control;unit"
     SOURCES server_test.cc
-    LIBS    osw_control
+    # osw_control_fs supplies the real SubscribeEvents implementation
+    # (referenced by ControlServiceSkeleton's vtable). Linking only
+    # osw_control left the symbol unresolved.
+    LIBS    osw_control_fs osw_control
 )
