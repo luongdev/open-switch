@@ -2071,6 +2071,160 @@ SWITCH_DECLARE(switch_status_t) switch_event_create_subclass_detailed(const char
 
 ---
 
+## FF-021 — `switch_ivr_originate` signature and ownership
+
+**Claim.** `switch_ivr_originate` is the canonical synchronous
+unattended originate entry point in v1.10.12. For V1 (unattended
+originate), the `session` parameter is NULL. On success:
+- `*bleg` is set to the newly created session; the caller owns the
+  read-lock and MUST call `switch_core_session_rwunlock(*bleg)` once
+  done.
+- `*cause` is set to the result cause code (typically
+  `SWITCH_CAUSE_SUCCESS = 142` when the call answers).
+The `ovars` event (channel variables) is consumed by FS regardless of
+result — FS calls `switch_event_destroy` on it internally. Callers
+MUST NOT destroy `ovars` after this call.
+
+**Source.** `src/include/switch_ivr.h:517-529` in
+`signalwire/freeswitch`.
+
+**Permalink.**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_ivr.h#L517-L529>
+
+**Excerpt** (verbatim, lines 517-529):
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *session,
+                                                     switch_core_session_t **bleg,
+                                                     switch_call_cause_t *cause,
+                                                     const char *bridgeto,
+                                                     uint32_t timelimit_sec,
+                                                     const switch_state_handler_table_t *table,
+                                                     const char *cid_name_override,
+                                                     const char *cid_num_override,
+                                                     switch_caller_profile_t *caller_profile_override,
+                                                     switch_event_t *ovars, switch_originate_flag_t flags,
+                                                     switch_call_cause_t *cancel_cause,
+                                                     switch_dial_handle_t *dh);
+```
+
+**Implications.**
+
+- `session == NULL` selects the unattended originate path (V1).
+  Attended originate (where an existing call is bridged) passes the
+  A-leg session; that is a V2 concern.
+- `table`, `caller_profile_override`, `cancel_cause`, and `dh` may
+  all be NULL for the V1 unattended path.
+- The caller owns the read-lock on `*bleg` and must release it via
+  `switch_core_session_rwunlock` (FF-016) after extracting the UUID or
+  performing any immediate post-originate channel setup.
+- `ovars` ownership is transferred unconditionally. Even on failure
+  the function releases the event internally (observed in
+  `src/switch_ivr_originate.c` — the `switch_event_destroy(&ovars)`
+  call is in both the success and failure unwind paths). Callers using
+  the `osw::raii::fs::OriginateSession` wrapper MUST call
+  `ReleaseOvars()` on `OriginateOptions` before calling OriginateSession
+  to avoid a double-free.
+- V1 uses `SOF_NONE` (flags = 0). `SOF_NOBLOCK` is the async path
+  (V2).
+
+**Used by W3 code:**
+
+- `src/control/handlers/originate_handler.cc` — calls
+  `osw::raii::fs::OriginateSession` (the thin wrapper) and holds the
+  bleg read-lock only for the UUID extraction, releasing it
+  immediately after `switch_core_session_get_uuid`.
+
+---
+
+## FF-022 — `switch_channel_hangup` cause-code semantics and idempotency
+
+**Claim.** `switch_channel_hangup(channel, hangup_cause)` is a macro
+that expands to `switch_channel_perform_hangup(channel, __FILE__,
+__SWITCH_FUNC__, __LINE__, hangup_cause)`. The function is idempotent:
+a second call on an already-hung-up channel (one that already has the
+`OCF_HANGUP` internal flag set) returns the channel's current state
+without firing another hangup event or modifying `channel->hangup_cause`.
+The caller MUST hold the session read-lock (FF-016) when calling this
+function.
+
+**Source.** `src/include/switch_channel.h:580-589` (declaration +
+macro) and `src/switch_channel.c:3380-3403` (implementation) in
+`signalwire/freeswitch`.
+
+**Permalink (header).**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_channel.h#L580-L589>
+
+**Permalink (implementation).**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_channel.c#L3380-L3403>
+
+**Excerpt (header, lines 580-589):**
+
+```c
+SWITCH_DECLARE(switch_channel_state_t) switch_channel_perform_hangup(switch_channel_t *channel,
+                                                                     const char *file,
+                                                                     const char *func, int line,
+                                                                     switch_call_cause_t hangup_cause);
+
+#define switch_channel_hangup(channel, hangup_cause) \
+    switch_channel_perform_hangup(channel, __FILE__, __SWITCH_FUNC__, __LINE__, hangup_cause)
+```
+
+**Excerpt (implementation, lines 3380-3403):**
+
+```c
+SWITCH_DECLARE(switch_channel_state_t) switch_channel_perform_hangup(switch_channel_t *channel,
+                                                                     const char *file,
+                                                                     const char *func, int line,
+                                                                     switch_call_cause_t hangup_cause)
+{
+    int ok = 0;
+
+    switch_assert(channel != NULL);
+
+    /* one per customer */
+    switch_mutex_lock(channel->state_mutex);
+    if (!(channel->opaque_flags & OCF_HANGUP)) {
+        channel->opaque_flags |= OCF_HANGUP;
+        ok = 1;
+    }
+    switch_mutex_unlock(channel->state_mutex);
+
+    /* ... */
+    if (!ok) {
+        return channel->state;
+    }
+    /* sets channel->state = CS_HANGUP, fires CHANNEL_HANGUP event, etc. */
+```
+
+**Implications.**
+
+- The idempotency check is the `OCF_HANGUP` bit-flag under
+  `channel->state_mutex`. A second `switch_channel_hangup` call on an
+  already-hung-up channel returns `channel->state` (which will be
+  `CS_HANGUP` or later) without any event firing or state transition.
+- The Hangup handler uses the returned state to detect "already dead"
+  and surfaces `FAILED_PRECONDITION`. This is a best-effort check:
+  there is a narrow race between "alive" observation and the hangup
+  call, but the handler's lock discipline (holding the session
+  read-lock via `SessionGuard` through the `ChannelHangup` call)
+  makes the race window essentially zero on a well-configured system.
+- The caller must hold the session read-lock (FF-016) so that FS's
+  internal `switch_core_session_rwlock` disciplines are satisfied. The
+  `SessionGuard` in the Hangup handler provides this.
+- `switch_channel_hangup` does NOT release the session read-lock.
+  That remains the caller's responsibility (SessionGuard dtor).
+
+**Used by W3 code:**
+
+- `src/control/handlers/hangup_handler.cc` — acquires
+  `SessionGuard::Locate(uuid)`, checks `Valid()`, then calls
+  `osw::raii::fs::ChannelHangup(ch, cause)` under the read-lock.
+- `src/control/handlers/hangup_many_handler.cc` — same pattern, once
+  per uuid in the request list.
+
+---
+
 ## How to add a new FF entry
 
 If you find a previously-undocumented FreeSWITCH behaviour that
