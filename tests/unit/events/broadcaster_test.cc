@@ -37,6 +37,7 @@
 
 #include "open_switch/events/v1/events.pb.h"
 
+#include "osw/events/binder.h"  // RingSet full definition
 #include "osw/events/ring.h"
 #include "osw/events/subscribe/send_queue.h"
 #include "osw/events/subscribe/subscriber.h"
