@@ -73,10 +73,10 @@ foreach(proto_in IN LISTS _osw_protos)
         COMMAND ${CMAKE_COMMAND} -E make_directory "${OSW_PROTO_GEN_DIR}"
         COMMAND
             "${_osw_protoc}"
-                --proto_path="${OSW_PROTO_DIR}"
-                --cpp_out="${OSW_PROTO_GEN_DIR}"
-                --grpc_out="${OSW_PROTO_GEN_DIR}"
-                --plugin=protoc-gen-grpc="${_osw_grpc_cpp_plugin}"
+                --proto_path=${OSW_PROTO_DIR}
+                --cpp_out=${OSW_PROTO_GEN_DIR}
+                --grpc_out=${OSW_PROTO_GEN_DIR}
+                --plugin=protoc-gen-grpc=${_osw_grpc_cpp_plugin}
                 "${proto_in}"
         DEPENDS "${proto_in}"
         COMMENT "protoc ${proto_rel}"
