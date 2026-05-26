@@ -25,7 +25,8 @@ Track A owns and lands first.
 
 ## Scope boundary (IN / OUT)
 
-**IN**
+### In scope
+
 - All 9 RPCs return real grpc::Status: OK on success, codes per the
   proto + status-codes design doc (`designs/status-codes.md`).
 - Shared helper layer:
@@ -49,7 +50,8 @@ Track A owns and lands first.
   methods from the unimplemented forward; only the V2-deferred RPCs
   remain (none in V1).
 
-**OUT**
+### Out of scope
+
 - Async / fire-and-forget Originate. V1 is synchronous only — the
   request blocks until the originated call answers, fails, or hits
   timeout. Async path is V2.
