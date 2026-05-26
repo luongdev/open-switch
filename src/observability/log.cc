@@ -47,7 +47,7 @@ namespace {
 void NullSink(Level /*level*/, std::string_view /*subsystem*/,
               std::string_view /*traceparent*/, std::string_view /*message*/) noexcept {
     // Intentional no-op. Production code overrides via
-    // InstallDefaultSinkOnModuleLoad() (log_default_sink.cc) early in
+    // InstallDefaultSinkForModule() (log_default_sink.cc) early in
     // mod_open_switch_load.
 }
 
