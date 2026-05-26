@@ -1,0 +1,61 @@
+# Build artifacts
+build/
+out/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+Makefile
+install_manifest.txt
+compile_commands.json
+
+# Object & library files
+*.o
+*.obj
+*.lo
+*.la
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+
+# Vendored third-party (gRPC FetchContent target)
+third_party/grpc/
+third_party/abseil-cpp/
+third_party/protobuf/
+
+# Generated protobuf
+src/generated/
+*.pb.cc
+*.pb.h
+*.grpc.pb.cc
+*.grpc.pb.h
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cache/
+.clangd/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs & coverage
+*.log
+*.gcov
+*.gcda
+*.gcno
+coverage/
+
+# Local dev
+.env
+.env.local
+local.conf
