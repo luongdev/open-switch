@@ -32,6 +32,7 @@
 #   subscribe/send_queue.cc (added by broadcaster commit)
 add_library(osw_events STATIC
     tier.cc
+    ring.cc
 )
 target_include_directories(osw_events PUBLIC
     ${CMAKE_SOURCE_DIR}/include

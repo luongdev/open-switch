@@ -9,3 +9,10 @@ osw_add_unit_test(
     SOURCES tier_test.cc
     LIBS    osw_events
 )
+
+osw_add_unit_test(
+    NAME    ring_test
+    LABEL   "events;unit"
+    SOURCES ring_test.cc
+    LIBS    osw_events
+)
