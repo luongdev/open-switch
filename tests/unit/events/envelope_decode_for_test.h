@@ -57,9 +57,7 @@ inline bool ReadVarint(const std::uint8_t*& p,
     return false;
 }
 
-inline bool SkipField(const std::uint8_t*& p,
-                      const std::uint8_t* end,
-                      int wire_type) noexcept {
+inline bool SkipField(const std::uint8_t*& p, const std::uint8_t* end, int wire_type) noexcept {
     if (wire_type == 0) {  // varint
         std::uint64_t dummy = 0;
         return ReadVarint(p, end, dummy);

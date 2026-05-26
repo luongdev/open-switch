@@ -42,6 +42,7 @@
 #include "osw/events/tier.h"
 #include "osw/observability/health.h"
 #include "osw/raii/fs_mock.h"
+
 #include "envelope_decode_for_test.h"
 
 namespace {
