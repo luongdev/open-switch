@@ -35,15 +35,31 @@ is a business requirement.
 
 | FS event | Why Tier 1 |
 |---|---|
+| `CHANNEL_CREATE` | Lifecycle anchor — subscribers reconstructing call state need every transition; losing CREATE leaves the rest of the per-call trail orphaned |
+| `CHANNEL_PROGRESS` | Lifecycle (ringing / early media); same reconstruction argument as CREATE |
 | `CHANNEL_ANSWER` | Billing start trigger |
 | `CHANNEL_BRIDGE` | Talk-time start, agent stats |
-| `CHANNEL_HANGUP_COMPLETE` | CDR finalisation, billing stop |
+| `CHANNEL_UNBRIDGE` | Talk-time end (separate from HANGUP_COMPLETE for transfers) |
 | `CHANNEL_DESTROY` | Resource cleanup confirmation; if lost, leak detection breaks |
+| `CHANNEL_HANGUP_COMPLETE` | CDR finalisation, billing stop |
 | `RECORD_START` | Compliance proof of recording start |
 | `RECORD_STOP` | Compliance proof of recording end |
+| `CDR_REPORT` | Final per-leg CDR |
 | `DETECTED_TONE` (if AMD-billed) | AMD decision = bill or not |
 | `CUSTOM` with subclass matching `*::critical` | Domain-specific business events |
 | `CUSTOM` with subclass matching `osw::audit::*` | Module's own audit events |
+
+**Note on Tier-1 churn**: The lifecycle events (CREATE/PROGRESS/ANSWER/
+BRIDGE/UNBRIDGE/DESTROY/HANGUP_COMPLETE) collectively fire ~7 events per
+call. At 100 calls/min that's ~700 ev/min in Tier 1 — well within ring
+capacity at the default 16384 entries (~23 minutes of replay coverage).
+At 1000 calls/min the ring covers ~2.3 minutes; operators MUST either
+raise the ring size or accept short replay windows. The W2 closeout
+review (gemini-W2-post-merge.md) raised this trade-off; the choice
+favours subscriber-side call-state reconstruction over generous replay
+coverage. Operators who want a tighter Tier-1 set can downgrade CREATE
++ PROGRESS to Tier 2 via the `tier1-events` config override (the
+classifier respects operator overrides over defaults).
 
 **Backpressure policy**:
 
@@ -86,16 +102,16 @@ real-time dashboards and IVR flows.
 
 | FS event | Notes |
 |---|---|
-| `CHANNEL_CREATE` | New call started |
-| `CHANNEL_PROGRESS` | Early-media indication |
-| `CHANNEL_PROGRESS_MEDIA` | Early media with SDP |
+| `CHANNEL_PROGRESS_MEDIA` | Early media with SDP (lifecycle anchor CREATE/PROGRESS sit in Tier 1) |
 | `CHANNEL_HANGUP` | Hangup initiated (not yet complete; see Tier 1 for HANGUP_COMPLETE) |
 | `CHANNEL_OUTGOING` | Outbound leg started |
 | `CHANNEL_ORIGINATE` | Originate request |
 | `CHANNEL_PARK` / `CHANNEL_UNPARK` | IVR park state |
 | `CHANNEL_STATE` / `CHANNEL_CALLSTATE` | State-machine transitions |
+| `CHANNEL_HOLD` / `CHANNEL_UNHOLD` | Hold state |
 | `DTMF` | User input — usually Tier 2; ops may move to Tier 1 if IVR-business-critical |
 | `PRESENCE_IN` / `PRESENCE_OUT` | Status board updates |
+| `CUSTOM` with subclass `sofia::register` / `sofia::unregister` | SIP registration churn |
 | `CUSTOM` with subclass NOT matching `*::critical` or `*::debug` or `osw::audit::*` | Default for custom events |
 
 **Backpressure policy**: same as Tier 1 (evict oldest on ring overflow,
