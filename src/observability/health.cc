@@ -3,10 +3,11 @@
  *
  * Implementation of osw::Health. See include/osw/observability/health.h.
  *
- * SetVersions captures both strings under no synchronisation because it
- * is called exactly once during mod_open_switch_load, before any other
- * thread observes the Health instance. Subsequent reads via Snapshot
- * race against the never-modified strings — safe.
+ * Load-time only contract: SetVersions must be called exactly once
+ * during Module::Load before any reader observes this instance. The
+ * happens-before from the worker-thread spawn establishes the
+ * visibility for the gRPC service thread. Subsequent reads via
+ * Snapshot race against the never-modified strings — safe.
  *
  * The counter loads in GetSnapshot use std::memory_order_acquire so
  * each individual counter is consistent with its most recent store,

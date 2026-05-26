@@ -97,9 +97,10 @@ class Health {
     [[nodiscard]] Snapshot GetSnapshot() const;
 
  private:
-    // Versions are immutable after SetVersions; we still wrap them in
-    // a small mutex-protected struct to avoid std::string thread-safety
-    // assumptions. Reads happen during Snapshot().
+    // Load-time only contract: SetVersions must be called exactly once
+    // during Module::Load before any reader observes this instance.
+    // The happens-before from the worker-thread spawn establishes the
+    // visibility for the gRPC service thread.
     mutable std::atomic<Status> status_{Status::kServing};
 
     // Atomic counters owned by future subsystems.
