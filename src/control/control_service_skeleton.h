@@ -38,7 +38,10 @@ namespace control {
 class ControlServiceSkeleton final : public open_switch::control::v1::ControlService::Service {
   public:
     /// `health` is the module-wide Health aggregator. Non-owning.
-    explicit ControlServiceSkeleton(Health* health) noexcept;
+    /// Use fully qualified ::osw::Health to disambiguate from the
+    /// inherited `Health` RPC method declared by the generated
+    /// ControlService::Service base class.
+    explicit ControlServiceSkeleton(::osw::Health* health) noexcept;
 
     /// Set version strings reported by Health RPC. Called by GrpcServer
     /// before the server starts serving.
