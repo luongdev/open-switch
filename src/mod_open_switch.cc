@@ -51,10 +51,7 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_open_switch_shutdown);
 // the default RTLD_LOCAL load semantics (FF-010) — we do NOT want our
 // statically-linked gRPC + protobuf + abseil symbols to leak into other
 // FS modules.
-SWITCH_MODULE_DEFINITION(mod_open_switch,
-                         mod_open_switch_load,
-                         mod_open_switch_shutdown,
-                         NULL);
+SWITCH_MODULE_DEFINITION(mod_open_switch, mod_open_switch_load, mod_open_switch_shutdown, NULL);
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_open_switch_load) {
     // The `pool` argument is the module's APR pool (FF-014 — pool
@@ -66,13 +63,13 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_open_switch_load) {
         // allocates from `pool` via switch_core_alloc; we do NOT free
         // the returned ptr. We store it as a non-owning view inside
         // osw::Module for later subsystem registration.
-        *module_interface = switch_loadable_module_create_module_interface(
-            pool, modname);
+        *module_interface = switch_loadable_module_create_module_interface(pool, modname);
 
         if (*module_interface == NULL) {
             // FF-012: switch_log_printf is safe to call from any
             // thread and from module load specifically.
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+            switch_log_printf(SWITCH_CHANNEL_LOG,
+                              SWITCH_LOG_ERROR,
                               "mod_open_switch: failed to allocate "
                               "module interface\n");
             return SWITCH_STATUS_GENERR;
@@ -80,7 +77,8 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_open_switch_load) {
 
         if (!osw::Module::Instance().Load(pool, *module_interface)) {
             // osw::Module::Load logs the detailed failure cause.
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+            switch_log_printf(SWITCH_CHANNEL_LOG,
+                              SWITCH_LOG_ERROR,
                               "mod_open_switch: Module::Load returned false\n");
             return SWITCH_STATUS_GENERR;
         }
@@ -88,12 +86,14 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_open_switch_load) {
     } catch (const std::exception& e) {
         // FF-012: switch_log_printf with "%s" — `e.what()` is user-data,
         // never the format string.
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
-                          "mod_open_switch_load: exception: %s\n", e.what());
+        switch_log_printf(SWITCH_CHANNEL_LOG,
+                          SWITCH_LOG_ERROR,
+                          "mod_open_switch_load: exception: %s\n",
+                          e.what());
         return SWITCH_STATUS_GENERR;
     } catch (...) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
-                          "mod_open_switch_load: unknown exception\n");
+        switch_log_printf(
+            SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_open_switch_load: unknown exception\n");
         return SWITCH_STATUS_GENERR;
     }
 }
@@ -103,12 +103,14 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_open_switch_shutdown) {
         const bool ok = osw::Module::Instance().Shutdown();
         return ok ? SWITCH_STATUS_SUCCESS : SWITCH_STATUS_GENERR;
     } catch (const std::exception& e) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
-                          "mod_open_switch_shutdown: exception: %s\n", e.what());
+        switch_log_printf(SWITCH_CHANNEL_LOG,
+                          SWITCH_LOG_ERROR,
+                          "mod_open_switch_shutdown: exception: %s\n",
+                          e.what());
         return SWITCH_STATUS_GENERR;
     } catch (...) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
-                          "mod_open_switch_shutdown: unknown exception\n");
+        switch_log_printf(
+            SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mod_open_switch_shutdown: unknown exception\n");
         return SWITCH_STATUS_GENERR;
     }
 }

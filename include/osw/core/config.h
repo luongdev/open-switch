@@ -29,13 +29,13 @@ namespace osw {
 /// human-readable message suitable for the module load log line +
 /// the Tier-1 audit event.
 struct ConfigValidation {
-    bool        ok = true;
+    bool ok = true;
     std::string error;
 
     static ConfigValidation Ok() { return {}; }
     static ConfigValidation Fail(std::string msg) {
         ConfigValidation v;
-        v.ok    = false;
+        v.ok = false;
         v.error = std::move(msg);
         return v;
     }
@@ -89,7 +89,7 @@ struct Config {
 
     // --- Drain (W1 lifecycle observes the flag; full drain logic lands
     //           in W3/W4 alongside the owning subsystems)
-    std::uint32_t drain_timeout_seconds       = 30;
+    std::uint32_t drain_timeout_seconds = 30;
     // W2 owns this; W1 only stores the config value.
     std::uint32_t event_drain_timeout_seconds = 5;
 
@@ -98,10 +98,10 @@ struct Config {
     /// module load that logs via signal-safe write() then chains the
     /// previous handler. Default OFF — see architecture.md §"Terminate
     /// handler chaining".
-    bool osw_panic_on_unhandled       = false;
+    bool osw_panic_on_unhandled = false;
     /// If true, install signal handlers for SIGSEGV/SIGABRT/SIGBUS at
     /// module load. Default OFF — FS installs its own handlers.
-    bool osw_install_signal_handlers  = false;
+    bool osw_install_signal_handlers = false;
 
     // --- PII redaction patterns -----------------------------------------
     /// Regex patterns applied to log lines before emission. Empty list

@@ -32,9 +32,9 @@ namespace osw {
 
 namespace {
 
-constexpr const char* kSubsystem      = "core";
+constexpr const char* kSubsystem = "core";
 constexpr const char* kConfigFileName = "open_switch.conf";
-constexpr const char* kModuleVersion  = "0.1.0";
+constexpr const char* kModuleVersion = "0.1.0";
 
 // Compile the configured pattern strings into std::regex. Logs and
 // skips any pattern that fails (Validate already rejected them; this
@@ -46,9 +46,7 @@ std::vector<std::regex> CompilePatterns(const std::vector<std::string>& src) {
         try {
             out.emplace_back(p);
         } catch (const std::regex_error& e) {
-            osw::log::Error(kSubsystem,
-                            "skipping invalid PII redaction regex: %s",
-                            e.what());
+            osw::log::Error(kSubsystem, "skipping invalid PII redaction regex: %s", e.what());
         }
     }
     return out;
@@ -63,8 +61,7 @@ std::string FreeSwitchVersionString() {
 
 }  // namespace
 
-Module::Module() noexcept
-    : lifecycle_(&health_) {}
+Module::Module() noexcept : lifecycle_(&health_) {}
 
 Module::~Module() noexcept = default;
 
@@ -73,8 +70,7 @@ Module& Module::Instance() noexcept {
     return instance;
 }
 
-bool Module::Load(switch_memory_pool_t*                pool,
-                  switch_loadable_module_interface_t* iface) noexcept {
+bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t* iface) noexcept {
     std::lock_guard<std::mutex> lk(mu_);
     if (loaded_) {
         osw::log::Warn(kSubsystem, "Module::Load called twice; ignoring second call");
@@ -82,7 +78,7 @@ bool Module::Load(switch_memory_pool_t*                pool,
     }
 
     try {
-        pool_  = pool;
+        pool_ = pool;
         iface_ = iface;
 
         // 1. Install the FS-backed default log sink so subsequent log
@@ -107,8 +103,7 @@ bool Module::Load(switch_memory_pool_t*                pool,
         // 3. Validate.
         auto v = Validate(config_);
         if (!v.ok) {
-            osw::log::Error(kSubsystem,
-                            "config validation failed: %s", v.error.c_str());
+            osw::log::Error(kSubsystem, "config validation failed: %s", v.error.c_str());
             return false;
         }
 
@@ -160,9 +155,8 @@ bool Module::Shutdown() noexcept {
 
         // 2. Drain the gRPC server.
         if (grpc_server_) {
-            const auto deadline =
-                std::chrono::system_clock::now() +
-                std::chrono::seconds(config_.grpc_drain_deadline_seconds);
+            const auto deadline = std::chrono::system_clock::now() +
+                                  std::chrono::seconds(config_.grpc_drain_deadline_seconds);
             grpc_server_->Drain(deadline);
             grpc_server_.reset();
         }

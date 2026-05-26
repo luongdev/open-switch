@@ -21,11 +21,11 @@ syntax = "proto3";
 
 package open_switch.control.v1;
 
-option cc_enable_arenas = true;
-
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "open_switch/events/v1/events.proto";
+
+option cc_enable_arenas = true;
 
 // ─── Service ──────────────────────────────────────────────────────────
 
@@ -79,8 +79,7 @@ service ControlService {
   // ≥ 2 subscribers per node in HA — see event-tiers.md §"No-loss
   // reference architecture". Slow subscribers are kicked with
   // RESOURCE_EXHAUSTED when their per-subscriber send queue overflows.
-  rpc SubscribeEvents(SubscribeEventsRequest)
-      returns (stream open_switch.events.v1.EventEnvelope);
+  rpc SubscribeEvents(SubscribeEventsRequest) returns (stream open_switch.events.v1.EventEnvelope);
 
   // Health + module status.
   rpc Health(HealthRequest) returns (HealthResponse);
@@ -113,13 +112,13 @@ message ErrorDetail {
     UNAUTHORIZED = 3;
     PERMISSION_DENIED = 4;
     RESOURCE_EXHAUSTED = 5;
-    FREESWITCH_ERROR = 6;   // FS call returned non-success
+    FREESWITCH_ERROR = 6; // FS call returned non-success
     INTERNAL = 7;
-    UNAVAILABLE = 8;        // transient; retry safe
-    ALREADY_EXISTS = 9;     // request_id reused with different method
-    FAILED_PRECONDITION = 10;  // channel state wrong
-    DEADLINE_EXCEEDED = 11;   // gRPC deadline before completion
-    UNAUTHENTICATED = 12;    // API key or mTLS failure
+    UNAVAILABLE = 8; // transient; retry safe
+    ALREADY_EXISTS = 9; // request_id reused with different method
+    FAILED_PRECONDITION = 10; // channel state wrong
+    DEADLINE_EXCEEDED = 11; // gRPC deadline before completion
+    UNAUTHENTICATED = 12; // API key or mTLS failure
   }
   Type type = 1;
   string message = 2;
@@ -139,9 +138,9 @@ message OriginateRequest {
 
   enum Strategy {
     STRATEGY_UNSPECIFIED = 0;
-    SIMULTANEOUS = 1;  // ',' separator — first to answer wins
-    FAILOVER     = 2;  // '|' separator — try in order
-    MULTIPLE     = 3;  // ':_:' separator — keep all up (rare)
+    SIMULTANEOUS = 1; // ',' separator — first to answer wins
+    FAILOVER = 2; // '|' separator — try in order
+    MULTIPLE = 3; // ':_:' separator — keep all up (rare)
   }
   Strategy strategy = 3;
 
@@ -174,9 +173,9 @@ message OriginateRequest {
 }
 
 message DialplanTarget {
-  string destination = 1;  // extension
-  string dialplan    = 2;  // default "XML"
-  string context     = 3;  // default "default"
+  string destination = 1; // extension
+  string dialplan = 2; // default "XML"
+  string context = 3; // default "default"
 }
 
 message AppSequence {
@@ -240,7 +239,7 @@ message BridgeResponse {
 message ExecuteRequest {
   RequestHeader header = 1;
   string uuid = 2;
-  string app  = 3;
+  string app = 3;
   string args = 4;
   // If true, execute asynchronously (don't block the gRPC thread).
   bool async = 5;

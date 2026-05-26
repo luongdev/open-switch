@@ -66,12 +66,17 @@ void DefaultSink(Level level, std::string_view subsystem,
         return;
     }
 
-    // FF-012: switch_log_printf is thread-safe. We pass the module name
-    // as `file`/`func` because we lack the original caller's
-    // __FILE__/__LINE__ in the wrapper — a future refinement can plumb
-    // those through via a macro at every osw::log::* call site.
-    switch_log_printf(SWITCH_CHANNEL_LOG,
-                      "mod_open_switch", "osw_log_emit", 0,
+    // FF-012: switch_log_printf is thread-safe. We use the lower-level
+    // SWITCH_CHANNEL_ID_LOG channel id (a scalar) so we can pass our
+    // own literal file/func/line/userdata. The convenience macro
+    // SWITCH_CHANNEL_LOG would expand to
+    //   SWITCH_CHANNEL_ID_LOG, __FILE__, __SWITCH_FUNC__, __LINE__, NULL
+    // and inserting our literal "mod_open_switch", "osw_log_emit", 0
+    // after that would push them past the level argument and break
+    // the signature. A future refinement can plumb the original
+    // caller's __FILE__/__LINE__ through a macro at every osw::log::*
+    // call site.
+    switch_log_printf(SWITCH_CHANNEL_ID_LOG, "mod_open_switch", "osw_log_emit", 0,
                       nullptr, MapLevel(level), "%s\n", line);
 }
 

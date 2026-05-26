@@ -11,8 +11,9 @@
 #ifndef OSW_CONTROL_HANDLERS_UNIMPLEMENTED_H_
 #define OSW_CONTROL_HANDLERS_UNIMPLEMENTED_H_
 
-#include <grpcpp/grpcpp.h>
 #include <string_view>
+
+#include <grpcpp/grpcpp.h>
 
 namespace osw::control::handlers {
 

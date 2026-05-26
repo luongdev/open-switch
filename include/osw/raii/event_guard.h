@@ -53,7 +53,7 @@ namespace osw {
 ///   semantics, including the always-null-on-return-from-fire
 ///   property this guard relies on.
 class EventGuard {
- public:
+  public:
     /// Creates a new event of the given type. On allocation failure
     /// the guard holds null and operator bool() is false.
     explicit EventGuard(switch_event_types_t type) noexcept : event_(nullptr) {
@@ -88,19 +88,17 @@ class EventGuard {
         }
     }
 
-    EventGuard(const EventGuard&)            = delete;
+    EventGuard(const EventGuard&) = delete;
     EventGuard& operator=(const EventGuard&) = delete;
 
-    EventGuard(EventGuard&& other) noexcept : event_(other.event_) {
-        other.event_ = nullptr;
-    }
+    EventGuard(EventGuard&& other) noexcept : event_(other.event_) { other.event_ = nullptr; }
 
     EventGuard& operator=(EventGuard&& other) noexcept {
         if (this != &other) {
             if (event_) {
                 ::osw::raii::fs::EventDestroy(&event_);
             }
-            event_       = other.event_;
+            event_ = other.event_;
             other.event_ = nullptr;
         }
         return *this;
@@ -131,11 +129,11 @@ class EventGuard {
     /// responsible for the returned ptr's lifetime.
     [[nodiscard]] switch_event_t* release() noexcept {
         switch_event_t* e = event_;
-        event_            = nullptr;
+        event_ = nullptr;
         return e;
     }
 
- private:
+  private:
     switch_event_t* event_;
 };
 

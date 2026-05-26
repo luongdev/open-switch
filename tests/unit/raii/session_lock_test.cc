@@ -26,15 +26,12 @@ namespace {
 
 // Sentinel pointers used as opaque "session"/"channel" addresses. The
 // mock never dereferences them.
-switch_core_session_t* const kSessionA =
-    reinterpret_cast<switch_core_session_t*>(0x10A);
-switch_core_session_t* const kSessionB =
-    reinterpret_cast<switch_core_session_t*>(0x10B);
-switch_channel_t* const kChannelA =
-    reinterpret_cast<switch_channel_t*>(0x20A);
+switch_core_session_t* const kSessionA = reinterpret_cast<switch_core_session_t*>(0x10A);
+switch_core_session_t* const kSessionB = reinterpret_cast<switch_core_session_t*>(0x10B);
+switch_channel_t* const kChannelA = reinterpret_cast<switch_channel_t*>(0x20A);
 
 class SessionLockTest : public ::testing::Test {
- protected:
+  protected:
     void SetUp() override { osw::raii::fs::MockReset(); }
 };
 
@@ -90,8 +87,8 @@ TEST_F(SessionLockTest, MoveConstructionTransfersOwnership) {
     m.next_session = kSessionA;
     osw::SessionLock a("uuid");
     osw::SessionLock b(std::move(a));
-    EXPECT_FALSE(static_cast<bool>(a));   // NOLINT(*-use-after-move)
-    EXPECT_EQ(a.get(), nullptr);          // NOLINT(*-use-after-move)
+    EXPECT_FALSE(static_cast<bool>(a));  // NOLINT(*-use-after-move)
+    EXPECT_EQ(a.get(), nullptr);         // NOLINT(*-use-after-move)
     EXPECT_TRUE(static_cast<bool>(b));
     EXPECT_EQ(b.get(), kSessionA);
     EXPECT_EQ(m.session_rwunlock_calls.load(), 0);  // not yet
@@ -111,7 +108,7 @@ TEST_F(SessionLockTest, MoveAssignmentReleasesDestinationPrior) {
     b = std::move(a);  // releases B's lock, takes A's
     EXPECT_EQ(m.session_rwunlock_calls.load(), 1);
 
-    EXPECT_FALSE(static_cast<bool>(a));   // NOLINT(*-use-after-move)
+    EXPECT_FALSE(static_cast<bool>(a));  // NOLINT(*-use-after-move)
     EXPECT_TRUE(static_cast<bool>(b));
     EXPECT_EQ(b.get(), kSessionA);
 
