@@ -1580,6 +1580,213 @@ static void switch_event_deliver_thread_pool(switch_event_t **event)
 
 ---
 
+## FF-018 — `switch_event_bind` lifecycle + callback ownership
+
+**Claim.** `switch_event_bind(id, event, subclass_name, callback,
+user_data)` registers a `switch_event_callback_t` (typedef
+`void (*)(switch_event_t *)`) into the per-event-id `EVENT_NODES[]`
+linked list under a global rwlock. Once registered, the callback is
+invoked by any of the up-to-64 dispatch threads (FF-004) from
+`switch_event_deliver(switch_event_t **event)` which:
+
+1. Acquires `RWLOCK` for read.
+2. Walks `EVENT_NODES[event->event_id]` and then `EVENT_NODES[SWITCH_EVENT_ALL]`.
+3. For each matching node, sets `(*event)->bind_user_data = node->user_data`
+   then calls `node->callback(*event)` — passing a **single
+   pointer**, not a pointer-to-pointer.
+4. After the loop, releases `RWLOCK`.
+5. Calls `switch_event_destroy(event)` — FS destroys the event
+   itself after all bound callbacks have run.
+
+The callback therefore receives a borrowed `switch_event_t *` whose
+lifetime extends only until the callback returns. The callback MUST
+NOT retain the pointer, free it, fire it, or queue it for later
+consumption from a different thread. The callback MUST read what it
+needs synchronously (or copy it) before returning.
+
+Unbinding is by `switch_event_unbind(&node)` (the
+`event_node` returned via `switch_event_bind_removable`) or
+`switch_event_unbind_callback(callback)` which walks all events and
+removes every node whose `callback == callback`. Both take the
+RWLOCK in write mode, which serialises with active dispatch.
+After unbind returns, the callback is guaranteed not to be invoked
+again — any in-flight dispatch was reading under the rdlock, and
+the wrlock waited for those readers to release.
+
+**Source.**
+
+- Callback typedef: `src/include/switch_types.h:2477`.
+- Bind: `src/switch_event.c:2060-2125`
+  (`switch_event_bind_removable`) and `:2127-2131`
+  (`switch_event_bind` thin wrapper).
+- Dispatcher: `src/switch_event.c:299-345` (`switch_event_dispatch_thread`
+  body) and `:400-422` (`switch_event_deliver`).
+- Unbind: `src/switch_event.c:2134-2173` (`switch_event_unbind_callback`)
+  and `:2175-2210` (`switch_event_unbind`).
+
+**Permalinks.**
+
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_types.h#L2477>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L2060-L2131>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L400-L422>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L2134-L2210>
+
+**Excerpt — callback typedef (line 2477 of switch_types.h):**
+
+```c
+typedef void (*switch_event_callback_t) (switch_event_t *);
+```
+
+**Excerpt — `switch_event_bind_removable` insertion path (lines
+2095-2120):**
+
+```c
+if (event <= SWITCH_EVENT_ALL) {
+    switch_zmalloc(event_node, sizeof(*event_node));
+    switch_thread_rwlock_wrlock(RWLOCK);
+    switch_mutex_lock(BLOCK);
+    /* <LOCKED> ----------------------------------------------- */
+    event_node->id = DUP(id);
+    event_node->event_id = event;
+    if (subclass_name) {
+        event_node->subclass_name = DUP(subclass_name);
+    }
+
+    event_node->callback = callback;
+    event_node->user_data = user_data;
+
+    if (EVENT_NODES[event]) {
+        event_node->next = EVENT_NODES[event];
+    }
+
+    EVENT_NODES[event] = event_node;
+    switch_mutex_unlock(BLOCK);
+    switch_thread_rwlock_unlock(RWLOCK);
+    /* </LOCKED> ----------------------------------------------- */
+
+    if (node) {
+        *node = event_node;
+    }
+
+    return SWITCH_STATUS_SUCCESS;
+}
+```
+
+**Excerpt — `switch_event_deliver` callback invocation (lines
+400-422):**
+
+```c
+SWITCH_DECLARE(void) switch_event_deliver(switch_event_t **event)
+{
+    switch_event_types_t e;
+    switch_event_node_t *node;
+
+    if (SYSTEM_RUNNING) {
+        switch_thread_rwlock_rdlock(RWLOCK);
+        for (e = (*event)->event_id;; e = SWITCH_EVENT_ALL) {
+            for (node = EVENT_NODES[e]; node; node = node->next) {
+                if (switch_events_match(*event, node)) {
+                    (*event)->bind_user_data = node->user_data;
+                    node->callback(*event);
+                }
+            }
+
+            if (e == SWITCH_EVENT_ALL) {
+                break;
+            }
+        }
+        switch_thread_rwlock_unlock(RWLOCK);
+    }
+
+    switch_event_destroy(event);
+}
+```
+
+**Excerpt — `switch_event_unbind_callback` (lines 2134-2173):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_event_unbind_callback(switch_event_callback_t callback)
+{
+    switch_event_node_t *n, *np, *lnp = NULL;
+    switch_status_t status = SWITCH_STATUS_FALSE;
+    int id;
+
+    switch_thread_rwlock_wrlock(RWLOCK);
+    switch_mutex_lock(BLOCK);
+    /* <LOCKED> ----------------------------------------------- */
+    for (id = 0; id <= SWITCH_EVENT_ALL; id++) {
+        lnp = NULL;
+
+        for (np = EVENT_NODES[id]; np;) {
+            n = np;
+            np = np->next;
+            if (n->callback == callback) {
+                if (lnp) {
+                    lnp->next = n->next;
+                } else {
+                    EVENT_NODES[n->event_id] = n->next;
+                }
+
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Event Binding deleted for %s:%s\n", n->id, switch_event_name(n->event_id));
+                FREE(n->subclass_name);
+                FREE(n->id);
+                FREE(n);
+                status = SWITCH_STATUS_SUCCESS;
+            } else {
+                lnp = n;
+            }
+        }
+    }
+    switch_mutex_unlock(BLOCK);
+    switch_thread_rwlock_unlock(RWLOCK);
+    /* </LOCKED> ----------------------------------------------- */
+
+    return status;
+}
+```
+
+**Implications.**
+
+- The W2 `osw::events::Binder` calls `switch_event_bind("mod_open_switch",
+  SWITCH_EVENT_ALL, NULL, osw_event_handler, this)` once at module
+  load. The handler signature MUST be exactly
+  `void osw_event_handler(switch_event_t *)` (or, with `extern "C"`,
+  a C-linkage function pointer compatible with that typedef).
+- The pointer passed in is **owned by FS**. Implementations must read
+  headers / body synchronously into module-owned structures (e.g.
+  serialise to a `shared_ptr<const std::string>`) BEFORE returning.
+  Holding the `switch_event_t*` past return is a use-after-free —
+  FS calls `switch_event_destroy(event)` (line 422) right after the
+  callback chain.
+- The callback runs under FS's rdlock. Doing slow work (acquiring
+  contended locks, blocking I/O) inside the callback will stall ALL
+  dispatch threads — measure with the synthetic `OSW_DEBUG_TIMING=1`
+  histogram and keep the steady-state below 50µs (see W2 contract).
+- Multiple dispatch threads may invoke the same callback concurrently
+  (FF-004). The callback body MUST be reentrant; per-tier producer
+  state needs MPSC-safe synchronisation (mutex + deque + condvar in
+  V1).
+- Unbind under wrlock waits for in-flight readers — therefore the
+  drain order "Binder::Stop() (unbind) → drain rings" is safe: after
+  unbind returns, no new event will be enqueued. There is no need
+  for a "stop accepting" flag in the callback itself.
+- Exceptions: the typedef is C linkage. An exception escaping the
+  callback will propagate into FS's C dispatcher, which is undefined
+  behaviour. The W2 callback MUST wrap its entire body in
+  `try { ... } catch (...) { ... }` and never let an exception escape.
+  Standard C++ EH unwinding through a C activation frame violates
+  the C ABI used by `switch_thread_t` / APR threads.
+
+**Used by W2 code:**
+
+- `src/events/binder.cc` — the production `osw_event_handler`
+  C-linkage shim, wrapped around the C++ `Binder::HandleEvent` body.
+- `tests/unit/events/binder_test.cc` — exception-boundary test:
+  a stub callback that throws is caught by the wrapper and logged,
+  not propagated into a (mocked) caller.
+
+---
+
 ## How to add a new FF entry
 
 If you find a previously-undocumented FreeSWITCH behaviour that
