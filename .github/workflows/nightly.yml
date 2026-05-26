@@ -1,0 +1,57 @@
+name: Nightly (Valgrind + Load)
+
+on:
+  schedule:
+    - cron: "0 17 * * *"  # 00:00 ICT (17:00 UTC previous day)
+  workflow_dispatch:
+
+jobs:
+  valgrind:
+    name: Valgrind memcheck on integration suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build builder image (Debug, no ASAN — Valgrind needs separate build)
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --build-arg OSW_ENABLE_ASAN=OFF \
+            --build-arg OSW_BUILD_TESTS=ON \
+            --build-arg BUILD_TYPE=Debug \
+            --build-arg UPSTREAM_TAG=v1.10.12 \
+            --target fs-builder \
+            -f deploy/docker/Dockerfile.builder \
+            --load \
+            -t open-switch/builder:nightly-${{ github.sha }} \
+            .
+
+      - name: Run integration suite under Valgrind
+        run: |
+          docker run --rm \
+            open-switch/builder:nightly-${{ github.sha }} \
+            valgrind --leak-check=full \
+                     --show-leak-kinds=all \
+                     --errors-for-leak-kinds=definite,possible \
+                     --error-exitcode=42 \
+                     --track-origins=yes \
+                     --gen-suppressions=all \
+                     --suppressions=/usr/src/open-switch/tests/valgrind/freeswitch.supp \
+                     ctest --test-dir /usr/src/open-switch/build \
+                           --output-on-failure -L integration
+
+  load-50ccu:
+    name: 50 CCU 10-minute soak
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      # Pulls the runner image, runs sipp + load driver, asserts no leaks,
+      # no goroutine/dialog runaway, p99 cancel propagation ≤ 100 ms.
+      # Implementation lands with tests/load/ subdirectory.
+      - name: Placeholder
+        run: |
+          echo "Load test infrastructure lands with tests/load/ subdir."
+          exit 0

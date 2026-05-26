@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  proto-lint:
+    name: Proto lint (buf)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: bufbuild/buf-action@v1
+        with:
+          input: proto
+          breaking: false  # enable once we have v1 baseline
+          lint: true
+          format: true
+
+  build-and-asan:
+    name: Build + ASAN integration (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+
+      # The builder Dockerfile produces /dist/mod/mod_open_switch.so.
+      # We build to a local image and extract artifacts for downstream
+      # test steps.
+      - name: Build builder image (ASAN ON)
+        run: |
+          docker buildx build \
+            --platform linux/${{ matrix.arch }} \
+            --build-arg OSW_ENABLE_ASAN=ON \
+            --build-arg OSW_BUILD_TESTS=ON \
+            --build-arg BUILD_TYPE=Debug \
+            --build-arg UPSTREAM_TAG=v1.10.12 \
+            --target fs-builder \
+            -f deploy/docker/Dockerfile.builder \
+            --load \
+            -t open-switch/builder:ci-${{ github.sha }} \
+            .
+
+      - name: Run unit tests under ASAN
+        run: |
+          docker run --rm \
+            -e ASAN_OPTIONS=halt_on_error=1:abort_on_error=1:detect_leaks=1 \
+            -e LSAN_OPTIONS=exitcode=23:print_suppressions=0 \
+            open-switch/builder:ci-${{ github.sha }} \
+            ctest --test-dir /usr/src/open-switch/build --output-on-failure -L unit
+
+      - name: Run integration tests under ASAN
+        run: |
+          docker run --rm \
+            -e ASAN_OPTIONS=halt_on_error=1:abort_on_error=1:detect_leaks=1 \
+            -e LSAN_OPTIONS=exitcode=23:print_suppressions=0 \
+            open-switch/builder:ci-${{ github.sha }} \
+            ctest --test-dir /usr/src/open-switch/build --output-on-failure -L integration
+
+  static-analysis:
+    name: clang-format + clang-tidy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run clang-format check
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work \
+            silkeh/clang:18 \
+            bash -c "find src -name '*.cc' -o -name '*.h' | xargs clang-format --dry-run --Werror"
+      # clang-tidy step added once src/ has real code.
+
+  docs-lint:
+    name: Spec docs lint (markdownlint)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: DavidAnson/markdownlint-cli2-action@v17
+        with:
+          globs: |
+            **/*.md
+            !**/LICENSE

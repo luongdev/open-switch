@@ -1,0 +1,302 @@
+// Control plane for mod_open_switch.
+//
+// Callers (orchestrators, bots, agents) invoke these RPCs to drive
+// FreeSWITCH from outside. The module exposes this service in-process so
+// no extra hop is required.
+//
+// All methods are idempotent when `request_id` is supplied. The module
+// keeps a 5-minute dedup cache; duplicate requests within that window
+// return the cached response without re-executing.
+//
+// Stability: v1 is unstable until 1.0.0 ships. Breaking changes will bump
+// the version path (e.g. /v2).
+
+syntax = "proto3";
+
+package open_switch.control.v1;
+
+option cc_enable_arenas = true;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+// ─── Service ──────────────────────────────────────────────────────────
+
+service ControlService {
+  // Originate a new call. Returns the channel UUID once the call is
+  // routed (not necessarily answered).
+  rpc Originate(OriginateRequest) returns (OriginateResponse);
+
+  // Hang up a single channel by UUID with a cause code.
+  rpc Hangup(HangupRequest) returns (HangupResponse);
+
+  // Hang up many channels at once (rare; use for tenant-wide drain).
+  rpc HangupMany(HangupManyRequest) returns (HangupManyResponse);
+
+  // Bridge two existing legs by UUID.
+  rpc Bridge(BridgeRequest) returns (BridgeResponse);
+
+  // Execute a FreeSWITCH dialplan application on a channel.
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+
+  // Set channel variables.
+  rpc SetVariables(SetVariablesRequest) returns (SetVariablesResponse);
+
+  // Hold / unhold a channel.
+  rpc Hold(HoldRequest) returns (HoldResponse);
+  rpc Unhold(UnholdRequest) returns (UnholdResponse);
+
+  // Blind transfer a channel to a destination.
+  rpc BlindTransfer(BlindTransferRequest) returns (BlindTransferResponse);
+
+  // Attended transfer (initiate; the consultation leg is managed by the
+  // caller via separate Originate + Bridge calls).
+  // Full spec: openspec/changes/core-module-v1/specs/control-api/spec.md.
+  // Reserved for v1.
+
+  // Subscribe to events via gRPC server-streaming. Intended for
+  // operators who do NOT want to set up a Redis consumer. Backed by an
+  // in-memory ring buffer; on overflow, the slowest subscriber is dropped.
+  // For durable event consumption, use the configured Redis sink instead.
+  rpc SubscribeEvents(SubscribeEventsRequest)
+      returns (stream open_switch.events.v1.EventEnvelope);
+
+  // Health + module status.
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+// ─── Common metadata ──────────────────────────────────────────────────
+
+message RequestHeader {
+  // Caller-supplied unique request id. Used for idempotency dedup and
+  // distributed tracing. Recommended: UUIDv7 (time-ordered).
+  string request_id = 1;
+
+  // Tenant identifier. Module enforces ACLs scoped by this id.
+  string tenant_id = 2;
+
+  // Free-form trace context (W3C traceparent string). Propagated into
+  // emitted events for distributed tracing.
+  string traceparent = 3;
+
+  // Deadline hint. The gRPC deadline already provides this; this field is
+  // for caller-side context only and may be ignored by the module.
+  google.protobuf.Timestamp deadline = 4;
+}
+
+message ErrorDetail {
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    INVALID_ARGUMENT = 1;
+    NOT_FOUND = 2;
+    UNAUTHORIZED = 3;
+    PERMISSION_DENIED = 4;
+    RESOURCE_EXHAUSTED = 5;
+    FREESWITCH_ERROR = 6;   // FS call returned non-success
+    INTERNAL = 7;
+    UNAVAILABLE = 8;        // transient; retry safe
+  }
+  Type type = 1;
+  string message = 2;
+
+  // For FREESWITCH_ERROR: the cause string (e.g. "USER_NOT_REGISTERED").
+  string fs_cause = 10;
+}
+
+// ─── Originate ────────────────────────────────────────────────────────
+
+message OriginateRequest {
+  RequestHeader header = 1;
+
+  // Dial strings (one per endpoint). Strategy determines how they are
+  // combined (failover, multiple, simultaneous).
+  repeated string endpoints = 2;
+
+  enum Strategy {
+    STRATEGY_UNSPECIFIED = 0;
+    SIMULTANEOUS = 1;  // ',' separator — first to answer wins
+    FAILOVER     = 2;  // '|' separator — try in order
+    MULTIPLE     = 3;  // ':_:' separator — keep all up (rare)
+  }
+  Strategy strategy = 3;
+
+  // What to do after answer. Exactly one of:
+  oneof after_answer {
+    // Transfer to a dialplan extension.
+    DialplanTarget dialplan = 10;
+    // Execute a sequence of dialplan applications inline.
+    AppSequence apps = 11;
+    // Bridge to an existing leg by UUID.
+    string bridge_to_uuid = 12;
+    // Park the call (returns immediately; caller manages next step).
+    bool park = 13;
+  }
+
+  // Caller ID for the outbound leg.
+  string caller_id_name = 20;
+  string caller_id_number = 21;
+
+  // Channel variables to set on the outbound channel before dial.
+  map<string, string> variables = 22;
+
+  // Originate timeout. If zero, defaults to 60s.
+  google.protobuf.Duration timeout = 23;
+
+  // If set, the originate is cancelled if this existing channel's
+  // `check_id` is not active by the time the call answers. Used to abort
+  // dial when the parent call (e.g. queueing customer) hangs up.
+  string check_id = 24;
+}
+
+message DialplanTarget {
+  string destination = 1;  // extension
+  string dialplan    = 2;  // default "XML"
+  string context     = 3;  // default "default"
+}
+
+message AppSequence {
+  repeated App apps = 1;
+}
+
+message App {
+  string name = 1;
+  string args = 2;
+}
+
+message OriginateResponse {
+  string channel_uuid = 1;
+  ErrorDetail error = 99;
+}
+
+// ─── Hangup ──────────────────────────────────────────────────────────
+
+message HangupRequest {
+  RequestHeader header = 1;
+  string uuid = 2;
+  // FreeSWITCH cause string, e.g. "NORMAL_CLEARING", "USER_BUSY".
+  // Default: "NORMAL_CLEARING".
+  string cause = 3;
+  // Set these variables on the channel before hangup (e.g. for CDR
+  // enrichment in on_reporting handlers).
+  map<string, string> variables = 4;
+}
+
+message HangupResponse {
+  ErrorDetail error = 99;
+}
+
+message HangupManyRequest {
+  RequestHeader header = 1;
+  repeated string uuids = 2;
+  string cause = 3;
+}
+
+message HangupManyResponse {
+  repeated string hungup_uuids = 1;
+  ErrorDetail error = 99;
+}
+
+// ─── Bridge ──────────────────────────────────────────────────────────
+
+message BridgeRequest {
+  RequestHeader header = 1;
+  string leg_a_uuid = 2;
+  string leg_b_uuid = 3;
+  map<string, string> variables = 4;
+}
+
+message BridgeResponse {
+  string bridged_uuid = 1;
+  ErrorDetail error = 99;
+}
+
+// ─── Execute / SetVariables ──────────────────────────────────────────
+
+message ExecuteRequest {
+  RequestHeader header = 1;
+  string uuid = 2;
+  string app  = 3;
+  string args = 4;
+  // If true, execute asynchronously (don't block the gRPC thread).
+  bool async = 5;
+}
+
+message ExecuteResponse {
+  string result = 1;
+  ErrorDetail error = 99;
+}
+
+message SetVariablesRequest {
+  RequestHeader header = 1;
+  string uuid = 2;
+  map<string, string> variables = 3;
+}
+
+message SetVariablesResponse {
+  ErrorDetail error = 99;
+}
+
+// ─── Hold / Unhold / Transfer ────────────────────────────────────────
+
+message HoldRequest {
+  RequestHeader header = 1;
+  repeated string uuids = 2;
+}
+message HoldResponse {
+  repeated string held_uuids = 1;
+  ErrorDetail error = 99;
+}
+
+message UnholdRequest {
+  RequestHeader header = 1;
+  repeated string uuids = 2;
+}
+message UnholdResponse {
+  repeated string unheld_uuids = 1;
+  ErrorDetail error = 99;
+}
+
+message BlindTransferRequest {
+  RequestHeader header = 1;
+  string uuid = 2;
+  string destination = 3;
+  string dialplan = 4;
+  string context = 5;
+  map<string, string> variables = 6;
+}
+message BlindTransferResponse {
+  ErrorDetail error = 99;
+}
+
+// ─── Events subscription (in-memory ring; durable use Redis) ────────
+
+message SubscribeEventsRequest {
+  RequestHeader header = 1;
+  // Filter by event class (Tier 1 / 2 / 3). Empty = all classes.
+  repeated string tiers = 2;
+  // Filter by event name pattern (glob). Empty = all events.
+  repeated string event_names = 3;
+}
+
+// ─── Health ──────────────────────────────────────────────────────────
+
+message HealthRequest {
+  RequestHeader header = 1;
+}
+message HealthResponse {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+    DRAINING = 3;
+  }
+  Status status = 1;
+  string module_version = 2;
+  string freeswitch_version = 3;
+  uint64 active_channels = 4;
+  uint64 active_media_bugs = 5;
+  uint64 events_emitted_total = 6;
+}
+
+// Forward declaration — the actual EventEnvelope is in events/v1/events.proto.
+// Import handled by buf.gen.

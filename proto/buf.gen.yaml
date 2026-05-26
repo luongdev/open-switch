@@ -1,0 +1,6 @@
+version: v2
+plugins:
+  - remote: buf.build/protocolbuffers/cpp
+    out: ../build/proto-gen
+  - remote: buf.build/grpc/cpp
+    out: ../build/proto-gen

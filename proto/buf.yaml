@@ -1,0 +1,12 @@
+version: v2
+modules:
+  - path: open_switch
+breaking:
+  use:
+    - FILE
+lint:
+  use:
+    - DEFAULT
+  except:
+    - PACKAGE_VERSION_SUFFIX  # we use /v1 path-only convention
+deps: []

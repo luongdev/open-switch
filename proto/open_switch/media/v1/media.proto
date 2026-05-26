@@ -1,0 +1,195 @@
+// Media plane for mod_open_switch.
+//
+// Per-call bidirectional audio streams from FreeSWITCH (via media bug) to
+// an external service: TTS, STT, voicebot, AMD, etc. The module is the
+// gRPC CLIENT here (it initiates the stream); the external service is the
+// SERVER.
+//
+// Design:
+//   - One stream per (channel_uuid, purpose) pair. A single call may have
+//     several streams open simultaneously (e.g. STT + TTS + recording-relay).
+//   - The first client→server message MUST be a StreamStart; subsequent
+//     messages are AudioFrame. The first server→client message is
+//     StreamReady; subsequent messages are AudioFrame or Control.
+//   - Cancellation is propagated bidirectionally: gRPC cancel on either
+//     side -> media bug removed and call audio falls back to silence.
+//   - On call hangup, the module half-closes the client send stream and
+//     waits up to `drain_timeout_ms` for the server to finish before
+//     forcibly cancelling.
+
+syntax = "proto3";
+
+package open_switch.media.v1;
+
+option cc_enable_arenas = true;
+
+import "google/protobuf/duration.proto";
+
+// ─── Service ──────────────────────────────────────────────────────────
+
+// MediaBridge is implemented by EXTERNAL services (TTS, STT, voicebot, ...).
+// The module is the client. The module opens one stream per (call, purpose)
+// tuple.
+service MediaBridge {
+  rpc Stream(stream FromModule) returns (stream FromService);
+}
+
+// ─── Module → Service ────────────────────────────────────────────────
+
+message FromModule {
+  oneof payload {
+    StreamStart start = 1;
+    AudioFrame  audio = 2;
+    Control     control = 3;
+  }
+}
+
+message StreamStart {
+  string channel_uuid = 1;
+  string tenant_id = 2;
+
+  // What this stream is for. Drives the server-side handler selection
+  // and the media bug flags inside the module.
+  enum Purpose {
+    PURPOSE_UNSPECIFIED = 0;
+    TTS_PLAYBACK = 1;        // service sends audio; module writes to call
+    STT_TRANSCRIBE = 2;      // module sends audio; service returns transcripts
+    VOICEBOT_DUPLEX = 3;     // bidirectional: module sends caller mic, service sends bot audio
+    AMD_DETECT = 4;          // module sends; service returns AMD verdict
+    RECORDING_RELAY = 5;     // module sends mixed audio to an external recorder
+  }
+  Purpose purpose = 3;
+
+  // Sample format hints. The module guarantees these on outgoing frames.
+  uint32 sample_rate_hz = 4;   // typical: 8000 / 16000 / 24000 / 48000
+  uint32 channels = 5;         // 1 (mono) or 2 (stereo split)
+  AudioCodec codec = 6;
+
+  // Engine-side context (passed through to the handler).
+  map<string, string> variables = 10;
+
+  // For TTS_PLAYBACK: starting message to synthesise (so the service has
+  // an opening utterance ready). For STT/VAD: empty.
+  string start_message = 11;
+
+  // For VOICEBOT_DUPLEX: which side of the call this stream represents.
+  enum CallerSide {
+    CALLER_SIDE_UNSPECIFIED = 0;
+    CALLER_MIC = 1;          // read side (caller's audio in)
+    CALLER_EAR = 2;          // write side (what caller hears)
+    BOTH_MIXED = 3;          // both, mixed (recording-relay)
+    STEREO = 4;              // both, separate L+R (recording-relay stereo)
+  }
+  CallerSide side = 12;
+
+  // Trace context (W3C traceparent).
+  string traceparent = 20;
+}
+
+message AudioFrame {
+  // Monotonic sequence within the stream (starts at 0).
+  uint64 seq = 1;
+
+  // Timestamp in samples since stream start.
+  uint64 timestamp_samples = 2;
+
+  // Frame duration in samples. For 20ms @ 8kHz mono: 160.
+  uint32 duration_samples = 3;
+
+  // Audio payload. Format defined by StreamStart.codec.
+  bytes payload = 4;
+
+  // For STEREO streams: which channel is this frame from. Ignored for mono.
+  enum Channel {
+    CHANNEL_UNSPECIFIED = 0;
+    LEFT = 1;
+    RIGHT = 2;
+    BOTH_INTERLEAVED = 3;  // L/R/L/R 16-bit samples in payload
+  }
+  Channel channel = 5;
+}
+
+enum AudioCodec {
+  AUDIO_CODEC_UNSPECIFIED = 0;
+  PCM_S16LE = 1;     // linear 16-bit signed little-endian
+  G711_ULAW = 2;     // µ-law PCMU, 8 kHz
+  G711_ALAW = 3;     // a-law PCMA, 8 kHz
+  OPUS = 4;          // opus framed (per-frame self-contained)
+}
+
+message Control {
+  oneof event {
+    Cancel cancel = 1;
+    DtmfEvent dtmf = 2;
+    BargeIn barge_in = 3;
+    Heartbeat heartbeat = 4;
+  }
+}
+
+message Cancel {
+  string reason = 1;
+}
+
+message DtmfEvent {
+  string digit = 1;      // single digit "0"-"9", "*", "#", "A"-"D"
+  uint32 duration_ms = 2;
+}
+
+message BargeIn {
+  // Module signals that caller spoke during bot playback. Service should
+  // pause/cancel current playback turn.
+  uint32 audio_level_dbfs = 1;
+}
+
+message Heartbeat {
+  uint64 monotonic_ms = 1;
+}
+
+// ─── Service → Module ────────────────────────────────────────────────
+
+message FromService {
+  oneof payload {
+    StreamReady ready = 1;
+    AudioFrame  audio = 2;
+    Control     control = 3;
+    Transcript  transcript = 4;
+    AmdVerdict  amd = 5;
+    Variables   variables = 6;   // request module to set channel vars
+  }
+}
+
+message StreamReady {
+  // Echo back the agreed format.
+  uint32 sample_rate_hz = 1;
+  uint32 channels = 2;
+  AudioCodec codec = 3;
+  // Server-side stream id for log correlation.
+  string server_stream_id = 4;
+}
+
+message Transcript {
+  string text = 1;
+  bool final = 2;
+  uint64 start_offset_ms = 3;
+  uint64 end_offset_ms = 4;
+  // 0.0 - 1.0
+  float confidence = 5;
+  string language = 6;
+}
+
+message AmdVerdict {
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    HUMAN = 1;
+    MACHINE = 2;
+    UNCERTAIN = 3;
+  }
+  Type type = 1;
+  float confidence = 2;
+  // If MACHINE, ETA in ms until beep / can-leave-message moment.
+  uint32 beep_eta_ms = 3;
+}
+
+message Variables {
+  map<string, string> variables = 1;
+}

@@ -1,0 +1,10 @@
+<!--
+  Add this entry to your FreeSWITCH modules.conf.xml under <modules>...</modules>
+  to enable mod_open_switch.
+
+  Note: mod_open_switch is a DROP-IN that lives alongside mod_event_socket.
+  You may keep both loaded — they do not conflict. mod_open_switch does
+  NOT bind ESL port 8021; it exposes its own gRPC port (default 50061).
+-->
+
+<load module="mod_open_switch"/>

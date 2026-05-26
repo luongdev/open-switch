@@ -1,0 +1,49 @@
+# open-switch — runner stage
+#
+# Extends the open-gateway FreeSWITCH runner with mod_open_switch.so and
+# its runtime library deps. Multi-arch via buildx.
+#
+# Build:
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     --build-arg UPSTREAM_TAG=v1.10.12 \
+#     --build-arg BUILDER_TAG=0.1.0 \
+#     -t open-switch/freeswitch:0.1.0 \
+#     -f deploy/docker/Dockerfile.runner .
+
+ARG UPSTREAM_TAG=v1.10.12
+ARG BUILDER_TAG=0.1.0
+
+FROM open-switch/builder:${BUILDER_TAG} AS osw-builder
+FROM open-gateway/freeswitch:${UPSTREAM_TAG} AS runner
+
+USER root
+
+# ─── 1. Install runtime libs needed by gRPC + Redis ──────────────────
+RUN apt-get update -yq && \
+    apt-get install -yq --no-install-recommends \
+        ca-certificates \
+        libhiredis1.1.0 \
+    && rm -rf /var/lib/apt/lists/* && \
+    # Best-effort: package name varies between trixie minor versions.
+    true
+
+# ─── 2. Copy module + runtime libs from builder ───────────────────────
+COPY --from=osw-builder /dist/mod/mod_open_switch.so /usr/local/mod/
+COPY --from=osw-builder /dist/lib/ /usr/local/lib/
+RUN ldconfig
+
+# ─── 3. Drop sample module config (operator overrides via volume) ─────
+COPY deploy/conf/open_switch.conf.xml.sample \
+     /var/lib/freeswitch/.bootstrap/templates/autoload_configs/open_switch.conf.xml
+
+# NOTE: the module is NOT autoloaded by default. To enable, the operator
+# adds <load module="mod_open_switch"/> to modules.conf.xml. We do not
+# do this automatically because adding a control plane that can originate
+# calls is a security decision the operator must make consciously.
+
+USER freeswitch
+
+# Module exposes (defaults; configurable):
+#   - 50061/tcp  gRPC control + media + subscribe-events streams
+#   - (no listening port for event sinks; module is the producer)
+EXPOSE 50061/tcp

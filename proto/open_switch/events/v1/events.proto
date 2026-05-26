@@ -1,0 +1,111 @@
+// Event plane for mod_open_switch.
+//
+// FreeSWITCH events are bound by the module via `switch_event_bind` and
+// routed through the configured event sinks (Redis Streams + Pub/Sub by
+// default, others pluggable). The proto defines the wire format published
+// to the transport.
+//
+// Schema evolution policy: this proto is the source of truth for the
+// wire format. Reserved tag numbers are NEVER repurposed. New fields
+// always take new tags.
+
+syntax = "proto3";
+
+package open_switch.events.v1;
+
+option cc_enable_arenas = true;
+
+import "google/protobuf/timestamp.proto";
+
+// ─── Envelope (the unit of transport) ────────────────────────────────
+
+message EventEnvelope {
+  // Stable event id. UUIDv7 (time-ordered). Used for dedup at consumers.
+  string event_id = 1;
+
+  // Tier classification of this event. Determines routing rules.
+  Tier tier = 2;
+
+  // FreeSWITCH event name (e.g. "CHANNEL_ANSWER", "CUSTOM").
+  string event_name = 3;
+
+  // For CUSTOM events, the subclass name.
+  string subclass_name = 4;
+
+  // Origin host (the FreeSWITCH node that emitted).
+  string node_id = 5;
+
+  // Event timestamp from FreeSWITCH (microseconds since epoch).
+  google.protobuf.Timestamp emitted_at = 6;
+
+  // Sequence within the (node, tier) stream. Monotonic per node.
+  uint64 seq = 7;
+
+  // Tenant scope. Empty if event is not call-related or tenant is unknown.
+  string tenant_id = 8;
+
+  // Trace context propagated from the call's `traceparent` channel
+  // variable, or from a control RPC that initiated the call.
+  string traceparent = 9;
+
+  // For call-related events, the FS Unique-ID (channel UUID).
+  string channel_uuid = 10;
+
+  // FS variables that the operator subscribed to (config-driven include
+  // list). Avoids shipping every channel variable on every event.
+  map<string, string> variables = 11;
+
+  // Original FS event headers. Selected subset based on event type, NOT
+  // a full dump. Configurable per-event via header_include / exclude lists.
+  map<string, string> headers = 12;
+
+  // For events that carry a body (e.g. some CUSTOM events), the raw body.
+  bytes body = 13;
+
+  // The schema version of this envelope. Increment only on breaking
+  // changes. Consumers MUST check.
+  uint32 schema_version = 14;
+}
+
+enum Tier {
+  TIER_UNSPECIFIED = 0;
+  TIER_1_CRITICAL = 1;   // must persist; billing/CDR-grade
+  TIER_2_STATE    = 2;   // important; eventually-consistent OK
+  TIER_3_EPHEMERAL = 3;  // best-effort; drop on consumer slowness
+}
+
+// ─── Common helpers consumers can downcast from headers ──────────────
+// These messages are NOT serialized in the envelope. They document the
+// canonical shape of a few key event headers for IDE / consumer tooling.
+// Generated code is intended for client SDK consumers, not the wire.
+
+message ChannelAnswerHeaders {
+  string unique_id = 1;
+  string caller_id_name = 2;
+  string caller_id_number = 3;
+  string destination_number = 4;
+  string context = 5;
+  string call_direction = 6;
+  google.protobuf.Timestamp answered_at = 7;
+}
+
+message ChannelHangupHeaders {
+  string unique_id = 1;
+  string hangup_cause = 2;
+  string hangup_cause_q850 = 3;
+  google.protobuf.Timestamp hungup_at = 4;
+  // Variables typically populated at hangup for CDR.
+  map<string, string> cdr_vars = 10;
+}
+
+message DtmfHeaders {
+  string unique_id = 1;
+  string digit = 2;
+  uint32 duration = 3;
+}
+
+message CdrHeaders {
+  // Full CDR JSON / XML body delivered in EventEnvelope.body.
+  string cdr_format = 1;  // "json" or "xml"
+  google.protobuf.Timestamp completed_at = 2;
+}

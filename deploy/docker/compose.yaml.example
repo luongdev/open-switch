@@ -1,0 +1,53 @@
+# Example compose: FreeSWITCH + mod_open_switch + Redis.
+# Adjust IPs / ACLs / passwords before production use.
+
+services:
+  freeswitch:
+    image: open-switch/freeswitch:0.1.0
+    network_mode: host    # required for SIP/RTP dynamic ports
+    shm_size: 256m
+    environment:
+      FS_PROFILE: nat
+      FS_PRIVATE_IP: 10.0.0.5
+      FS_PUBLIC_IP: 203.0.113.50
+      FS_DOMAIN: sip.example.com
+      FS_MAX_SESSIONS: 5000
+      FS_SESSIONS_PER_SECOND: 100
+      FS_LOG_LEVEL: warning
+      # Module-specific config is supplied via XML config mounted below
+      OPEN_SWITCH_GRPC_PORT: 50061
+      OPEN_SWITCH_REDIS_URL: redis://redis:6379
+    cap_add:
+      - SYS_NICE
+      - SYS_RESOURCE
+      - NET_RAW
+    ulimits:
+      nofile: { soft: 999999, hard: 999999 }
+      memlock: { soft: -1, hard: -1 }
+    volumes:
+      - ./conf/freeswitch:/etc/freeswitch
+      - ./conf/modules.conf.xml:/etc/freeswitch/autoload_configs/modules.conf.xml:ro
+      - ./conf/open_switch.conf.xml:/etc/freeswitch/autoload_configs/open_switch.conf.xml:ro
+      - ./logs:/var/log/freeswitch
+      - ./recordings:/opt/freeswitch/recordings
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes",
+              "--save", "60", "1000",
+              "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  redis-data:

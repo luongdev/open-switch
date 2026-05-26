@@ -1,0 +1,148 @@
+<configuration name="open_switch.conf" description="mod_open_switch configuration">
+  <!--
+    Sample module configuration. All values may be overridden by
+    environment variable; see specs/lifecycle/spec.md for the env var
+    naming convention (OPEN_SWITCH_*).
+  -->
+
+  <settings>
+    <!-- gRPC server binding -->
+    <param name="grpc_listen_address" value="0.0.0.0"/>
+    <param name="grpc_listen_port"    value="50061"/>
+
+    <!-- TLS for gRPC server (recommended in production) -->
+    <param name="grpc_tls_enabled"    value="false"/>
+    <param name="grpc_tls_cert_file"  value="/etc/freeswitch/tls/grpc-cert.pem"/>
+    <param name="grpc_tls_key_file"   value="/etc/freeswitch/tls/grpc-key.pem"/>
+    <param name="grpc_tls_ca_file"    value="/etc/freeswitch/tls/grpc-ca.pem"/>
+    <!-- mTLS: require + verify client cert -->
+    <param name="grpc_tls_require_client_cert" value="false"/>
+
+    <!-- gRPC API authentication. If set, all RPCs must include
+         x-osw-api-key metadata matching this value (in addition to
+         optional mTLS). Multi-key per-tenant config: see acl section. -->
+    <param name="grpc_api_key" value=""/>
+
+    <!-- Idempotency dedup cache TTL (seconds) for request_id matches -->
+    <param name="idempotency_ttl_seconds" value="300"/>
+
+    <!-- In-memory event ring buffer size (for SubscribeEvents fallback) -->
+    <param name="event_ring_capacity" value="4096"/>
+
+    <!-- Graceful drain on SIGTERM: stop accepting new calls, wait N s
+         for active calls to finish before forcing shutdown -->
+    <param name="drain_timeout_seconds" value="30"/>
+
+    <!-- Module-level log level. Independent of FS log level. -->
+    <param name="log_level" value="info"/>  <!-- debug | info | warning | error -->
+
+    <!-- gRPC channel pool: max idle channels per upstream endpoint -->
+    <param name="upstream_channel_pool_size" value="8"/>
+
+    <!-- Eavesdrop policy on bot-participating calls -->
+    <!-- deny: hangup any eavesdrop attempt on bot channels (default) -->
+    <!-- audit: allow but emit Tier 1 audit event -->
+    <!-- allow: allow without restriction (NOT recommended) -->
+    <param name="bot_eavesdrop_policy" value="deny"/>
+  </settings>
+
+  <!-- Event sinks: where module-emitted events go. -->
+  <event-sinks>
+    <sink name="tier1-critical" backend="redis-streams">
+      <param name="url"      value="redis://localhost:6379"/>
+      <param name="stream"   value="osw.events.tier1"/>
+      <param name="maxlen"   value="100000"/>   <!-- approximate cap (~) -->
+      <param name="approx"   value="true"/>     <!-- XADD MAXLEN ~ N -->
+    </sink>
+    <sink name="tier2-state" backend="redis-streams">
+      <param name="url"      value="redis://localhost:6379"/>
+      <param name="stream"   value="osw.events.tier2"/>
+      <param name="maxlen"   value="50000"/>
+      <param name="approx"   value="true"/>
+    </sink>
+    <sink name="tier3-ephemeral" backend="redis-pubsub">
+      <param name="url"      value="redis://localhost:6379"/>
+      <param name="channel"  value="osw.events.tier3"/>
+    </sink>
+  </event-sinks>
+
+  <!-- Event routing: maps FS event name patterns to a tier (and sink). -->
+  <event-routing>
+    <!-- Tier 1 (critical, billing-grade) -->
+    <rule match="CHANNEL_ANSWER"             tier="1" sink="tier1-critical"/>
+    <rule match="CHANNEL_BRIDGE"             tier="1" sink="tier1-critical"/>
+    <rule match="CHANNEL_HANGUP_COMPLETE"    tier="1" sink="tier1-critical"/>
+    <rule match="CHANNEL_DESTROY"            tier="1" sink="tier1-critical"/>
+    <rule match="RECORD_START"               tier="1" sink="tier1-critical"/>
+    <rule match="RECORD_STOP"                tier="1" sink="tier1-critical"/>
+    <rule match="CUSTOM" subclass="*::critical" tier="1" sink="tier1-critical"/>
+
+    <!-- Tier 2 (semi-critical, recoverable) -->
+    <rule match="CHANNEL_CREATE"             tier="2" sink="tier2-state"/>
+    <rule match="CHANNEL_PROGRESS"           tier="2" sink="tier2-state"/>
+    <rule match="CHANNEL_PROGRESS_MEDIA"     tier="2" sink="tier2-state"/>
+    <rule match="CHANNEL_HANGUP"             tier="2" sink="tier2-state"/>
+    <rule match="CHANNEL_OUTGOING"           tier="2" sink="tier2-state"/>
+    <rule match="CHANNEL_ORIGINATE"          tier="2" sink="tier2-state"/>
+    <rule match="CHANNEL_PARK"               tier="2" sink="tier2-state"/>
+    <rule match="CHANNEL_UNPARK"             tier="2" sink="tier2-state"/>
+    <rule match="CHANNEL_STATE"              tier="2" sink="tier2-state"/>
+    <rule match="CHANNEL_CALLSTATE"          tier="2" sink="tier2-state"/>
+    <rule match="DTMF"                       tier="2" sink="tier2-state"/>
+
+    <!-- Tier 3 (ephemeral, fire-and-forget) -->
+    <rule match="HEARTBEAT"                  tier="3" sink="tier3-ephemeral"/>
+    <rule match="SESSION_HEARTBEAT"          tier="3" sink="tier3-ephemeral"/>
+    <rule match="RE_SCHEDULE"                tier="3" sink="tier3-ephemeral"/>
+    <rule match="MODULE_LOAD"                tier="3" sink="tier3-ephemeral"/>
+    <rule match="MODULE_UNLOAD"              tier="3" sink="tier3-ephemeral"/>
+
+    <!-- Default fallback: tier 2 (state). Operator can change. -->
+    <rule match="*"                          tier="2" sink="tier2-state"/>
+  </event-routing>
+
+  <!-- Header allowlist: which FS event headers to include in the
+       emitted envelope. Avoid shipping huge headers we don't need. -->
+  <event-headers>
+    <include name="Unique-ID"/>
+    <include name="Channel-Call-UUID"/>
+    <include name="Caller-Caller-ID-Name"/>
+    <include name="Caller-Caller-ID-Number"/>
+    <include name="Caller-Destination-Number"/>
+    <include name="Caller-Context"/>
+    <include name="Call-Direction"/>
+    <include name="Hangup-Cause"/>
+    <include name="Hangup-Cause-Q850"/>
+    <include name="Channel-State"/>
+    <include name="Channel-Call-State"/>
+    <include name="Answer-State"/>
+    <include name="DTMF-Digit"/>
+    <include name="DTMF-Duration"/>
+    <include name="Event-Subclass"/>
+    <!-- variable_* headers are included via channel_variable_includes below. -->
+  </event-headers>
+
+  <!-- Per-event channel variable inclusion. By default no variables are
+       shipped (they can be huge). Operator opts in. -->
+  <channel-variable-includes>
+    <include name="tenant_id"/>
+    <include name="campaign_id"/>
+    <include name="agent_id"/>
+    <include name="traceparent"/>
+    <!-- Add domain-specific vars here. -->
+  </channel-variable-includes>
+
+  <!-- ACL: per-tenant gRPC API key + allowed dialplan contexts. -->
+  <acl>
+    <!-- Example: tenant_id "demo" can use API key "demo-XXXX" and only
+         originate into dialplan context "demo". -->
+    <!--
+    <tenant id="demo">
+      <param name="api_key" value="demo-please-change-me"/>
+      <param name="allowed_contexts" value="demo"/>
+      <param name="allow_eavesdrop" value="false"/>
+      <param name="rate_limit_per_second" value="10"/>
+    </tenant>
+    -->
+  </acl>
+</configuration>
