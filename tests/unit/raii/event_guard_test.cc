@@ -148,4 +148,15 @@ TEST_F(EventGuardTest, AdoptOfNullYieldsEmptyGuard) {
     EXPECT_EQ(osw::raii::fs::Mock().event_destroy_calls.load(), 0);
 }
 
+TEST_F(EventGuardTest, SelfMoveAssignmentIsSafe) {
+    auto& m = osw::raii::fs::Mock();
+    m.next_event = kEventA;
+    osw::EventGuard a;
+    osw::EventGuard& alias = a;
+    a = std::move(alias);  // tolerated; the helper guards self-move
+    EXPECT_TRUE(static_cast<bool>(a));
+    EXPECT_EQ(a.get(), kEventA);
+    EXPECT_EQ(m.event_destroy_calls.load(), 0);
+}
+
 }  // namespace

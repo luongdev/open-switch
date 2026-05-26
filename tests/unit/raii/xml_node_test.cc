@@ -133,4 +133,15 @@ TEST_F(XmlNodeTest, MoveAssignmentFreesDestinationsPrior) {
     EXPECT_EQ(b.root(), kRootA);
 }
 
+TEST_F(XmlNodeTest, SelfMoveAssignmentIsSafe) {
+    auto& m = osw::raii::fs::Mock();
+    m.next_xml_root = kRootA;
+    osw::XmlNode a("f.conf", nullptr);
+    osw::XmlNode& alias = a;
+    a = std::move(alias);  // tolerated; the helper guards self-move
+    EXPECT_TRUE(static_cast<bool>(a));
+    EXPECT_EQ(a.root(), kRootA);
+    EXPECT_EQ(m.xml_free_calls.load(), 0);
+}
+
 }  // namespace

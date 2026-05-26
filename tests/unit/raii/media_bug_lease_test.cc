@@ -123,4 +123,15 @@ TEST_F(MediaBugLeaseTest, MoveAssignmentRemovesDestinationsPrior) {
     // b's destructor here -> 1 more remove (total 2).
 }
 
+TEST_F(MediaBugLeaseTest, SelfMoveAssignmentIsSafe) {
+    auto& m = osw::raii::fs::Mock();
+    m.next_bug = kBugA;
+    osw::MediaBugLease a(kSession, "n", "fn", &TestCallback, nullptr, 0, 0);
+    osw::MediaBugLease& alias = a;
+    a = std::move(alias);  // tolerated; the helper guards self-move
+    EXPECT_TRUE(static_cast<bool>(a));
+    EXPECT_EQ(a.get(), kBugA);
+    EXPECT_EQ(m.media_bug_remove_calls.load(), 0);
+}
+
 }  // namespace
