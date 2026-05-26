@@ -22,6 +22,19 @@ ARG BASE_IMAGE=docker.io/simplefs/open-switch-base
 ARG BASE_TAG=1.10.12-trixie
 FROM ${BASE_IMAGE}:${BASE_TAG} AS fs-builder
 
+# clang-tidy/clang-tools come from the trixie distro repos; we don't
+# need a specific clang version — clang-tidy is a static-analysis tool
+# that reads compile_commands.json (produced by our gcc build). The base
+# image only ships gcc/g++ to keep size down; this layer adds the
+# analyzer for the static-analysis CI job. ~50MB.
+#
+# When the base image is refreshed (Dockerfile.base), move this apt
+# install into the base so derived builds skip the package fetch.
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        clang-tidy clang-tools && \
+    rm -rf /var/lib/apt/lists/*
+
 # Module source — copy into builder.
 WORKDIR /usr/src/open-switch
 COPY CMakeLists.txt ./
