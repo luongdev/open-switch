@@ -1,9 +1,18 @@
 // Event plane for mod_open_switch.
 //
-// FreeSWITCH events are bound by the module via `switch_event_bind` and
-// routed through the configured event sinks (Redis Streams + Pub/Sub by
-// default, others pluggable). The proto defines the wire format published
-// to the transport.
+// FreeSWITCH events are bound by the module via `switch_event_bind`,
+// classified into Tier 1/2/3, buffered briefly in per-tier in-memory
+// rings, and delivered to active gRPC `SubscribeEvents` subscribers.
+// `SubscribeEvents` is the sole event transport — there is no
+// in-module Redis / Kafka / NATS producer. Subscribers persist to
+// durable storage on their own side (Kafka, Redis Streams, S3, file,
+// dashboard — operator's choice). See
+// openspec/changes/core-module-v1/designs/transport-adr.md for the
+// rationale.
+//
+// The `node_id` field on the envelope identifies the source FS
+// instance; in multi-node deploys subscribers either filter by it or
+// run one subscriber per node.
 //
 // Schema evolution policy: this proto is the source of truth for the
 // wire format. Reserved tag numbers are NEVER repurposed. New fields

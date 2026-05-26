@@ -4,9 +4,15 @@
 // FreeSWITCH from outside. The module exposes this service in-process so
 // no extra hop is required.
 //
-// All methods are idempotent when `request_id` is supplied. The module
-// keeps a 5-minute dedup cache; duplicate requests within that window
-// return the cached response without re-executing.
+// Idempotency: write methods are idempotent when `request_id` is
+// supplied. The module's per-process LRU cache (default TTL 300s)
+// returns the cached response — success OR error — for duplicate
+// `(tenant_id, request_id)` within the window. While the original
+// is in flight, retries block on an in-flight marker with a shadow
+// deadline = min(gRPC deadline, idempotency_in_flight_max_wait).
+// See openspec/changes/core-module-v1/specs/control-api/spec.md
+// §Idempotency for the full semantics including error-cache
+// behaviour, configuration knobs, and the module-restart gap.
 //
 // Stability: v1 is unstable until 1.0.0 ships. Breaking changes will bump
 // the version path (e.g. /v2).

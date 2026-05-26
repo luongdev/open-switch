@@ -1,12 +1,43 @@
 version: v2
+# Module root is the proto/ directory itself so that imports like
+# `import "open_switch/events/v1/events.proto";` resolve against the
+# real on-disk layout. The previous `path: open_switch` was wrong:
+# buf treated proto/open_switch/ as the module root and the
+# fully-qualified import paths started with `open_switch/...` — so
+# buf could not locate them. Codex round-3 caught this while
+# verifying the C-6 fix (the import line existed but lint still
+# failed against vanilla buf).
 modules:
-  - path: open_switch
+  - path: .
 breaking:
   use:
     - FILE
 lint:
   use:
-    - DEFAULT
+    - STANDARD
   except:
-    - PACKAGE_VERSION_SUFFIX  # we use /v1 path-only convention
+    # We use /v1 path-only convention (no `v1` package suffix).
+    - PACKAGE_VERSION_SUFFIX
+    # RPC response stream type uses the fully-qualified
+    # open_switch.events.v1.EventEnvelope (post-F0 the single
+    # event transport is SubscribeEvents, so the response type
+    # naturally lives in the events package). Renaming it to
+    # SubscribeEventsResponse for lint compliance would conflict
+    # with the events package; we accept this lint trade-off.
+    - RPC_RESPONSE_STANDARD_NAME
+    # The ErrorDetail.Type enum values are intentionally named
+    # without the TYPE_ prefix to mirror grpc::StatusCode names
+    # 1:1 (INVALID_ARGUMENT, PERMISSION_DENIED, etc.). buf's
+    # default lint wants TYPE_INVALID_ARGUMENT etc.; we accept
+    # the trade-off for caller ergonomics.
+    - ENUM_VALUE_PREFIX
+    - ENUM_ZERO_VALUE_SUFFIX
+    # MediaBridge service name + FromModule / FromService bidi
+    # message names are part of the public API; renaming to
+    # MediaBridgeService + StreamRequest / StreamResponse would
+    # be a breaking change. The bidi pair is also more
+    # readable as From{Module,Service} than as
+    # MediaBridgeStream{Request,Response}.
+    - SERVICE_SUFFIX
+    - RPC_REQUEST_STANDARD_NAME
 deps: []

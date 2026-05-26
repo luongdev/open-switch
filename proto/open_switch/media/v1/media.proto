@@ -23,8 +23,6 @@ package open_switch.media.v1;
 
 option cc_enable_arenas = true;
 
-import "google/protobuf/duration.proto";
-
 // ─── Service ──────────────────────────────────────────────────────────
 
 // MediaBridge is implemented by EXTERNAL services (TTS, STT, voicebot, ...).

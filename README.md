@@ -5,8 +5,10 @@ and ad-hoc gRPC bridges with a single, modern, observable interface:
 
 - **Control plane** — gRPC server (mTLS, idempotent) for `Originate`, `Hangup`,
   `Bridge`, `Hold`, `Transfer`, `Execute`, `SetVariables`, …
-- **Event plane** — FS events routed through tiered transports
-  (Kafka / Redis Streams / NATS / gRPC stream) based on durability class
+- **Event plane** — FS events classified into Tier 1/2/3 in-memory
+  rings and broadcast to subscribers over gRPC `SubscribeEvents`.
+  Subscribers persist to whatever durable store they prefer (Kafka,
+  Redis Streams, S3, file — operator's choice). No in-module broker.
 - **Media plane** — bidirectional gRPC streams per call for TTS / STT / voicebot
   via FreeSWITCH media bug, with built-in resampling
 
@@ -61,7 +63,8 @@ Current state: stubs only. See `specs/` (incoming) for the design.
 ## Build
 
 Build instructions will follow the spec drop in `specs/91-build-deploy.md`.
-Target: Debian bookworm + FreeSWITCH 1.10.x + gRPC v1.69.x.
+Target: Debian trixie + FreeSWITCH v1.10.12 + gRPC v1.74.0 (built from
+source in the builder image — see `deploy/docker/Dockerfile.builder`).
 
 ## Acknowledgements
 

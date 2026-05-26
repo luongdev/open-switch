@@ -635,7 +635,17 @@ message SubscribeEventsRequest {
 - Filtering by `tiers` (e.g., `["TIER_1_CRITICAL"]`) and `event_names`
   (glob patterns) is applied before send.
 
-**Not for production durable consumption**. Use Redis Streams for that.
+**Durability beyond the replay window is the subscriber's
+responsibility.** For Tier-1 (billing-grade) no-loss requirements,
+operators MUST run ≥ 2 subscribers per node (HA pair) and persist
+events to a durable store on the subscriber side (Kafka topic,
+Redis Streams, write-ahead log, S3 — operator's choice). See
+[`event-tiers.md`](../../designs/event-tiers.md) "No-loss reference
+architecture". The module's per-tier in-memory ring + `since_seq`
+replay (see the `SubscribeEventsRequest.since_seq` proto field) is
+the only module-side replay mechanism; it covers roughly the
+ring-size-by-emission-rate window (~25 min for Tier-1 at default
+sizing).
 
 ### Health
 
@@ -653,17 +663,41 @@ message HealthResponse {
   uint64 active_channels = 4;
   uint64 active_media_bugs = 5;
   uint64 events_emitted_total = 6;
+  // Active SubscribeEvents stream count.
+  uint32 subscriber_count = 7;
+  // Per-tier ring fill percentage (0-100).
+  uint32 tier1_ring_fill_pct = 8;
+  uint32 tier2_ring_fill_pct = 9;
+  uint32 tier3_ring_fill_pct = 10;
+  // Total events evicted (dropped) per tier since module load.
+  uint64 tier1_dropped_total = 11;
+  uint64 tier2_dropped_total = 12;
+  uint64 tier3_dropped_total = 13;
 }
 ```
+
+The wire shape mirrors `proto/open_switch/control/v1/control.proto`'s
+`HealthResponse` exactly (Codex round-3 finding N12 — earlier drafts
+of this spec showed only the first six fields; subsequent proto
+revisions added the subscriber + per-tier metrics and the spec was
+out of sync).
 
 Liveness + readiness check. Implements the standard gRPC health
 check semantics so Kubernetes / Consul / load balancers can probe.
 
 - `SERVING`: module is up and ready.
-- `NOT_SERVING`: module loaded but rejecting RPCs (e.g., Redis down
-  beyond grace period).
+- `NOT_SERVING`: module loaded but rejecting RPCs (e.g., catastrophic
+  config validation failure on hot-reload, no subscribers AND a
+  Tier-1 ring overflow rate over an operator-configured threshold,
+  or admin-forced via `osw_force_not_serving` channel variable).
+  No "Redis down" path exists — there is no in-module Redis.
 - `DRAINING`: SIGTERM received; rejecting new Originate /
   SubscribeEvents; existing calls allowed to finish.
+
+Operators wanting metric-style telemetry (Prometheus, etc.) run a
+sidecar that polls `Health` and translates. V1 does not emit
+Prometheus metrics natively (project decision — see
+[`architecture.md`](../../designs/architecture.md#health-counters)).
 
 ## Rate limiting
 
@@ -771,10 +805,17 @@ re-executes.
 1. Should `Originate` block the gRPC thread for the full timeout, OR
    should we add an async variant returning `job_id` and emitting a
    completion event? V1 sync is simpler; async variant deferred.
-2. Should `SubscribeEvents` support `since=<offset>` resumption?
-   For V1 no — fresh start each subscribe. Operators wanting resume
-   use Redis Streams directly.
-3. Should we add a `WhoAmI` RPC returning the authenticated identity
+2. Should we add a `WhoAmI` RPC returning the authenticated identity
    for client-side debugging? Useful but not blocker.
-4. Should we support gRPC reflection? Helps debugging. Default off
+3. Should we support gRPC reflection? Helps debugging. Default off
    (production); operator opts in via config.
+
+Note: `SubscribeEvents` resumption via `since_seq` is already
+specified (and present in the proto at
+`proto/open_switch/control/v1/control.proto`
+`SubscribeEventsRequest.since_seq`). An earlier draft of this
+document had a "should we add since=<offset>" open question that
+contradicted the post-F0 proto; the question is resolved by
+implementation — see SubscribeEvents above and
+[`event-tiers.md`](../../designs/event-tiers.md) "`since_seq`
+replay" for the contract.

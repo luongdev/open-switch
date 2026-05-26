@@ -12,7 +12,8 @@ This document covers:
 4. Audit event emission for security-relevant operations.
 
 Cryptography for the event transport layer is covered in
-[`transport-adr.md`](transport-adr.md) (Redis TLS + ACL).
+[`transport-adr.md`](transport-adr.md) (gRPC mTLS for
+`SubscribeEvents`; there is no in-module broker after F0).
 Cryptography for the media transport layer (gRPC mTLS) is covered
 here and reused from the control plane.
 
@@ -34,20 +35,22 @@ Trust boundaries:
                 │  │  - control gRPC server (:50061)              │  │
                 │  │  - event_bind callbacks                       │  │
                 │  │  - media bug callbacks                        │  │
+                │  │  - SubscribeEvents broadcaster                │  │
                 │  └──────────────────────────────────────────────┘  │
                 └────────────────────────────────────────────────────┘
-                     │                                      │
-                     ▼ RTP                                  ▼ gRPC mTLS
-              ┌─────────────┐                       ┌──────────────────┐
-              │ External    │                       │ Upstream         │
-              │ caller PSTN │                       │ TTS/STT/Voicebot │
-              └─────────────┘                       └──────────────────┘
-                                                            │
-                                                            ▼ Redis TLS
-                                                     ┌────────────────┐
-                                                     │ Redis cluster  │
-                                                     └────────────────┘
+                     │                       │              │
+                     ▼ RTP                   ▼ gRPC mTLS    ▼ gRPC mTLS
+              ┌─────────────┐         ┌──────────────────┐  ┌────────────────────┐
+              │ External    │         │ Upstream         │  │ Event subscribers  │
+              │ caller PSTN │         │ TTS/STT/Voicebot │  │ (operator-owned;   │
+              └─────────────┘         └──────────────────┘  │ persist as chosen) │
+                                                            └────────────────────┘
 ```
+
+There is no broker (Redis, Kafka, etc.) inside the trust boundary
+of the FreeSWITCH process. Subscribers connecting to
+`SubscribeEvents` decide their own persistence target on their
+side.
 
 Adversaries by source and goal:
 
@@ -57,7 +60,7 @@ Adversaries by source and goal:
 | Public SIP peer | Get bot to say sensitive thing via injection | Tenant-scoped ACLs at orchestrator level; module doesn't add new attack surface here |
 | Network attacker (LAN) | Read call audio in transit | gRPC mTLS for upstream, FS handles SRTP/SIPS for media legs |
 | Network attacker (LAN) | Forge control commands | gRPC mTLS + API key + tenant ACL |
-| Network attacker (LAN) | Forge events into Redis | Redis ACL + TLS; module connects with auth credentials |
+| Network attacker (LAN) | Subscribe to event stream without authorization | gRPC mTLS + API key on `SubscribeEvents`; subscriber identity logged at stream open and on `osw::audit::event_subscriber_connected`. No broker-side ACL surface to harden because there is no in-module broker. |
 | Compromised tenant credentials | Originate fraudulent calls | Per-tenant rate limits + dial-context allow-list + audit log |
 | Compromised tenant credentials | Eavesdrop on other tenants' calls | Per-tenant scoping on `eavesdrop` + `Bridge` commands; cross-tenant ops rejected |
 | Insider (supervisor with valid creds) | Listen to bot calls bypassing policy | Eavesdrop guard (this doc); audit events go to Tier 1 |
@@ -543,8 +546,9 @@ All security-relevant events emit Tier 1 CUSTOM events with
 | `osw::audit::hangup_admin` | Hangup invoked via gRPC (vs caller-initiated) |
 | `osw::audit::config_reload` | SIGHUP / hot reload |
 | `osw::audit::module_load` / `module_unload` | Module lifecycle |
-| `osw::eavesdrop::denied` / `audit` / `allowed` | See above |
-| `osw::audit::redis_credential_used` | First successful Redis auth |
+| `osw::eavesdrop::denied` / `audit` / `allowed` / `detected_post_attach` | See above |
+| `osw::audit::event_subscriber_connected` | New `SubscribeEvents` stream opened; carries authenticated identity + filter scope |
+| `osw::audit::event_subscriber_disconnected` | Stream closed (graceful or kicked); carries the kick reason if applicable |
 
 The audit event payload includes (where applicable):
 
@@ -559,10 +563,13 @@ The audit event payload includes (where applicable):
 
 `docs/HARDENING.md` (lands with Phase 2) will codify:
 
-- [ ] mTLS enabled for control gRPC; client certs distributed via PKI.
+- [ ] mTLS enabled for control gRPC (and `SubscribeEvents`, which
+      shares the same listener); client certs distributed via PKI.
 - [ ] API keys rotated quarterly.
-- [ ] Redis ACL minimised (XADD/PUBLISH only); separate user.
-- [ ] Redis TLS in cross-host setups.
+- [ ] Subscriber-side persistence target (Kafka, Redis Streams,
+      S3, file) is hardened to the operator's standard for that
+      store — these stores are OUTSIDE the module's trust boundary
+      and not covered by this checklist beyond "they exist".
 - [ ] Eavesdrop policy = deny module-default; per-tenant overrides
       reviewed quarterly.
 - [ ] Audit events routed to immutable storage (S3 versioned bucket
@@ -586,10 +593,12 @@ The audit event payload includes (where applicable):
   `CRYPTO_memcmp` (from OpenSSL) for API key comparison (Phase 1
   Codex finding N-4); mTLS is preferred over API-key-only. The
   implementation MUST NOT roll its own constant-time comparison.
-- **Replay of audit events** by a Redis-stream consumer impersonator:
-  consumers must verify the producer; we don't sign envelopes V1.
-  Recommended posture: read-only Redis ACL for consumers, plus
-  consumer-side dedup by `event_id`.
+- **Replay of audit events** by a malicious subscriber-side consumer:
+  the module does not sign envelopes in V1. Subscribers that
+  re-emit envelopes downstream MUST verify the original gRPC
+  connection identity at their boundary. Recommended posture:
+  consumer-side dedup by `event_id` plus subscriber identity
+  pinning in the operator's downstream audit pipeline.
 
 ## Future work (V1.5+)
 
@@ -598,4 +607,6 @@ The audit event payload includes (where applicable):
 - OAuth2 / OIDC for control plane (instead of API keys).
 - Per-method gRPC ACL (e.g., tenant A can Originate but not Hangup).
 - Anomaly detection on eavesdrop frequency per supervisor.
-- Audit-log streaming to SIEM via syslog/RFC 5424 in addition to Redis.
+- Audit-log streaming to SIEM via syslog/RFC 5424 in addition to
+  the gRPC `SubscribeEvents` stream (today operators run a small
+  subscriber that forwards Tier-1 events to syslog).

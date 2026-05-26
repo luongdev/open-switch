@@ -42,19 +42,31 @@ collapses to one socket and one configuration file.
 │   │  └────────────────────────────────────────────────────────┬─┘ │    │
 │   │                                                            │   │    │
 │   │  ┌─────────────────────────────────────────────────────────┴┐ │    │
-│   │  │           Pluggable transports (event sinks)              │ │    │
-│   │  │   ┌───────────────┐  ┌───────────────┐  ┌──────────────┐ │ │    │
-│   │  │   │ Redis Streams │  │ Redis Pub/Sub │  │ Null (drop)  │ │ │    │
-│   │  │   │  Tier 1, 2    │  │  Tier 3       │  │  for tests   │ │ │    │
-│   │  │   └───────────────┘  └───────────────┘  └──────────────┘ │ │    │
+│   │  │           In-memory per-tier event rings                  │ │    │
+│   │  │   ┌──────────────┐  ┌──────────────┐  ┌─────────────────┐ │ │    │
+│   │  │   │ Tier 1 ring  │  │ Tier 2 ring  │  │ Tier 3 ring     │ │ │    │
+│   │  │   │  16384       │  │  8192        │  │  4096           │ │ │    │
+│   │  │   │  (MPSC)      │  │  (MPSC)      │  │  (MPSC)         │ │ │    │
+│   │  │   └──────┬───────┘  └──────┬───────┘  └────────┬────────┘ │ │    │
+│   │  │          │                  │                   │           │ │    │
+│   │  │          └──────────────────┴───────────────────┘           │ │    │
+│   │  │                            │                                │ │    │
+│   │  │                            ▼                                │ │    │
+│   │  │           Subscriber broadcaster (shared-serialise once,    │ │    │
+│   │  │           push shared_ptr into per-subscriber send queues)  │ │    │
 │   │  └───────────────────────────────────────────────────────────┘ │    │
 │   └──────────────────────────────────────────────────────────────────┘ │
 │                                                                        │
-└───────┬─────────────────────┬────────────────────┬─────────────────────┘
-        │                     │                    │
-   gRPC :50061           Redis :6379         External services
-   (Control + Media)     (Streams + PubSub)   (TTS, STT, bot endpoints)
+└───────┬──────────────────────────────────────────────┬─────────────────┘
+        │                                              │
+   gRPC :50061                              External services
+   (Control + Media + SubscribeEvents)      (TTS, STT, bot, event subscribers)
 ```
+
+There is no in-module Redis (or other broker) sink. Per the
+transport ADR ([`transport-adr.md`](transport-adr.md)), gRPC
+`SubscribeEvents` is the sole event transport; operators run HA
+subscriber pairs to get Tier-1 no-loss.
 
 ## Plane breakdown
 
@@ -76,10 +88,13 @@ Key behaviors:
 - Per-tenant rate limiting via token bucket.
 - Per-tenant allowed dialplan contexts — Originate can only target
   contexts the tenant is allowed in.
-- gRPC server-streaming `SubscribeEvents` provides a simple consumer for
-  operators who don't deploy Redis. Backed by an in-memory ring; slow
-  consumers are dropped explicitly (the durability path goes through
-  the event-plane sinks, not this stream).
+- gRPC server-streaming `SubscribeEvents` is the sole event
+  transport. Backed by per-tier in-memory rings (MPSC producer side,
+  single broadcaster consumer); slow subscribers are dropped
+  explicitly with `RESOURCE_EXHAUSTED`. Durability beyond the
+  replay window is the subscriber's responsibility — see
+  [`event-tiers.md`](event-tiers.md) "No-loss reference
+  architecture".
 
 Threading model:
 - gRPC uses a thread pool managed by the gRPC library. Synchronous
@@ -137,7 +152,10 @@ FS event_facility
             ▼
 External gRPC subscriber (operator-owned)
             │
-            │  operator's choice: persist to Kafka / Redis / S3 / file / ...
+            │  Subscriber's choice for downstream durability:
+            │  Kafka / Redis Streams / S3 / file / dashboard / drop.
+            │  This is OPERATOR-SIDE persistence — the module itself
+            │  does not write to any broker.
             ▼
 Operator-defined durability policy
 ```
@@ -300,33 +318,40 @@ proto-serialized for replay. Capacity sized to 5 × expected RPS × TTL
 │  │   :16384-32768/udp (RTP range)            │    │
 │  │   :50061/tcp (mod_open_switch gRPC)       │    │
 │  └─────────┬──────────────────────────────────┘   │
-│            │ TCP                                  │
-│  ┌─────────┴────────────────────────────────┐    │
-│  │ Redis 7                                    │    │
-│  │   :6379/tcp                                 │    │
-│  │   AOF + RDB persistence                     │    │
-│  │   Streams: osw.events.tier1, .tier2         │    │
-│  │   Channels: osw.events.tier3                │    │
-│  └──────────────────────────────────────────┘    │
-│                                                   │
-└───────────────────────────────────────────────────┘
-        │                              ▲
-        │ gRPC :50061                  │ Stream consume
-        ▼                              │
-┌──────────────┐                ┌──────┴────────────┐
-│ Orchestrators │                │ Event consumers   │
-│ Bot logic     │                │  · Billing        │
-│ Voicebot      │                │  · CDR            │
-│ STT service   │                │  · Monitoring     │
-│ TTS service   │                │  · Dashboard      │
-└──────────────┘                └───────────────────┘
+│            │                                       │
+└────────────┼───────────────────────────────────────┘
+             │ gRPC :50061
+             │ (Control + Media + SubscribeEvents)
+             │
+   ──────────┴────────────────────────────────────────────────
+                                                  ▲
+                                                  │ SubscribeEvents
+                                                  │ stream
+   ┌──────────────┐                ┌──────────────┴──────────────┐
+   │ Orchestrators │               │ Event subscribers (operator) │
+   │ Bot logic     │               │  · HA subscriber pair for    │
+   │ Voicebot      │               │    Tier-1 no-loss            │
+   │ STT service   │               │  · Persist to Kafka/Redis    │
+   │ TTS service   │               │    Streams/S3/file/dashboard │
+   └──────────────┘                │    on the subscriber side    │
+                                   └──────────────────────────────┘
 ```
 
+The deployment contains no in-module broker. The container ships
+FreeSWITCH + `mod_open_switch.so` + the FS-managed runtime
+dependencies — no Redis, no Kafka, no NATS service is required for
+the module to operate. Operators wanting durable event persistence
+run their own subscribers (per the
+[`transport-adr.md`](transport-adr.md) HA pattern) and choose their
+own storage backend on that side.
+
 For multi-FS deployments, every FS node runs its own `mod_open_switch`
-instance, all writing to the same Redis cluster. The `node_id` field
-in the event envelope identifies the source. There is NO direct
-inter-module coordination; FreeSWITCH's own clustering features
-(`mod_sla`, distributed registrations, etc.) are used as before.
+instance. Event subscribers receive events from each node via
+separate `SubscribeEvents` streams; subscribers can filter by the
+`node_id` field in the envelope, or run one subscriber per node and
+fan-in downstream. There is NO direct inter-module coordination;
+FreeSWITCH's own clustering features (`mod_sla`, distributed
+registrations, etc.) are used as before.
 
 ## Sequence: Inbound voicebot call
 
@@ -484,10 +509,15 @@ orchestrator's restart policy.
 
 1. **Take SIP/RTP responsibility from FreeSWITCH**. We use FS for all
    media-protocol work. No SIP UA / RTP stack inside the module.
-2. **Persist state**. The module is stateless across restarts. Idempotency
-   cache, event rings, dialog state — all in-memory. Durable state lives
-   in Redis (event consumers' responsibility) and in FreeSWITCH's own
-   stores.
+2. **Persist state**. The module is stateless across restarts.
+   Idempotency cache, event rings, dialog state — all in-memory.
+   Durable state lives wherever the subscriber persists it (Kafka,
+   Redis Streams, S3, file, on the subscriber's side — operator's
+   choice) and in FreeSWITCH's own stores (CDR backends, recording
+   files, etc.). This module is stateless across restarts;
+   reload-mid-call leaves the FS channel in place but loses the
+   in-memory caches (see Idempotency §"Module-restart false-negative
+   gap" in [`specs/control-api/spec.md`](../specs/control-api/spec.md)).
 3. **Coordinate across nodes**. Multi-FS coordination uses FS's own
    features (registrations, mod_sla, etc.). The module is per-node.
 4. **Replace the FS dialplan**. Dialplan stays the entry point for calls.
@@ -501,8 +531,8 @@ orchestrator's restart policy.
 |---|---|---|
 | All | Module lifecycle, config, RAII helpers | `src/core/` |
 | Control | gRPC server, handlers, idempotency, ACL | `src/control/` |
-| Event | event_bind, tier router, proto convert | `src/events/` |
-| Transport | Sink interface, Redis impls, gRPC stream sink | `src/transports/` |
+| Event | event_bind, tier router, proto convert, MPSC rings | `src/events/` |
+| Event | gRPC SubscribeEvents broadcaster + per-subscriber queues | `src/events/subscribe/` |
 | Media | Bug manager, bidi stream client, resampler | `src/media/` |
 | Security | Eavesdrop guard, TLS setup, ACL evaluator | `src/security/` |
 | Observability | Logger, health counters | `src/observability/` |
