@@ -22,9 +22,18 @@
 # reflect ONLY files that exist on disk in the current commit.
 
 # --- osw_events (FS-agnostic) ----------------------------------------
+#
+# The broadcaster + subscriber + send_queue belong here (FS-agnostic):
+# they touch only Ring (in this lib), serialised envelope bytes
+# (already produced by osw_events_fs), Health, and osw::log. No
+# <switch.h> includes — tests link osw_events directly to exercise the
+# broadcaster against test-built Rings.
 add_library(osw_events STATIC
     tier.cc
     ring.cc
+    subscribe/send_queue.cc
+    subscribe/subscriber.cc
+    subscribe/broadcaster.cc
 )
 target_include_directories(osw_events PUBLIC
     ${CMAKE_SOURCE_DIR}/include

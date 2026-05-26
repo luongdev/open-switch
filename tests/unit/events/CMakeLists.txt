@@ -30,3 +30,10 @@ osw_add_unit_test(
     SOURCES binder_test.cc
     LIBS    osw_events_test_helpers osw_events osw_observability osw_proto
 )
+
+osw_add_unit_test(
+    NAME    broadcaster_test
+    LABEL   "events;unit"
+    SOURCES broadcaster_test.cc
+    LIBS    osw_events osw_observability osw_proto
+)

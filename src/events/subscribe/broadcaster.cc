@@ -1,0 +1,404 @@
+/*
+ * src/events/subscribe/broadcaster.cc
+ *
+ * Implementation of osw::events::Broadcaster.
+ *
+ * One worker thread per tier. Each thread:
+ *   1. WaitAndPopBatch from its tier's Ring (acquires + releases the
+ *      ring mu_ inside Ring; no other lock is held).
+ *   2. Take a snapshot of the live subscriber roster (brief roster_mu_
+ *      hold; releases before touching subscriber queues).
+ *   3. For each entry in the batch, for each subscriber in the snapshot
+ *      matching the filter, TryPush onto the subscriber's bounded
+ *      SendQueue. On TryPush failure → RequestClose(kQueueFull) +
+ *      increment kick counter. Failure does NOT propagate back-pressure
+ *      to other subscribers or to the ring.
+ *
+ * Lock-order discipline (W2-wide):
+ *   1. tier ring mu (inside Ring::WaitAndPopBatch)
+ *   2. roster_mu_ (brief shared_ptr snapshot copy)
+ *   3. subscriber SendQueue mu (inside SendQueue::TryPush)
+ *
+ * Reverse acquisition NEVER occurs:
+ *   - Producers (Binder::HandleEvent) acquire only the ring mu.
+ *   - Subscribers' writer threads acquire only the SendQueue mu.
+ *   - The broadcaster acquires them in order: ring → roster → queue.
+ *
+ * The broadcaster does NOT hold the ring mu while pushing to subscriber
+ * queues (WaitAndPopBatch returns a vector<RingEntry> and then releases
+ * the ring mu before the dispatch loop runs).
+ *
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ */
+
+#include "osw/events/subscribe/broadcaster.h"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <exception>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <utility>
+#include <vector>
+
+#include "open_switch/events/v1/events.pb.h"
+
+#include "osw/events/envelope.h"
+#include "osw/events/ring.h"
+#include "osw/events/subscribe/send_queue.h"
+#include "osw/events/subscribe/subscriber.h"
+#include "osw/events/tier.h"
+#include "osw/observability/health.h"
+#include "osw/observability/log.h"
+
+namespace osw::events {
+
+namespace {
+
+constexpr const char* kSubsystem = "events.broadcaster";
+
+// One batch per worker tick. Bounded so the broadcaster never holds the
+// ring mu_ longer than necessary; the rest of the ring is drained on the
+// next iteration.
+constexpr std::size_t kBatchMax = 64;
+
+// WaitAndPopBatch timeout. Short enough that Stop() observes the
+// stop_requested_ flag promptly; long enough to avoid busy-looping.
+constexpr auto kBatchTimeout = std::chrono::milliseconds(100);
+
+// Parse only the routing-relevant fields from a serialised envelope.
+// We avoid a full proto parse on the hot path (the bytes themselves
+// are forwarded as-is via shared_ptr; the subscriber writer thread does
+// its own full parse).
+//
+// open_switch.events.v1.EventEnvelope tags used:
+//   2: Tier         tier            (enum / varint)
+//   3: string       event_name
+//   5: string       node_id
+//
+// We do a lightweight manual scan over the proto wire format. This is
+// faster than a full ParseFromString + DiscardUnknownFields and avoids
+// allocating a new EventEnvelope per dispatched event per subscriber.
+//
+// Wire format:
+//   key = (field_num << 3) | wire_type
+//   wire_type 0 = varint (enums, ints) — read varint after key
+//   wire_type 2 = length-delimited (strings, bytes) — read varint len, then bytes
+//
+// Any field we don't recognise is skipped via wire-type rules. On any
+// parse error we conservatively return all-zero values; the subscriber
+// filter then treats it as a generic event and the writer will report
+// the proto error when it does its full parse.
+struct RoutingFields {
+    Tier tier = Tier::kUnspecified;
+    std::string_view event_name;
+    std::string_view node_id;
+};
+
+[[nodiscard]] bool ReadVarint(const std::uint8_t*& p,
+                              const std::uint8_t* end,
+                              std::uint64_t& out) noexcept {
+    out = 0;
+    int shift = 0;
+    while (p < end) {
+        const std::uint8_t b = *p++;
+        out |= static_cast<std::uint64_t>(b & 0x7F) << shift;
+        if ((b & 0x80) == 0)
+            return true;
+        shift += 7;
+        if (shift >= 64)
+            return false;  // malformed
+    }
+    return false;
+}
+
+[[nodiscard]] bool SkipField(const std::uint8_t*& p,
+                             const std::uint8_t* end,
+                             int wire_type) noexcept {
+    switch (wire_type) {
+        case 0: {  // varint
+            std::uint64_t tmp = 0;
+            return ReadVarint(p, end, tmp);
+        }
+        case 1: {  // 64-bit fixed
+            if (end - p < 8)
+                return false;
+            p += 8;
+            return true;
+        }
+        case 2: {  // length-delimited
+            std::uint64_t len = 0;
+            if (!ReadVarint(p, end, len))
+                return false;
+            if (static_cast<std::uint64_t>(end - p) < len)
+                return false;
+            p += len;
+            return true;
+        }
+        case 5: {  // 32-bit fixed
+            if (end - p < 4)
+                return false;
+            p += 4;
+            return true;
+        }
+        default:
+            return false;  // unsupported (groups, etc.)
+    }
+}
+
+[[nodiscard]] RoutingFields ExtractRoutingFields(const std::string& bytes) noexcept {
+    RoutingFields rf;
+    const auto* p = reinterpret_cast<const std::uint8_t*>(bytes.data());
+    const auto* end = p + bytes.size();
+    while (p < end) {
+        std::uint64_t key = 0;
+        if (!ReadVarint(p, end, key))
+            break;
+        const int field_num = static_cast<int>(key >> 3);
+        const int wire_type = static_cast<int>(key & 0x7);
+
+        if (field_num == 2 && wire_type == 0) {
+            // tier (enum) — proto3 varint.
+            std::uint64_t v = 0;
+            if (!ReadVarint(p, end, v))
+                break;
+            switch (v) {
+                case 1:
+                    rf.tier = Tier::k1Critical;
+                    break;
+                case 2:
+                    rf.tier = Tier::k2State;
+                    break;
+                case 3:
+                    rf.tier = Tier::k3Ephemeral;
+                    break;
+                default:
+                    rf.tier = Tier::kUnspecified;
+                    break;
+            }
+        } else if (field_num == 3 && wire_type == 2) {
+            // event_name (string)
+            std::uint64_t len = 0;
+            if (!ReadVarint(p, end, len))
+                break;
+            if (static_cast<std::uint64_t>(end - p) < len)
+                break;
+            rf.event_name =
+                std::string_view(reinterpret_cast<const char*>(p), static_cast<std::size_t>(len));
+            p += len;
+        } else if (field_num == 5 && wire_type == 2) {
+            // node_id (string)
+            std::uint64_t len = 0;
+            if (!ReadVarint(p, end, len))
+                break;
+            if (static_cast<std::uint64_t>(end - p) < len)
+                break;
+            rf.node_id =
+                std::string_view(reinterpret_cast<const char*>(p), static_cast<std::size_t>(len));
+            p += len;
+        } else {
+            if (!SkipField(p, end, wire_type))
+                break;
+        }
+    }
+    return rf;
+}
+
+}  // namespace
+
+Broadcaster::Broadcaster(RingSet* rings, Health* health) noexcept : rings_(rings), health_(health) {
+    for (auto& c : kick_counters_)
+        c.store(0, std::memory_order_relaxed);
+}
+
+Broadcaster::~Broadcaster() noexcept {
+    // Defensive: Stop() is idempotent.
+    Stop();
+}
+
+void Broadcaster::Start() {
+    if (running_.exchange(true, std::memory_order_acq_rel)) {
+        osw::log::Warn(kSubsystem, "Broadcaster::Start called twice; ignoring");
+        return;
+    }
+    stop_requested_.store(false, std::memory_order_release);
+
+    workers_[0] = std::thread([this]() { WorkerLoop(Tier::k1Critical); });
+    workers_[1] = std::thread([this]() { WorkerLoop(Tier::k2State); });
+    workers_[2] = std::thread([this]() { WorkerLoop(Tier::k3Ephemeral); });
+    osw::log::Info(kSubsystem, "Broadcaster started (3 worker threads)");
+}
+
+void Broadcaster::Stop() {
+    if (!running_.load(std::memory_order_acquire)) {
+        return;
+    }
+    stop_requested_.store(true, std::memory_order_release);
+
+    // Close all rings so WaitAndPopBatch returns promptly.
+    if (rings_ != nullptr) {
+        rings_->CloseAll();
+    }
+
+    for (auto& w : workers_) {
+        if (w.joinable()) {
+            w.join();
+        }
+    }
+    running_.store(false, std::memory_order_release);
+
+    // Close every subscriber's send queue so the gRPC writer threads
+    // exit. The reason is kShutdown — handlers map this to OK status
+    // (clean drain), not RESOURCE_EXHAUSTED.
+    std::vector<std::shared_ptr<Subscriber>> snapshot;
+    {
+        std::lock_guard<std::mutex> lk(roster_mu_);
+        snapshot = roster_;
+    }
+    for (auto& sub : snapshot) {
+        if (sub)
+            sub->RequestClose(KickReason::kShutdown);
+    }
+
+    osw::log::Info(kSubsystem, "Broadcaster stopped");
+}
+
+void Broadcaster::AddSubscriber(std::shared_ptr<Subscriber> sub) {
+    if (!sub)
+        return;
+    std::size_t new_count = 0;
+    {
+        std::lock_guard<std::mutex> lk(roster_mu_);
+        roster_.push_back(std::move(sub));
+        new_count = roster_.size();
+    }
+    if (health_ != nullptr) {
+        health_->SetSubscriberCount(static_cast<std::uint32_t>(new_count));
+    }
+}
+
+void Broadcaster::RemoveSubscriber(const std::string& id) {
+    std::size_t new_count = 0;
+    {
+        std::lock_guard<std::mutex> lk(roster_mu_);
+        roster_.erase(std::remove_if(
+                          roster_.begin(),
+                          roster_.end(),
+                          [&](const std::shared_ptr<Subscriber>& s) { return s && s->Id() == id; }),
+                      roster_.end());
+        new_count = roster_.size();
+    }
+    if (health_ != nullptr) {
+        health_->SetSubscriberCount(static_cast<std::uint32_t>(new_count));
+    }
+}
+
+std::size_t Broadcaster::SubscriberCount() const noexcept {
+    std::lock_guard<std::mutex> lk(roster_mu_);
+    return roster_.size();
+}
+
+std::uint64_t Broadcaster::KicksForReason(KickReason r) const noexcept {
+    const auto idx = static_cast<std::size_t>(r);
+    if (idx >= kick_counters_.size())
+        return 0;
+    return kick_counters_[idx].load(std::memory_order_relaxed);
+}
+
+std::vector<std::shared_ptr<Subscriber>> Broadcaster::RosterSnapshot() const {
+    std::lock_guard<std::mutex> lk(roster_mu_);
+    return roster_;  // shared_ptr vector copy — refs +1 each
+}
+
+void Broadcaster::ProcessOneForTesting(Tier tier, RingEntry entry) {
+    auto snapshot = RosterSnapshot();
+    Dispatch(tier, entry, snapshot);
+}
+
+void Broadcaster::Dispatch(Tier tier,
+                           const RingEntry& entry,
+                           const std::vector<std::shared_ptr<Subscriber>>& roster) {
+    if (!entry.envelope_bytes)
+        return;
+
+    // Extract routing fields from the serialised envelope so we can run
+    // the subscriber filter without a full proto parse per subscriber.
+    const RoutingFields rf = ExtractRoutingFields(*entry.envelope_bytes);
+
+    // Effective tier: prefer the tier the broadcaster knows (the tier
+    // whose ring this entry came from); fall back to the proto's tier
+    // only if the broadcaster's tier is kUnspecified (defensive; should
+    // never happen in practice).
+    const Tier effective_tier = (tier == Tier::kUnspecified) ? rf.tier : tier;
+
+    for (const auto& sub : roster) {
+        if (!sub)
+            continue;
+        if (sub->IsClosed())
+            continue;
+        if (!sub->MatchesFilter(effective_tier, rf.event_name, rf.node_id)) {
+            continue;
+        }
+        if (!sub->Queue().TryPush(entry.envelope_bytes)) {
+            // SendQueue full — kick the subscriber. The writer thread
+            // will surface RESOURCE_EXHAUSTED to the client on next
+            // pop. This does NOT propagate back-pressure to the
+            // broadcaster or to the ring; we drop the subscriber, not
+            // the event.
+            sub->RequestClose(KickReason::kQueueFull);
+            kick_counters_[static_cast<std::size_t>(KickReason::kQueueFull)].fetch_add(
+                1, std::memory_order_relaxed);
+            osw::log::Warn(kSubsystem,
+                           "subscriber id=%s kicked (queue_full) on tier=%s",
+                           sub->Id().c_str(),
+                           std::string(ToString(effective_tier)).c_str());
+        }
+    }
+
+    total_dispatched_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void Broadcaster::WorkerLoop(Tier tier) noexcept {
+    try {
+        if (rings_ == nullptr)
+            return;
+        Ring* ring = rings_->Get(tier);
+        if (ring == nullptr) {
+            osw::log::Error(
+                kSubsystem, "no ring for tier=%d; worker exiting", static_cast<int>(tier));
+            return;
+        }
+        while (!stop_requested_.load(std::memory_order_acquire)) {
+            // Acquires + releases ring mu_ internally. No other lock
+            // is held across this call.
+            auto batch = ring->WaitAndPopBatch(kBatchMax, kBatchTimeout);
+            if (batch.empty()) {
+                if (ring->IsClosed()) {
+                    // Drain complete (ring closed + nothing left).
+                    return;
+                }
+                continue;  // timeout-empty; loop back
+            }
+            // Brief roster_mu_ hold to snapshot the live subscriber list.
+            // We do NOT hold this across the per-subscriber TryPush loop.
+            auto roster = RosterSnapshot();
+            for (auto& entry : batch) {
+                Dispatch(tier, entry, roster);
+            }
+        }
+    } catch (const std::exception& e) {
+        osw::log::Error(
+            kSubsystem, "WorkerLoop(tier=%d) threw: %s", static_cast<int>(tier), e.what());
+    } catch (...) {
+        osw::log::Error(
+            kSubsystem, "WorkerLoop(tier=%d) threw unknown exception", static_cast<int>(tier));
+    }
+}
+
+}  // namespace events
+}  // namespace osw
