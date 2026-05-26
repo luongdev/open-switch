@@ -56,8 +56,11 @@ message RequestHeader {
 
 - `request_id` MUST be unique per logical request. UUIDv7 recommended
   for time-ordering. Used for idempotency dedup (see below).
-- `tenant_id` MUST be present and match an ACL entry. The module
-  rejects unknown tenants with `PERMISSION_DENIED`.
+- `tenant_id` MUST be present (non-empty) and match an ACL entry. The
+  module rejects empty `tenant_id` with `INVALID_ARGUMENT` and unknown
+  tenants with `PERMISSION_DENIED`. **Empty tenant_id is NEVER treated
+  as a valid identity** (Phase 1 Codex finding I-6) — this prevents
+  idempotency cache collisions and ACL bypass.
 - `traceparent` is W3C trace context. Module propagates into emitted
   events for cross-system correlation.
 - `deadline` is informational; the gRPC deadline (set on the call)
@@ -71,16 +74,29 @@ a new call). Callers SHOULD always set it.
 
 The module maintains a per-process LRU cache keyed by
 `(tenant_id, request_id)` with TTL `idempotency_ttl_seconds`
-(default 300). Cached entries store the response protobuf.
+(default 300). Each entry holds one of three values:
 
-Behavior:
+- **In-flight marker** + `std::condition_variable` for waiters
+- **Cached response** (the protobuf, serialized)
+- (After TTL expiry: entry evicted)
+
+Behaviour table (Phase 1 Codex finding C-5 — in-flight semantics
+explicitly specified):
 
 | Scenario | Module action |
 |---|---|
-| First call with `(tenant, request_id)` | Execute, cache response, return |
-| Repeat call within TTL with same `(tenant, request_id)` AND same method | Return cached response WITHOUT re-execution |
-| Repeat call within TTL with same `(tenant, request_id)` but DIFFERENT method | Reject with `ALREADY_EXISTS` |
-| Repeat call AFTER TTL expired | Treated as new request |
+| First call with `(tenant, request_id)` | Insert in-flight marker. Execute. On completion, replace marker with cached response. Return response. |
+| Repeat call within TTL with same `(tenant, request_id)` AND same method, **original still in-flight** | Block on the in-flight marker's condvar with a "shadow deadline" = `min(gRPC deadline, idempotency_in_flight_max_wait)`. When original completes: return the same response. If shadow deadline expires first: return `ALREADY_EXISTS` with message "Originate in flight; await original or use a fresh request_id". |
+| Repeat call within TTL with same `(tenant, request_id)` AND same method, **original completed** | Return cached response WITHOUT re-execution. |
+| Repeat call within TTL with same `(tenant, request_id)` but DIFFERENT method | Reject with `ALREADY_EXISTS`. |
+| Repeat call AFTER TTL expired | Treated as new request. |
+
+Why the in-flight block (vs the prior draft which left this
+unspecified — Codex C-5 scenario): a client whose gRPC deadline
+fires while Originate is mid-dial would retry and HIT the in-flight
+marker, not miss the cache. Without the block: re-execution →
+double-dial (customer dials twice). The block + shadow timeout
+prevents double-dial while keeping clients responsive.
 
 Idempotency applies to ALL write methods (Originate, Hangup, Bridge,
 Execute, SetVariables, Hold/Unhold, BlindTransfer, Start*/Stop*).
@@ -89,9 +105,38 @@ Read-only methods (Health, SubscribeEvents) are not cached.
 `request_id` is per-tenant: same UUID under different tenants are
 independent.
 
-The module restarts wipe the cache. Operators are advised to use a
-slightly shorter retry window than `idempotency_ttl_seconds` on the
-client side to avoid the false-negative window after a module restart.
+### Module-restart false-negative gap (residual risk)
+
+A module reload wipes the cache. If FS channels survive the reload
+(depends on FS reload semantics — `fs_cli reload mod_open_switch`
+unloads + reloads the .so without affecting active channels), a
+client retrying an Originate that was in-flight at reload time will
+miss the cache and **may** double-dial.
+
+Mitigations:
+
+1. **Refuse module reload while any in-flight Originate exists** —
+   the reload command returns `RESOURCE_EXHAUSTED` until the
+   in-flight set drains. Operators can SIGTERM the module if
+   forcing reload is required, accepting the gap.
+2. **Optional cache persistence** (deferred V1.5): persist the cache
+   to a small local SQLite file on graceful drain; reload on module
+   load. Not in V1 scope.
+3. **Client retry policy**: client SHOULD use a retry window
+   slightly shorter than `idempotency_ttl_seconds` AND retry only
+   after the module reports `SERVING` again (via Health), not blindly.
+
+The gap exists but is bounded by client retry policy and the
+"refuse reload while in-flight" guard.
+
+### Configuration
+
+```xml
+<settings>
+  <param name="idempotency_ttl_seconds"           value="300"/>
+  <param name="idempotency_in_flight_max_wait_ms" value="60000"/>
+</settings>
+```
 
 ## Error model
 
@@ -250,9 +295,12 @@ message HangupManyResponse {
 ```
 
 **Rate consideration**: HangupMany of 1000 UUIDs may not be feasible
-within a single gRPC deadline. Module processes in batches and may
-return `DEADLINE_EXCEEDED` with a partial `hungup_uuids` list. The
-caller can resume with the remainder.
+within a single gRPC deadline. Module processes UUIDs in **input
+order** (Phase 1 Codex finding I-8) and may return `DEADLINE_EXCEEDED`
+with a partial `hungup_uuids` list. The caller can resume with the
+remainder by computing `set(input.uuids) - set(response.hungup_uuids)`
+and retrying. Input-order processing makes the resume slice
+deterministic.
 
 ### Bridge
 
@@ -292,15 +340,50 @@ message ExecuteRequest {
 ```
 
 **ACL**: tenant must own channel; the app name must be in the
-tenant's allowed-app list (or `*` for unrestricted). Default tenant
-allowed apps: `answer`, `set`, `playback`, `record_session`,
-`bridge`, `transfer`, `hangup`, `sleep`.
+tenant's allowed-app list (or `*` for unrestricted).
+
+**Default tenant allowed-app list** (post-Phase-1-fix-sprint per
+Codex finding C-7):
+
+```
+answer, set, playback, record_session, hangup, sleep, osw_eavesdrop
+```
+
+**Apps NOT on the default allowlist** (operator must opt in per tenant,
+with documented care):
+
+| App | Risk |
+|---|---|
+| `system` / `bgapi` / `lua` / `python` | Full RCE on the FS host |
+| `transfer` / `osw_transfer` | Args include destination context — bypasses Originate ACL unless the module's per-app validator (below) checks the third arg. Default: NOT allowed; if operator opts in, the module enforces context allowlist on the args. |
+| `bridge` | Args include endpoint URI which can target any destination, plus `bridge_pre_execute_*` variables. Use Bridge RPC instead, which has explicit ACL. |
+| `eavesdrop` (raw) | Bypasses bot-call eavesdrop policy. Use `osw_eavesdrop` instead. |
+| `originate` | Bypasses Originate RPC's tenant ACL on contexts. Use Originate RPC instead. |
+| `play_and_get_digits` | Reads variable_* state; exfiltration vector if tenant variables hold secrets. |
+
+The module enforces this at handler entry by checking the requested
+app name against `tenant.allowed_apps` (per-tenant config). The
+defaults err on the side of safety; operators expand consciously.
+
+**Per-app validation** for context-sensitive apps:
+
+If `transfer` is opt-in for a tenant, the module's Execute handler
+parses `args` as `<destination> [<dialplan>] [<context>]` and
+verifies the third arg (if present) against `tenant.allowed_contexts`.
+Mismatch returns `PERMISSION_DENIED`. The same validator covers
+`osw_transfer` and any future context-routing app.
+
+For `bridge` (also opt-in), the destination URI's profile + context
+hints are validated against `tenant.allowed_bridges` (a separate
+allowlist).
 
 **FS API**: `switch_api_execute` for synchronous; `switch_ivr_broadcast`
 or `switch_core_session_execute_application_async` for async.
 
 **Why we restrict apps**: arbitrary `Execute` is full RCE on FS via
-the `system` or `bgapi` apps. Default allowlist excludes those.
+the `system` or `bgapi` apps. The expanded allowlist + per-app
+validation closes the C-7 transfer-context-bypass attack noted in
+Phase 1 Codex review.
 
 **Response**: `ExecuteResponse { string result, ErrorDetail error }`.
 For async, `result` is empty and OK.
@@ -319,16 +402,64 @@ message SetVariablesRequest {
 
 **ACL**: tenant owns channel.
 
-**Reserved variable prefixes** that the module rejects to prevent
-ACL bypass:
+**Reserved variable model**: SetVariables uses a **denylist of
+security-relevant prefixes** (Phase 1 Codex finding I-7 — the prior
+draft's allowlist was incomplete). Operators wanting stricter behaviour
+can configure a per-tenant explicit allowlist that overrides the
+default denylist semantics.
 
-- `osw_*` — module-internal; immutable from gRPC. The module sets
-  these.
-- `eavesdrop_*` — managed by FS eavesdrop machinery; immutable.
-- `record_*` — managed by FS recording machinery; the module
-  rejects sets to these to prevent disabling compliance recording.
+Default denylist — module rejects sets to ANY variable whose name
+matches one of:
 
-Attempting to set a reserved var returns `INVALID_ARGUMENT`.
+```
+osw_*                  # module-internal; immutable
+eavesdrop_*            # FS eavesdrop app behaviour
+record_*               # FS recording config (rate, format)
+recording_*            # mod_recording / variants
+playback_*             # playback termination/silence params
+bridge_*               # bridge app behaviour (pre/post execute hooks)
+bridge_pre_execute_*   # arbitrary app execute before bridge
+bridge_post_execute_*  # arbitrary app execute after bridge
+originate_*            # originate timeout, caller-id overrides, etc.
+endpoint_*             # endpoint module config
+hold_music             # MOH file path (file disclosure)
+sip_h_*                # outbound SIP header injection
+sip_invite_*           # SIP invite headers
+sip_to_*               # SIP To header
+sip_from_*             # SIP From header
+api_*                  # api command hooks
+exec_*                 # execute-on-* hooks
+session_*              # session-level config
+domain_name            # domain spoofing
+context                # dialplan context override (bypasses ACL)
+dialplan               # dialplan type override
+```
+
+Attempting to set any denylisted variable returns `INVALID_ARGUMENT`
+with message identifying which variable was rejected.
+
+The denylist is deliberately broad. Operators wanting to allow a
+specific denylisted variable for a specific tenant configure an
+allowlist override:
+
+```xml
+<tenant id="acme">
+  <param name="setvar_allow_override" value="sip_h_X-Custom-Header,playback_silence_ms"/>
+</tenant>
+```
+
+Variables in the override pass through. The reverse (denying a
+non-denylisted variable) is not supported; if a variable name is
+ever discovered to be security-relevant, it's added to the global
+denylist via module update.
+
+### Configuration
+
+```xml
+<settings>
+  <param name="setvar_denylist_extra" value=""/>  <!-- comma-separated; extends default -->
+</settings>
+```
 
 ### Hold / Unhold
 
