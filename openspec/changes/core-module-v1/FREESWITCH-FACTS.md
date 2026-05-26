@@ -1018,10 +1018,29 @@ if (do_mods && level <= MAX_LEVEL) {
 **Used by W1 code:**
 
 - `src/observability/log.cc` — `osw::log::{trace,debug,info,warn,error,critical}`
-  forward to `switch_log_printf(SWITCH_CHANNEL_LOG, __FILE__, __func__,
-  __LINE__, NULL, level, "%s", formatted_message.c_str())`.
+  forward to a `SinkFn` function-pointer slot. The slot defaults to a
+  do-nothing `NullSink` at static-init time and is swapped to the
+  production sink by `osw::log::InstallDefaultSinkForModule()` early
+  in `mod_open_switch_load`.
+- `src/observability/log_default_sink.cc` — `DefaultSink` is the
+  production sink. It formats the level/subsystem/traceparent/message
+  into a single line then calls
+  `switch_log_printf(SWITCH_CHANNEL_LOG, "mod_open_switch",
+  "osw_log_emit", 0, nullptr, MapLevel(level), "%s\n", line)`. Note
+  the literal strings for the `file`/`func`/`line` arguments — these
+  are NOT per-call-site `__FILE__`/`__func__`/`__LINE__` values.
 - `src/mod_open_switch.cc` exception wrappers, before / instead of
-  using the C++ logger when the logger itself may have failed.
+  using the C++ logger when the logger itself may have failed; these
+  call `switch_log_printf` directly with literal "%s" + `e.what()`.
+
+**Known limitation.** The W1 wrapper does NOT plumb per-call-site
+`__FILE__` / `__func__` / `__LINE__` through `osw::log::*` to
+`switch_log_printf`. FS's mod_console / mod_logfile receive the
+literal `"mod_open_switch"` / `"osw_log_emit"` / `0` instead. Adding
+per-call-site location forwarding is a future enhancement; it requires
+turning `osw::log::*` into macros (so they capture `__FILE__` at the
+caller) or threading a `std::source_location` parameter through the
+SinkFn signature. Tracked as W1.5 / W2 follow-up; not gating.
 
 ---
 
