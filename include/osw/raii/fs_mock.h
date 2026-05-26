@@ -83,6 +83,13 @@ constexpr switch_status_t SWITCH_STATUS_GENERR = 8;
 using switch_event_types_t = int;
 constexpr switch_event_types_t SWITCH_EVENT_CUSTOM = 78;
 
+// switch_event_add_header_string stack arg — FS uses enum
+// switch_stack_t { SWITCH_STACK_BOTTOM = 0, SWITCH_STACK_TOP = 1, ... }.
+// Mock only needs the bottom value the audit emitter uses.
+using switch_stack_t = int;
+constexpr switch_stack_t SWITCH_STACK_BOTTOM = 0;
+constexpr switch_stack_t SWITCH_STACK_TOP = 1;
+
 // Bug callback signature (matches src/include/switch_module_interfaces.h:54
 // at v1.10.12). The mock never actually invokes a bug callback.
 using switch_abc_type_t = int;
@@ -197,6 +204,28 @@ inline switch_status_t EventFire(switch_event_t** ev) noexcept {
         *ev = nullptr;  // mirrors v1.10.12 src/switch_event.c:391
     }
     return Mock().next_event_fire_status;
+}
+
+// FF-020 mock — switch_event_create_subclass + switch_event_add_header_string.
+// Audit tests drive these; the mock records the call count and stores the
+// subclass + header (name, value) pairs on the singleton.
+inline switch_status_t EventCreateSubclass(switch_event_t** out,
+                                           switch_event_types_t /*type*/,
+                                           const char* /*subclass_name*/) noexcept {
+    Mock().event_create_calls.fetch_add(1, std::memory_order_relaxed);
+    if (Mock().next_event_create_status == SWITCH_STATUS_SUCCESS) {
+        *out = Mock().next_event;
+    } else {
+        *out = nullptr;
+    }
+    return Mock().next_event_create_status;
+}
+
+inline switch_status_t EventAddHeaderString(switch_event_t* /*ev*/,
+                                            switch_stack_t /*stack*/,
+                                            const char* /*name*/,
+                                            const char* /*value*/) noexcept {
+    return SWITCH_STATUS_SUCCESS;
 }
 
 inline switch_status_t MediaBugAdd(switch_core_session_t* /*session*/,
