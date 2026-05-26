@@ -94,9 +94,19 @@ Threading model:
 
 The module binds to FreeSWITCH events via `switch_event_bind`, using a
 single callback for ALL events. The callback enqueues to an
-internal lock-free SPSC ring per tier; each tier has a dedicated
-consumer thread that converts FS events to `EventEnvelope` protobufs and
-ships to active gRPC subscribers via the SubscribeEvents stream.
+internal **lock-free MPSC** (multi-producer, single-consumer) ring per
+tier; each tier has a dedicated consumer thread that converts FS
+events to `EventEnvelope` protobufs and ships to active gRPC
+subscribers via the SubscribeEvents stream.
+
+The producer side is MPSC, not SPSC, because FreeSWITCH services its
+event dispatch queue with a pool of up to 64 threads
+(FREESWITCH-FACTS FF-004 — `src/switch_event.c:82-95` and lines
+367-389). The pool starts at one thread and grows on demand under
+load. Our `switch_event_bind` callback may therefore be invoked
+concurrently from multiple dispatch threads. The round-2 spec
+called this an SPSC ring, which was unsound; the round-3 design is
+MPSC.
 
 ```text
 FS event_facility
@@ -397,11 +407,78 @@ Orchestrator → gRPC Originate(request_id=abc, endpoints=[..],
 | Subscriber misses replay window | `since_seq` outside ring | Return `RESOURCE_EXHAUSTED` on subscribe. Subscriber retries without `since_seq` and accepts the gap. |
 | gRPC port bind fails | `server_->BuildAndStart` returns null | Module load fails. FreeSWITCH startup fails (deliberate — operator must fix or unload). |
 | FreeSWITCH crash | Process dies | Container orchestrator restarts. Module state is in-process; nothing to restore. Active calls are torn down by SIP-side BYE retransmits + subscriber disconnect; orchestrators must idempotently retry. |
-| Module crash but FS survives | `std::set_terminate` handler catches unhandled C++ exception; signal-safe abort on SIGSEGV/SIGABRT | Cannot easily recover from a poisoned module state. We `_exit()` the FS process via the terminate handler to trigger a clean container restart. (Phase 1 Codex finding I-11: avoid SIGSEGV handler racing FS's own; rely on `std::set_terminate` for C++ unhandled and signal-safe `_exit` only for hard signals.) |
+| Module crash but FS survives | `std::set_terminate` handler (opt-in; chains the previous handler — see Codex round-3 N5 below); signal-safe abort on SIGSEGV/SIGABRT only if explicitly enabled | Cannot easily recover from a poisoned module state. If the operator enables `osw_panic_on_unhandled=true`, the module's handler logs and then calls `_exit()` after chaining. Otherwise the handler logs, chains the previous handler, and lets FS / earlier handlers decide. See "Terminate-handler chaining" below for the full contract. |
 | Memory leak in module | LSAN in CI, Valgrind nightly | Block release on detection. Production: container restarts on OOM. |
 | Slow external bot service | gRPC media-stream stalls | Per-stream timeout (configurable per purpose). On timeout: module sends silence frames to channel, emits Tier-2 `bot_stream_stalled`. Operator can configure abandon-call vs continue-silent. |
 | Idempotency cache poisoned (wrong response cached) | None directly | Cache TTL is short (300s default); cache is per-process so a module reload clears it. |
 | Eavesdrop bypass attempt | Audit event fires when attempt detected | If `policy=deny`, FS hangs up the eavesdropper. If `policy=audit`, event still fires for SIEM follow-up. See [`security-and-eavesdrop.md`](security-and-eavesdrop.md). |
+
+### Terminate-handler chaining (Codex round-3 finding N5)
+
+`std::set_terminate` replaces the **process-wide** C++ terminate
+handler — a single per-process slot in libstdc++. The slot is
+shared with every other module loaded into the FreeSWITCH process
+(`mod_grpc`, `mod_signalwire`, and any other C++-using module). FS
+modules are loaded with `RTLD_LOCAL` by default (FREESWITCH-FACTS
+FF-010), but the terminate handler is not bound to a dlopen
+namespace — it is a libstdc++ global. Module load order is operator-
+controlled via `modules.conf.xml`; whoever calls `set_terminate`
+last wins.
+
+The implications:
+
+- If our module installs a handler at load time and another C++
+  module loads after us and installs its own, theirs wins; ours is
+  replaced. The other module gets to decide the process's
+  abort-on-unhandled behaviour.
+- If we install last, theirs is replaced. We do not know what
+  cleanup they wanted to run.
+- On `unload mod_open_switch`, our handler function pointer
+  becomes a dangling reference in libstdc++. Any subsequent
+  unhandled C++ exception will jump into freed memory.
+
+V1 contract:
+
+1. The terminate-handler install is **opt-in**, controlled by
+   `osw_panic_on_unhandled` in `<settings>` (default `false`).
+   With the default, the module does NOT call `std::set_terminate`
+   at all and FreeSWITCH's own crash-handling stays in charge. This
+   is the safest interop posture with `mod_grpc` and similar.
+2. When `osw_panic_on_unhandled=true`, on module load:
+   - Capture the previous handler with the return value of
+     `std::set_terminate(osw_terminate)`.
+   - Store the previous handler in a module-static
+     `std::atomic<std::terminate_handler> prev_terminate_`.
+3. On termination, `osw_terminate`:
+   - Logs via signal-safe `write(STDERR_FILENO, ...)` — NOT
+     `switch_log_printf` (allocates) or `std::cerr` (allocates and
+     locks).
+   - Calls the captured previous handler if non-null.
+   - If the previous handler returns (it shouldn't — terminate
+     handlers are supposed to not-return — but defensively): calls
+     `_exit(STATUS_OSW_TERMINATE)` to trigger a clean container
+     restart.
+4. On module unload (Phase 2 — V1 stub does not call
+   `std::set_terminate` at all):
+   - Restore the previous handler:
+     `std::set_terminate(prev_terminate_.load())`.
+   - Race with other modules that also `set_terminate` between our
+     install and unload is unavoidable; the documentation calls
+     this out so operators know to unload modules in reverse-load
+     order if possible.
+
+For hard signals (SIGSEGV, SIGABRT, SIGBUS), the same logic
+applies: signal handler installation is opt-in via a separate
+`osw_install_signal_handlers=false` (default false). FS installs
+its own handlers; chaining a second handler in a SIGSEGV context
+is unsafe (heap may be corrupted; calling printf may itself
+crash). Default off so FS's handlers run alone.
+
+Operator guidance: enable `osw_panic_on_unhandled` only if you
+know no other module installs a terminate handler that needs to
+run for cleanup. The safer default is to let unhandled exceptions
+land in FS's standard abort path and trigger the container
+orchestrator's restart policy.
 
 ## What this design explicitly does NOT do
 

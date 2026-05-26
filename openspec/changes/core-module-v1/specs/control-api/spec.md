@@ -81,22 +81,66 @@ The module maintains a per-process LRU cache keyed by
 - (After TTL expiry: entry evicted)
 
 Behaviour table (Phase 1 Codex finding C-5 — in-flight semantics
-explicitly specified):
+explicitly specified; round-3 finding N3 — error-path cleanup
+made explicit):
 
 | Scenario | Module action |
 |---|---|
-| First call with `(tenant, request_id)` | Insert in-flight marker. Execute. On completion, replace marker with cached response. Return response. |
+| First call with `(tenant, request_id)` | Insert in-flight marker. Execute. On completion of the handler — whether success OR non-success — replace the marker with the cached response (see "Error-path cleanup" below). Return the response. |
 | Repeat call within TTL with same `(tenant, request_id)` AND same method, **original still in-flight** | Block on the in-flight marker's condvar with a "shadow deadline" = `min(gRPC deadline, idempotency_in_flight_max_wait)`. When original completes: return the same response. If shadow deadline expires first: return `ALREADY_EXISTS` with message "Originate in flight; await original or use a fresh request_id". |
-| Repeat call within TTL with same `(tenant, request_id)` AND same method, **original completed** | Return cached response WITHOUT re-execution. |
+| Repeat call within TTL with same `(tenant, request_id)` AND same method, **original completed (success or error)** | Return cached response WITHOUT re-execution. |
 | Repeat call within TTL with same `(tenant, request_id)` but DIFFERENT method | Reject with `ALREADY_EXISTS`. |
 | Repeat call AFTER TTL expired | Treated as new request. |
 
-Why the in-flight block (vs the prior draft which left this
+Why the in-flight block (vs the round-1 draft which left this
 unspecified — Codex C-5 scenario): a client whose gRPC deadline
 fires while Originate is mid-dial would retry and HIT the in-flight
 marker, not miss the cache. Without the block: re-execution →
 double-dial (customer dials twice). The block + shadow timeout
 prevents double-dial while keeping clients responsive.
+
+### Error-path cleanup (Codex round-3 finding N3)
+
+On any non-success return from the original handler — `INTERNAL`,
+`FAILED_PRECONDITION`, `RESOURCE_EXHAUSTED`, `UNAVAILABLE`, etc.,
+including handler exceptions caught by the gRPC interceptor — the
+module MUST:
+
+1. Replace the in-flight marker with the cached **error** response
+   (the protobuf-serialized response containing the
+   `ErrorDetail.type` and message that will be sent to the
+   original caller). Errors are cacheable for idempotency
+   purposes.
+2. `notify_all()` the marker's condition variable so any waiters
+   on the same `(tenant, request_id)` unblock immediately.
+3. Subsequent retries within TTL receive the same error response
+   from cache, byte-for-byte identical to what the original caller
+   saw.
+
+Rationale: the cache contract is "same request, same response".
+That contract holds for non-success responses too. A client whose
+original Originate returned `FAILED_PRECONDITION(USER_BUSY)` and
+who retries 200 ms later with the same `request_id` should see
+the same `USER_BUSY` rather than a fresh dial. Operators wanting
+"retry the call on error" use a new `request_id`.
+
+**Configurable opt-out**: operators with a strong "retries should
+work after errors" stance can set
+`idempotency_cache_errors=false` in `<settings>`. With this off,
+non-success handler returns evict the marker entirely (no cached
+response stored) and notify waiters with the in-flight cancel
+sentinel — waiters return `ALREADY_EXISTS` as if shadow-timeout
+had fired. New retries with the same `request_id` proceed as
+first calls. Default is `true` (cache errors); switching to
+`false` reintroduces the double-dial-on-fast-retry risk against
+errors, which is why it is not the default.
+
+**Crash path (unhandled exception, SIGSEGV, OOM-killer)**: if the
+process aborts mid-execution, the in-memory cache is gone. The
+"refuse module reload while any in-flight Originate exists" guard
+(`Module-restart false-negative gap` below) catches graceful
+reloads. For SIGKILL / OOM-killer there is no module-side
+recovery; the residual is documented in the gap section.
 
 Idempotency applies to ALL write methods (Originate, Hangup, Bridge,
 Execute, SetVariables, Hold/Unhold, BlindTransfer, Start*/Stop*).
@@ -135,6 +179,12 @@ The gap exists but is bounded by client retry policy and the
 <settings>
   <param name="idempotency_ttl_seconds"           value="300"/>
   <param name="idempotency_in_flight_max_wait_ms" value="60000"/>
+  <!-- N3: cache non-success handler returns (INTERNAL, FAILED_PRECONDITION,
+       etc.) the same way successful responses are cached. Retries within
+       TTL receive the same error response. Set to "false" to evict the
+       in-flight marker on error and let retries re-execute — bringing
+       back the double-dial-on-fast-retry risk for failing handlers. -->
+  <param name="idempotency_cache_errors"          value="true"/>
 </settings>
 ```
 
@@ -376,6 +426,45 @@ Mismatch returns `PERMISSION_DENIED`. The same validator covers
 For `bridge` (also opt-in), the destination URI's profile + context
 hints are validated against `tenant.allowed_bridges` (a separate
 allowlist).
+
+**FreeSWITCH `${variable}` expansion (Codex round-3 finding N4):**
+
+FreeSWITCH dialplan applications interpret `${variable}` references
+at app-run time, AFTER our gRPC handler has parsed the literal
+`args` string. An attacker (or a careless caller) submitting
+
+```
+Execute(uuid=X, app="transfer", args="666 XML ${attacker_var}")
+```
+
+would have our parser see the literal `${attacker_var}` as the
+third arg. We cannot evaluate the variable on our side (it lives on
+the FS channel and may differ from the value we'd resolve here),
+and a literal string-compare against the allowlist would either
+under-reject (`${attacker_var}` doesn't match the allowlist literal,
+but FS will expand it to a privileged context at run time) or
+over-reject (a legitimate `${valid_var}` is also rejected).
+
+The module REJECTS any Execute args for context-sensitive apps
+(`transfer`, `osw_transfer`, `bridge` — i.e., the apps in the
+per-app validator) that contain a `${...}` substring, with:
+
+- `ErrorDetail.type = INVALID_ARGUMENT`
+- Message: `"FS variable expansion (\${...}) is not permitted in
+  Execute args for app '<app>'; expand at the orchestrator before
+  submitting"`
+
+Detection is a substring search for the literal `${`. This is
+deliberately conservative — it catches all legitimate FS variable
+syntax, including nested references like `${${meta}_extension}`,
+and rejects them as a class. Operators wanting variable values in
+the transfer destination must resolve them at the orchestrator
+before issuing the RPC.
+
+**The check applies even when the variable would expand to a value
+that IS in the allowlist.** The module cannot prove that the
+runtime expansion matches; the safe stance is to refuse the entire
+class of inputs.
 
 **FS API**: `switch_api_execute` for synchronous; `switch_ivr_broadcast`
 or `switch_core_session_execute_application_async` for async.
@@ -663,6 +752,19 @@ re-executes.
 `tests/integration/control_api_acl_test.cc` exercises the ACL gates:
 disallowed context rejected, cross-tenant hangup rejected, reserved
 variable set rejected.
+
+`tests/integration/control_api_execute_var_expansion_test.cc`
+exercises the N4 reject path: `Execute(app=transfer, args="666 XML ${attacker_var}")`
+returns `INVALID_ARGUMENT` with the documented message. Variations
+with single-quoted args and nested `${${meta}}` references also
+reject. A control case with literal context name in the args is
+checked against the allowlist normally.
+
+`tests/integration/control_api_idempotency_errors_test.cc` exercises
+the N3 error-cache path: a handler that returns `FAILED_PRECONDITION`
+on the first call returns the same response (byte-for-byte) on a
+retry within TTL. With `idempotency_cache_errors=false`, the retry
+re-executes.
 
 ## Open questions (resolve during implementation)
 

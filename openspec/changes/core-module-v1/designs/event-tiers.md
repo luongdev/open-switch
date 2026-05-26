@@ -230,22 +230,52 @@ Schema evolution policy:
 ## Sequencing guarantees
 
 - Within a `(node_id, tier)` stream, the `seq` field is strictly
-  increasing. Subscribers can detect gaps.
+  increasing at the moment of allocation. Subscribers can detect
+  gaps.
 
 - **Where `seq` is allocated**: on the **producer side** (the FS
   event-bind callback thread), with a per-tier
-  `std::atomic<uint64_t>` counter. The seq is assigned BEFORE the
-  envelope is pushed onto the ring. This guarantees ordering matches
-  enqueue order. Phase 1 Codex review (I-10) flagged this as
-  unspecified; it is now explicit.
+  `std::atomic<uint64_t>::fetch_add(1, memory_order_relaxed)`. The
+  seq is reserved BEFORE the envelope is pushed onto the MPSC ring.
+  Phase 1 Codex review (I-10) flagged this as unspecified; round 2
+  made it explicit; round 3 keeps it explicit AND notes the MPSC
+  caveat below.
+
+- **MPSC reorder gap**: per FREESWITCH-FACTS FF-004, the FS event
+  dispatch is a pool of up to 64 threads. Two dispatch threads may
+  concurrently call our event-bind callback; thread A's seq=N is
+  reserved before thread B's seq=N+1, but if A's ring enqueue is
+  pre-empted between fetch_add and enqueue, B's seq=N+1 may land
+  in the ring before A's seq=N. The consumer drains in ring order,
+  not seq order. Two implementation choices:
+
+  1. **Drain by ring order, document near-monotonic**: subscribers
+     observe seq mostly-but-not-strictly increasing under high
+     load. The "strictly increasing" guarantee is replaced by
+     "increasing in expectation, with reorders bounded by the
+     time between fetch_add and enqueue (typically < 10 µs)".
+     Gap detection by subscribers becomes a wider window.
+  2. **Re-sort on the consumer thread**: maintain a small sliding
+     window buffer (per-tier) on the consumer side and emit in
+     seq order. This adds a few µs of latency but restores the
+     strict-monotonic guarantee. V1 takes this path.
+
+  Either way, the round-2 "all events for a given channel pass
+  through the same FS event thread" claim is wrong (FF-004); the
+  ring producer side is genuinely concurrent.
 
 - Across tiers, ordering is NOT guaranteed. A Tier 1 CHANNEL_ANSWER
   may arrive at the subscriber after a Tier 2 CHANNEL_PROGRESS for
   the same call, because each tier has its own ring + send pipeline.
 
-- Per-channel ordering within a tier IS preserved: all events for a
-  given channel pass through the same FS event thread → same tier
-  ring → same per-subscriber queue.
+- **Per-channel ordering within a tier** is NOT guaranteed by FS
+  thread affinity. Events for the same channel may be dispatched
+  by different threads concurrently (FF-004). The consumer-side
+  re-sort above gives a single-tier per-node ordering that holds
+  up to the sort window's depth; subscribers needing strict
+  ordering across the boundaries must reconstruct from
+  `emitted_at` (FS-supplied timestamp) and `seq` (per-tier
+  monotonic).
 
 Subscribers needing total ordering across tiers for a single channel
 should:
