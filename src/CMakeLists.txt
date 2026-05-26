@@ -1,36 +1,50 @@
-# Phase-1 stub build for mod_open_switch.so.
+# src/CMakeLists.txt — mod_open_switch module shared lib.
 #
-# This produces a minimal FreeSWITCH module whose load + shutdown
-# entry points return SUCCESS. It is the seed for the implementation
-# phase; subsequent commits add control / event / media subsystems
-# behind their own subdirectories.
+# W1 Foundation: subsystem static libs link into a single
+# mod_open_switch.so module. Each subsystem is an internal STATIC lib;
+# they are NEVER installed standalone. The module exports only the
+# `mod_open_switch_module_interface` data symbol via
+# SWITCH_MOD_DECLARE_DATA (FREESWITCH-FACTS FF-009) — everything else
+# is hidden by the root CMakeLists.txt's -fvisibility=hidden plus
+# -Wl,--exclude-libs,ALL (FF-010 + N-5 round-3 work).
 #
-# Codex round-2 finding N6: without this file, the Docker builder
-# stage `cp /usr/local/mod/mod_open_switch.so` fails because no .so
-# is produced. The stub unblocks the end-to-end build pipeline.
+# Layout:
+#   src/observability/  osw_observability + osw_observability_fs
+#   src/core/           osw_core   (config, module singleton, lifecycle)
+#   src/control/        osw_control (gRPC server, handlers)
+#   src/mod_open_switch.cc — the SWITCH_MODULE_DEFINITION + thin
+#                            wrappers around osw::Module
+#
+# Tests link the FS-agnostic libs only (osw_observability, osw_core,
+# osw_control_skeleton). The FS-dependent libs (osw_observability_fs,
+# osw_core_fs, osw_control_fs) are linked exclusively into the .so.
+
+add_subdirectory(observability)
+# core/ and control/ subdirs land in subsequent W1 commits.
+# add_subdirectory(core)
+# add_subdirectory(control)
+
+# --- The module .so ---------------------------------------------------
 
 add_library(mod_open_switch SHARED
     mod_open_switch.cc
 )
 
-# FreeSWITCH headers are header-only at module compile time — the
-# .so is dlopened into the FS process and links against the
-# FreeSWITCH C ABI via the loader, not at link time. We add the
-# include directory so `#include <switch.h>` resolves.
 target_include_directories(mod_open_switch
     PRIVATE
         ${OSW_FREESWITCH_INCLUDE_DIR}
+        ${CMAKE_SOURCE_DIR}/include
 )
 
 # SWITCH_API_VISIBILITY gates the SWITCH_MOD_DECLARE_DATA macro
-# (src/include/switch_platform.h:186-193 of FreeSWITCH v1.10.12):
-# with it defined, SWITCH_MOD_DECLARE_DATA expands to
-# __attribute__((visibility("default"))), which is required to
-# export `mod_open_switch_module_interface` as a global data
-# symbol that FreeSWITCH's dlopen+dlsym loader can find.
-# Without it, our global -fvisibility=hidden flag would hide the
-# interface symbol and `load mod_open_switch` would fail with
-# "Cannot locate symbol 'switch_module_load'" or similar.
+# (src/include/switch_platform.h:186-193 of FreeSWITCH v1.10.12).
+# With it defined, SWITCH_MOD_DECLARE_DATA expands to
+# __attribute__((visibility("default"))), which is required to export
+# `mod_open_switch_module_interface` as a global data symbol that
+# FreeSWITCH's dlopen+dlsym loader can find.  Without it, our global
+# -fvisibility=hidden would hide the interface symbol and
+# `load mod_open_switch` would fail with "Cannot locate symbol" or
+# similar.  See FREESWITCH-FACTS FF-009.
 target_compile_definitions(mod_open_switch
     PRIVATE
         SWITCH_API_VISIBILITY=1
@@ -44,20 +58,24 @@ set_target_properties(mod_open_switch PROPERTIES
     SUFFIX ".so"
 )
 
-# The module's switch_loadable_module_function_table_t interface
-# symbol is emitted with `SWITCH_MOD_DECLARE_DATA` which expands to
-# `__attribute__((visibility("default")))` (see FREESWITCH-FACTS
-# FF-009). All other module symbols are hidden by the
-# `-fvisibility=hidden` global compile option set in the root
-# CMakeLists.txt. The `-Wl,--exclude-libs,ALL` link option (also
-# set globally) prevents transitive symbols from statically-linked
-# deps (gRPC/protobuf/abseil, once those land in implementation
-# phase) from leaking out of our .so. Combined with FreeSWITCH's
-# default RTLD_LOCAL loader behaviour (FF-010), this isolates the
-# module's namespace.
+# Link the subsystem static libs PRIVATE — none of their symbols leak
+# out of mod_open_switch.so. Combined with -fvisibility=hidden and
+# -Wl,--exclude-libs,ALL (root CMakeLists.txt), this isolates the
+# module's namespace (FREESWITCH-FACTS FF-010 + Codex round-2 N-5).
+#
+# Order matters for static-lib link: list dependents first.
+#
+# osw_control / osw_control_fs / osw_core / osw_core_fs land in
+# subsequent W1 commits and will be appended here when they do.
 target_link_libraries(mod_open_switch
     PRIVATE
+        osw_observability_fs
+        osw_observability
+        osw_proto
         Threads::Threads
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        PkgConfig::UUID
 )
 
 if(OSW_INSTALL_MODULE)
