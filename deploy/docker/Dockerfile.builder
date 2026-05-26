@@ -82,7 +82,7 @@ RUN mkdir build && cd build && \
           -DOSW_ENABLE_TSAN=${OSW_ENABLE_TSAN} \
           -DOSW_STRICT_WARNINGS=${OSW_STRICT_WARNINGS} \
           -DOSW_BUILD_TESTS=${OSW_BUILD_TESTS} \
-          -DOSW_FREESWITCH_INCLUDE_DIR=/usr/local/include/freeswitch \
+          -DOSW_FREESWITCH_INCLUDE_DIR=/usr/local/include \
           -DOSW_FREESWITCH_MOD_DIR=/usr/local/mod \
           .. && \
     cmake --build . -j$(nproc) && \
