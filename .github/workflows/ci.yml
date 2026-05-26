@@ -73,6 +73,30 @@ jobs:
             open-switch/builder:ci-${{ github.sha }} \
             ctest --test-dir /usr/src/open-switch/build --output-on-failure -L integration
 
+      # Phase 1 Codex finding I-16: an empty integration test set would
+      # trivially pass `ctest -L integration`, giving a false green. Once
+      # the implementation lands, this step asserts a minimum number of
+      # tests is registered. The threshold is intentionally low at first
+      # and increases as the suite grows.
+      #
+      # NOTE: This guard is disabled during Phase 1 (src/ is empty). The
+      # first implementation commit MUST enable it and pick a non-zero
+      # MIN_INTEGRATION_TESTS appropriate for the landed test set.
+      - name: Verify integration suite has minimum tests registered
+        if: false  # TODO(impl-phase): enable when src/ lands
+        env:
+          MIN_INTEGRATION_TESTS: "10"
+        run: |
+          count=$(docker run --rm \
+            open-switch/builder:ci-${{ github.sha }} \
+            ctest --test-dir /usr/src/open-switch/build -L integration -N \
+            | grep -c "^  Test #" || true)
+          echo "Integration tests registered: $count (minimum: $MIN_INTEGRATION_TESTS)"
+          if [ "$count" -lt "$MIN_INTEGRATION_TESTS" ]; then
+            echo "FAIL: integration suite below minimum gate"
+            exit 1
+          fi
+
   static-analysis:
     name: clang-format + clang-tidy
     runs-on: ubuntu-24.04

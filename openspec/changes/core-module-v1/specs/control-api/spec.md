@@ -587,9 +587,19 @@ operations).
 
 ## Concurrency limits
 
-Per-tenant active-call cap. Default = unbounded; operator may set
-e.g., `max_active_channels=500` per tenant. Originate that would
-exceed the cap returns `RESOURCE_EXHAUSTED`.
+Per-tenant active-call cap.
+
+**Default** (Phase 1 Codex finding N-6): the module derives a safe
+default from `FS_MAX_SESSIONS` divided by the number of configured
+tenants, rounded up. This prevents the foot-gun where a first-time
+operator forgets to set the cap and a single tenant can consume the
+host's entire session pool.
+
+For example: `FS_MAX_SESSIONS=2000` and three tenants → default cap
+~670 per tenant. Operator may override per tenant via
+`max_active_channels` in the ACL block.
+
+Originate that would exceed the cap returns `RESOURCE_EXHAUSTED`.
 
 ## Streaming RPCs and cancellation
 

@@ -350,7 +350,53 @@ in our protos) handle protobuf allocation. Other heap allocs use
 ## Exception-safety boundary
 
 FreeSWITCH is pure C. C++ exceptions MUST NOT propagate into FS
-callbacks. Every C-callable entry point wraps its body:
+callbacks. Every C-callable entry point wraps its body.
+
+### Per-callback-type semantics (Codex I-9)
+
+The media bug callback's return value has different semantics for
+each `switch_abc_type_t`. The exception-catch path must return a
+sensible status per type — returning `SWITCH_FALSE` from
+`SWITCH_ABC_TYPE_INIT` means "abort the bug add"; returning
+`SWITCH_FALSE` from `SWITCH_ABC_TYPE_READ` / `WRITE` means "remove
+the bug from the chain"; returning `SWITCH_FALSE` from
+`SWITCH_ABC_TYPE_CLOSE` is meaningless (FS is already tearing down).
+
+The canonical wrapper:
+
+```cpp
+static switch_bool_t osw_bug_callback_safe(
+    switch_media_bug_t* bug, void* user_data, switch_abc_type_t type) {
+  try {
+    return osw_bug_callback_impl(bug, user_data, type);
+  } catch (const std::exception& e) {
+    osw::log::Error("bug callback exception type={}: {}",
+                    abc_type_name(type), e.what());
+    switch (type) {
+      case SWITCH_ABC_TYPE_INIT:
+        return SWITCH_FALSE;  // abort attach
+      case SWITCH_ABC_TYPE_READ:
+      case SWITCH_ABC_TYPE_WRITE:
+      case SWITCH_ABC_TYPE_READ_REPLACE:
+      case SWITCH_ABC_TYPE_WRITE_REPLACE:
+        return SWITCH_FALSE;  // FS removes bug
+      case SWITCH_ABC_TYPE_CLOSE:
+        return SWITCH_TRUE;   // already tearing down; report success
+      default:
+        return SWITCH_TRUE;
+    }
+  } catch (...) {
+    osw::log::Error("bug callback unknown exception type={}",
+                    abc_type_name(type));
+    return (type == SWITCH_ABC_TYPE_CLOSE) ? SWITCH_TRUE : SWITCH_FALSE;
+  }
+}
+```
+
+The per-type fall-through is required because a single
+"return SWITCH_FALSE on any exception" policy would cause FS to
+attempt re-cleanup on an already-torn-down bug if the exception
+hits during CLOSE, which can crash FS.
 
 ```cpp
 extern "C" switch_status_t my_state_handler_on_hangup(

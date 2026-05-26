@@ -246,17 +246,28 @@ run a sidecar that polls `Health` and translates.
 On SIGTERM, the module:
 1. Sets internal status to `DRAINING`. `Health` RPC returns `DRAINING`.
 2. Refuses new Originate / SubscribeEvents calls (returns
-   `UNAVAILABLE`).
-3. Continues to service existing channels and streams.
+   `UNAVAILABLE`). Existing SubscribeEvents streams continue.
+3. Continues to service existing channels and media streams.
 4. Waits up to `drain_timeout_seconds` (default 30) for active
    channels to drop to zero.
 5. Forcibly closes remaining streams; calls
-   `switch_core_session_hupall` for any remaining bot-attached channels.
-6. Shuts down gRPC server (`server_->Shutdown(deadline)`).
-7. Stops event shipper threads.
-8. Flushes Redis sink (XADD with WAIT? — see
-   [`transport-adr.md`](transport-adr.md)).
+   `switch_core_session_hupall` for any remaining bot-attached
+   channels.
+6. Drains per-tier event rings: continues delivering buffered events
+   to active SubscribeEvents subscribers for up to
+   `event_drain_timeout_seconds` (default 5). Subscribers may close
+   their end early to expedite. After the timeout, any remaining
+   ring contents are dropped and a final
+   `osw::audit::shutdown_with_pending_events` Tier 1 event is emitted
+   (best-effort — may itself be dropped if no subscriber remains).
+7. Shuts down gRPC server (`server_->Shutdown(grpc_drain_deadline)`).
+   Default `grpc_drain_deadline` = 2s.
+8. Closes any open media-upstream gRPC channels.
 9. Returns from `mod_open_switch_shutdown`.
+
+Phase 1 Codex finding I-13 (the prior draft punted on "XADD with WAIT?")
+is resolved by deletion: post-F0 there is no Redis sink. The drain
+ordering above is the complete graceful shutdown.
 
 #### Idempotency cache
 

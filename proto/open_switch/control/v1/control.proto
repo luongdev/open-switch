@@ -53,7 +53,16 @@ service ControlService {
   // Attended transfer (initiate; the consultation leg is managed by the
   // caller via separate Originate + Bridge calls).
   // Full spec: openspec/changes/core-module-v1/specs/control-api/spec.md.
-  // Reserved for v1.
+  // Deferred to V1.5; the slot is reserved so the eventual addition is
+  // backward-compatible. See ControlService reserved tag block below.
+  // rpc AttendedTransfer(AttendedTransferRequest)
+  //     returns (AttendedTransferResponse);  // RESERVED — V1.5
+
+  // Reserved RPC slots for known V1.5+ additions (Codex I-14: explicit
+  // markers prevent accidental reuse during proto evolution):
+  //   AttendedTransfer
+  //   StartConference / EndConference
+  //   SetTenantPolicy
 
   // Subscribe to events via gRPC server-streaming. THIS IS THE SOLE
   // EVENT TRANSPORT. The module delivers events to all active subscribers

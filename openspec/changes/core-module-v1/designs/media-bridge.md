@@ -400,7 +400,13 @@ fail fast if the service is unreachable. On failure, the bug Attach
 returns an error and the channel state cycles to RECONNECTING for the
 next attempt.
 
-Channels are torn down on module unload or when idle for >5 minutes.
+Channels are torn down on module unload or when **idle for >
+`upstream_channel_idle_timeout_seconds`** (default `1800` = 30 min).
+Phase 1 Codex finding I-2: a long-quiet mid-call period (hold music,
+IVR menu) longer than the idle timeout would tear down the channel
+and the next frame pays a full TLS handshake. 30 min default covers
+realistic call durations; operators with longer-quiet patterns crank
+up. The previous 5-minute default was too aggressive.
 
 ### Cancellation propagation
 
@@ -463,6 +469,8 @@ already low-latency.
 
 ## Frame format details
 
+Internal struct (in-process), not the wire format:
+
 ```cpp
 struct AudioFrame {
   uint64_t seq;                  // 0-based within stream
@@ -472,6 +480,15 @@ struct AudioFrame {
   Channel channel;               // LEFT, RIGHT, BOTH_INTERLEAVED (stereo recording only)
 };
 ```
+
+Wire format on the gRPC stream is
+`open_switch.media.v1.AudioFrame` (protobuf). The `bytes payload` field
+on the wire holds the audio bytes contiguous (no length prefix beyond
+protobuf's own framing). For BOTH_INTERLEAVED stereo: samples are
+interleaved `[L0 R0 L1 R1 ...]` as int16 little-endian per sample, and
+`duration_samples` counts L+R pairs (so a 20 ms @ 8 kHz stereo frame
+has `duration_samples=160` and `payload.size()=160*4` bytes). Phase 1
+Codex finding N-3 (wire vs internal struct distinction).
 
 Frame duration matches the FS frame duration on the channel (usually
 20 ms). We do NOT re-frame. If the upstream service wants 30-ms frames
@@ -491,6 +508,32 @@ direction via the `StreamStart.side` field (`CALLER_MIC` vs
 
 This saves one TCP connection vs running separate STT + TTS streams,
 and gives the service a single barge-in decision point.
+
+### Head-of-line blocking caveat (Codex I-1)
+
+Because a single gRPC bidi stream carries both directions, the gRPC
+flow-control window is shared. If the service is slow to read
+inbound caller audio (e.g., overloaded STT), the gRPC writer at the
+module side back-pressures, which delays outbound writes — including
+the TTS frames the service is sending back. Result: gaps in bot
+playback while the service catches up.
+
+V1 mitigation:
+
+- Per-direction send queues at the module side decouple FS callback
+  latency from gRPC flush latency (FS callback enqueues to module
+  ring; gRPC sender thread drains).
+- The module reserves a minimum slice of gRPC outbound flow-control
+  for inbound frames (the implementation uses HTTP/2 stream priorities
+  via gRPC channel args, where supported).
+- Operators with frequent service-side slowness should run **two
+  separate streams** (TTS + STT_TRANSCRIBE) instead of
+  VOICEBOT_DUPLEX. The trade-off is one extra TCP connection and a
+  separate barge-in decision point.
+
+V1.5 may add automatic stream-split when the module detects sustained
+inbound-direction stall. V1 spec ships duplex as opt-in with
+operator awareness of this caveat.
 
 ## Stats per bug
 
@@ -556,6 +599,7 @@ them.
 | `send_overflow_drops_oldest` | Saturate sender; verify oldest frames dropped and counter increments. |
 | `resample_round_trip` | PCM frame → resampler → reverse → assert ≤ 1 LSB error. |
 | `grpc_reconnect_mid_call` | Kill upstream gRPC service during a call; the bug emits stream_lost; channel continues. |
+| `tts_stream_lost_silent_or_reconnect` | TTS bug loses upstream stream mid-call. Per `tts_reconnect_on_loss` config (default `true`): module attempts re-attach with exponential backoff (1s, 2s, 4s, capped at 30s) for `tts_reconnect_max_seconds` (default 30s). On reconnect success: bot continues. On give-up: silent write side, emit Tier-2 `bot_stream_abandoned`. Phase 1 Codex finding I-3 — silence-without-recovery is not a graceful degradation for unsupervised bots. |
 | `duplex_single_stream` | VOICEBOT_DUPLEX uses one stream for both directions; assert correct interleaving. |
 | `stereo_recording_relay` | Recording relay produces stereo with caller=L, bot=R. |
 

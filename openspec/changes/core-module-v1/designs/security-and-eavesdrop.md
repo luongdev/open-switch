@@ -488,8 +488,9 @@ The audit event payload includes (where applicable):
 - **Side-channel on bot-call audio** (e.g., a malicious bug attached
   via `uuid_audio_bug` by an admin): out of scope.
 - **Timing attacks** on the API key comparison: V1 uses
-  `constant_time_compare` for API key strings; mTLS is preferred over
-  API-key-only.
+  `CRYPTO_memcmp` (from OpenSSL) for API key comparison (Phase 1
+  Codex finding N-4); mTLS is preferred over API-key-only. The
+  implementation MUST NOT roll its own constant-time comparison.
 - **Replay of audit events** by a Redis-stream consumer impersonator:
   consumers must verify the producer; we don't sign envelopes V1.
   Recommended posture: read-only Redis ACL for consumers, plus
