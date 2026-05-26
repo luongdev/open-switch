@@ -924,6 +924,458 @@ Real-time prevention still requires Layer 1 (`osw_eavesdrop` app
 
 ---
 
+## FF-012 — `switch_log_printf` queues to a single async log thread (thread-safe; printf-style)
+
+**Claim.** `switch_log_printf(channel, file, func, line, userdata, level, fmt, ...)`
+is a thread-safe printf-style logging entry point. It formats the
+message (via `switch_vasprintf`) and either writes to stderr/console
+directly when the async log subsystem isn't running, OR pushes a
+`switch_log_node_t` onto the global `LOG_QUEUE` via
+`switch_queue_trypush` (`do_mods` branch). The async log thread later
+drains the queue and calls each registered backend (mod_console,
+mod_logfile, etc.). All locking is done by FS internally — callers
+just call `switch_log_printf` from any thread without taking any
+extra lock.
+
+The function declares format-string checking via `PRINTF_FUNCTION(7, 8)`
+so the compiler validates arguments at the call site (with `-Wformat`).
+
+**Source.**
+
+- Declaration: `src/include/switch_log.h:142-145`.
+- Definition: `src/switch_log.c:538-546`.
+- Async queue push path: `src/switch_log.c:706-735` (inside
+  `switch_log_meta_vprintf`, the worker that `switch_log_printf` forwards
+  to).
+
+**Permalinks.**
+
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_log.h#L142-L145>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_log.c#L538-L546>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_log.c#L706-L735>
+
+**Excerpt — declaration (lines 142-145):**
+
+```c
+SWITCH_DECLARE(void) switch_log_printf(_In_ switch_text_channel_t channel, _In_z_ const char *file,
+                                       _In_z_ const char *func, _In_ int line,
+                                       _In_opt_z_ const char *userdata, _In_ switch_log_level_t level,
+                                       _In_z_ _Printf_format_string_ const char *fmt, ...) PRINTF_FUNCTION(7, 8);
+```
+
+**Excerpt — definition (lines 538-546):**
+
+```c
+SWITCH_DECLARE(void) switch_log_printf(switch_text_channel_t channel, const char *file, const char *func, int line,
+                                       const char *userdata, switch_log_level_t level, const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    switch_log_meta_vprintf(channel, file, func, line, userdata, level, NULL, fmt, ap);
+    va_end(ap);
+}
+```
+
+**Excerpt — async push (lines 706-735, eliding allocation details):**
+
+```c
+if (do_mods && level <= MAX_LEVEL) {
+    switch_log_node_t *node = switch_log_node_alloc();
+
+    node->data = data;
+    /* ... fill node fields ... */
+
+    if (switch_queue_trypush(LOG_QUEUE, node) != SWITCH_STATUS_SUCCESS) {
+        switch_log_node_free(&node);
+    }
+}
+```
+
+**Implications.**
+
+- `switch_log_printf` is safe to call from any thread inside our
+  module — including the gRPC server thread, our event consumer
+  threads, the FS event dispatch threads (FF-004), and the module's
+  load/shutdown entry points.
+- It is **not** signal-safe (it allocates internally via
+  `switch_log_node_alloc` + `malloc`). A SIGSEGV handler must NOT
+  call `switch_log_printf`; use `write(STDERR_FILENO, ...)` instead
+  (see `architecture.md` §"Terminate-handler chaining").
+- The variadic signature uses a printf format string; bare
+  user-controlled strings MUST go through `"%s"` to avoid format-string
+  bugs. Our `osw::log::*` wrappers enforce this — handlers never pass
+  user data as the format argument.
+- The function returns void: there is no way to detect a dropped log
+  record. CI's `clang-tidy` and `bugprone-*` should warn on bare
+  `switch_log_printf("%s", ...)` mistakes; our `osw::log` wrappers
+  remove that risk at the call sites.
+- The `userdata` parameter is the channel-specific userdata pointer
+  (e.g., a session pointer for `SWITCH_CHANNEL_ID_SESSION`); for
+  `SWITCH_CHANNEL_ID_LOG` it is ignored. Our `osw::log::*` wrappers
+  always pass `NULL` here.
+
+**Used by W1 code:**
+
+- `src/observability/log.cc` — `osw::log::{trace,debug,info,warn,error,critical}`
+  forward to `switch_log_printf(SWITCH_CHANNEL_LOG, __FILE__, __func__,
+  __LINE__, NULL, level, "%s", formatted_message.c_str())`.
+- `src/mod_open_switch.cc` exception wrappers, before / instead of
+  using the C++ logger when the logger itself may have failed.
+
+---
+
+## FF-013 — `switch_xml_config_parse_module_settings` opens the config, parses settings, frees XML before returning
+
+**Claim.** `switch_xml_config_parse_module_settings(file, reload, instructions)`
+is the canonical FS facility for loading a module's `<settings>` block
+out of `${conf_dir}/autoload_configs/<file>`. It:
+
+1. Calls `switch_xml_open_cfg(file, &cfg, NULL)`. If that returns NULL
+   (file not found, malformed, etc.), logs an error via `switch_log_printf`
+   and returns `SWITCH_STATUS_FALSE`.
+2. Looks up the `<settings>` child of `<configuration>`.
+3. For each `<param name="..." value="..."/>` under `<settings>`,
+   calls `switch_xml_config_parse` which iterates the caller's
+   `switch_xml_config_item_t[]` and writes the parsed value into the
+   `item->ptr` destination via the appropriate `SWITCH_CONFIG_*` type
+   handler.
+4. Calls `switch_xml_free(xml)` on the root before returning — so the
+   caller does NOT free the XML tree, and there is no leak when the
+   function returns FALSE for the "file not found" case (it returns
+   before opening anything).
+5. Returns `SWITCH_STATUS_SUCCESS` if parsing succeeded (including
+   "no <settings> block, used all defaults"), or `SWITCH_STATUS_FALSE`
+   if the file couldn't be opened or a required item was missing.
+
+The `reload` parameter, when `SWITCH_TRUE`, causes the iteration to
+skip items that don't have `CONFIG_RELOADABLE` set — for SIGHUP-style
+reloads, this leaves non-reloadable items at their initial values.
+
+**Source.**
+
+- Declaration: `src/include/switch_xml_config.h:161`.
+- Definition: `src/switch_xml_config.c:72-89`.
+
+**Permalinks.**
+
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_xml_config.h#L161>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_xml_config.c#L72-L89>
+
+**Excerpt — definition (lines 72-89):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_xml_config_parse_module_settings(const char *file, switch_bool_t reload, switch_xml_config_item_t *instructions)
+{
+    switch_xml_t cfg, xml, settings;
+    switch_status_t status = SWITCH_STATUS_SUCCESS;
+
+    if (!(xml = switch_xml_open_cfg(file, &cfg, NULL))) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Could not open %s\n", file);
+        return SWITCH_STATUS_FALSE;
+    }
+
+    if ((settings = switch_xml_child(cfg, "settings"))) {
+        status = switch_xml_config_parse(switch_xml_child(settings, "param"), reload, instructions);
+    }
+
+    switch_xml_free(xml);
+
+    return status;
+}
+```
+
+**Implications.**
+
+- The caller does NOT manage the XML tree's lifetime. Wrapping this
+  function in an `osw::XmlNode` is unnecessary — the function frees
+  internally. Our `osw::XmlNode` RAII helper is for the lower-level
+  `switch_xml_open_*` family used by future config-loader code that
+  walks raw XML directly.
+- On "file not found": `SWITCH_STATUS_FALSE` is returned and the
+  destinations (`item->ptr`) are NOT written. Callers that want
+  defaults applied even when the file is missing MUST initialise the
+  destinations themselves before calling. Our `osw::Config` does
+  exactly this: it sets all fields to compiled-in defaults BEFORE
+  calling `switch_xml_config_parse_module_settings`, so a missing
+  config file degrades gracefully to defaults.
+- The `instructions` array MUST be terminated by an entry with
+  `key == NULL` (the `SWITCH_CONFIG_ITEM_END()` macro emits exactly
+  this). Forgetting the terminator results in walking past the array.
+- The destinations (`item->ptr`) must outlive any subsequent reads of
+  the parsed values. For our `osw::Config`, the destinations are
+  members of the `Config` instance, which lives for the module
+  lifetime — so the lifetime is correct.
+
+**Used by W1 code:**
+
+- `src/core/config.cc` — `osw::Config::LoadFromFile()` builds the
+  `switch_xml_config_item_t[]` table and invokes
+  `switch_xml_config_parse_module_settings("open_switch.conf",
+  SWITCH_FALSE, items)`.
+
+---
+
+## FF-014 — `switch_loadable_module_create_module_interface` allocates from the module pool (no manual free)
+
+**Claim.** `switch_loadable_module_create_module_interface(pool, name)`
+allocates a new `switch_loadable_module_interface_t` from the supplied
+APR pool via `switch_core_alloc`. The interface's `module_name` is
+strdup'd into the same pool. A read-write lock is created (also pool-
+backed). The module pool is owned by FreeSWITCH and is destroyed when
+the module is unloaded; the caller does NOT free the returned interface
+manually.
+
+**Source.**
+
+- Declaration: `src/include/switch_loadable_module.h` (search
+  `switch_loadable_module_create_module_interface`).
+- Definition: `src/switch_loadable_module.c:3033-3045`.
+
+**Permalink.**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_loadable_module.c#L3033-L3045>
+
+**Excerpt — definition (lines 3033-3045):**
+
+```c
+SWITCH_DECLARE(switch_loadable_module_interface_t *) switch_loadable_module_create_module_interface(switch_memory_pool_t *pool, const char *name)
+{
+    switch_loadable_module_interface_t *mod;
+
+    mod = switch_core_alloc(pool, sizeof(switch_loadable_module_interface_t));
+    switch_assert(mod != NULL);
+
+    mod->pool = pool;
+
+    mod->module_name = switch_core_strdup(mod->pool, name);
+    switch_thread_rwlock_create(&mod->rwlock, mod->pool);
+    return mod;
+}
+```
+
+**Implications.**
+
+- The returned `switch_loadable_module_interface_t*` lives for the
+  duration of the FS pool the module was loaded with. Calling
+  `free()` on it is a double-free against the pool.
+- Storing the returned pointer into a module-scoped C++ smart pointer
+  is wrong: a `unique_ptr` would call `delete` (the wrong dealloc). If
+  we need to keep the pointer around for later registration of
+  endpoints / apps / APIs, we hold it as a raw `T*` non-owning view —
+  ownership belongs to FS.
+- `switch_assert(mod != NULL)` means the function aborts the process
+  on allocation failure rather than returning NULL on success. The
+  stub's defensive NULL check after the call is documentation, not a
+  necessary safety net — but the check is cheap and matches FS's own
+  module style, so we keep it.
+- The function is intended to be called exactly once per module load,
+  inside `SWITCH_MODULE_LOAD_FUNCTION`. Calling it twice produces two
+  interface structs and only one will be discoverable by FS.
+
+**Used by W1 code:**
+
+- `src/mod_open_switch.cc::mod_open_switch_load()` — calls this
+  exactly once and stores the result in
+  `*module_interface` (the out-parameter FS expects). The Module
+  singleton holds a non-owning view (`const switch_loadable_module_interface_t*`)
+  for later subsystem registration; it never deletes the pointer.
+
+---
+
+## FF-015 — `switch_xml_open_*` / `switch_xml_free` pairing; refcounted root
+
+**Claim.** `switch_xml_open_cfg(file_path, &node, params)` returns
+the **root** XML handle and writes the `<configuration>` child into
+`*node`. The root is reference-counted: each `switch_xml_free(root)`
+decrements `refs`; only when `refs` reaches zero are the underlying
+buffers freed. `switch_xml_free(NULL)` is a safe no-op (early-return).
+
+`switch_xml_open_*` returns NULL on failure (file not found, malformed
+XML, etc.). The caller MUST `switch_xml_free` exactly one time for
+each successful (non-NULL) open.
+
+**Source.**
+
+- `switch_xml_open_cfg`: `src/switch_xml.c:2499-2513`.
+- `switch_xml_free`: `src/switch_xml.c:2815-2841`.
+
+**Permalinks.**
+
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_xml.c#L2499-L2513>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_xml.c#L2815-L2841>
+
+**Excerpt — open_cfg (lines 2499-2513):**
+
+```c
+SWITCH_DECLARE(switch_xml_t) switch_xml_open_cfg(const char *file_path, switch_xml_t *node, switch_event_t *params)
+{
+    switch_xml_t xml = NULL, cfg = NULL;
+
+    *node = NULL;
+
+    assert(MAIN_XML_ROOT != NULL);
+
+    if (switch_xml_locate("configuration", "configuration", "name", file_path, &xml, &cfg, params, SWITCH_FALSE) == SWITCH_STATUS_SUCCESS) {
+        *node = cfg;
+    }
+
+    return xml;
+}
+```
+
+**Excerpt — free, top (lines 2815-2841):**
+
+```c
+SWITCH_DECLARE(void) switch_xml_free(switch_xml_t xml)
+{
+    switch_xml_root_t root;
+    int i, j;
+    char **a, *s;
+    switch_xml_t orig_xml;
+    int refs = 0;
+
+  tailrecurse:
+    root = (switch_xml_root_t) xml;
+    if (!xml) {
+        return;
+    }
+
+    if (switch_test_flag(xml, SWITCH_XML_ROOT)) {
+        switch_mutex_lock(REFLOCK);
+
+        if (xml->refs) {
+            xml->refs--;
+            refs = xml->refs;
+        }
+        switch_mutex_unlock(REFLOCK);
+    }
+
+    if (refs) {
+        return;
+    }
+    /* ... children / buffer free ... */
+```
+
+**Implications.**
+
+- The `osw::XmlNode` RAII helper takes a `switch_xml_t` and calls
+  `switch_xml_free(root)` in its destructor. Moving from one
+  `osw::XmlNode` to another transfers the obligation. Resetting drops
+  it immediately.
+- `switch_xml_free(NULL)` is a safe no-op, so the destructor doesn't
+  need an explicit NULL check (it has one anyway as a clarity measure
+  and to avoid the function-call overhead).
+- The refcount means that if multiple consumers call `switch_xml_open_*`
+  on the same logical config concurrently, the lifetime is properly
+  shared — but our W1 code does NOT do that. We do single-threaded
+  config load at module init.
+
+**Used by W1 code:**
+
+- `include/osw/raii/xml_node.h` — `osw::XmlNode` RAII wrapper, exercised
+  by `tests/unit/raii/xml_node_test.cc` (with the FS-mock seam — see
+  `tests/unit/raii/README.md`).
+- `src/core/config.cc` does NOT directly use this — it uses
+  `switch_xml_config_parse_module_settings` (FF-013), which manages
+  the XML tree internally. `XmlNode` is the RAII for hypothetical
+  future code that walks the XML tree directly (W4 SIGHUP reload may
+  need it).
+
+---
+
+## FF-016 — `switch_core_session_locate` returns a read-locked session; caller MUST rwunlock
+
+**Claim.** `switch_core_session_locate(uuid_str)` expands (via macro)
+to `switch_core_session_perform_locate(uuid_str, __FILE__, __SWITCH_FUNC__, __LINE__)`,
+which:
+
+1. Locks the global session-hash mutex.
+2. Looks up the session by UUID via `switch_core_hash_find`.
+3. If found, acquires a **read lock** on the session via
+   `switch_core_session_read_lock` (or its debug variant). If the read
+   lock acquisition fails (session in tear-down), it returns NULL.
+4. Unlocks the global session-hash mutex.
+5. Returns the locked session pointer, OR NULL if not found / lock
+   could not be acquired.
+
+The comment in the function body reads: *"if its not NULL, now it's
+up to you to rwunlock this"*. Every successful (non-NULL) return MUST
+be paired with exactly one `switch_core_session_rwunlock(session)`.
+
+A NULL return is well-defined ("UUID not found" or "session
+tearing down") and requires no cleanup.
+
+**Source.**
+
+- Declaration: `src/include/switch_core.h:921` (perform_locate) plus
+  the macro at line 932:
+  `#define switch_core_session_locate(uuid_str) switch_core_session_perform_locate(uuid_str, __FILE__, __SWITCH_FUNC__, __LINE__)`.
+- Definition: `src/switch_core_session.c:121-146`.
+
+**Permalink.**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_core_session.c#L121-L146>
+
+**Excerpt — definition (lines 121-146):**
+
+```c
+SWITCH_DECLARE(switch_core_session_t *) switch_core_session_perform_locate(const char *uuid_str, const char *file, const char *func, int line)
+{
+    switch_core_session_t *session = NULL;
+
+    if (uuid_str) {
+        switch_mutex_lock(runtime.session_hash_mutex);
+        if ((session = switch_core_hash_find(session_manager.session_table, uuid_str))) {
+            /* Acquire a read lock on the session */
+#ifdef SWITCH_DEBUG_RWLOCKS
+            if (switch_core_session_perform_read_lock(session, file, func, line) != SWITCH_STATUS_SUCCESS) {
+#if EMACS_CC_MODE_IS_BUGGY
+            }
+#endif
+#else
+            if (switch_core_session_read_lock(session) != SWITCH_STATUS_SUCCESS) {
+#endif
+                /* not available, forget it */
+                session = NULL;
+            }
+        }
+        switch_mutex_unlock(runtime.session_hash_mutex);
+    }
+
+    /* if its not NULL, now it's up to you to rwunlock this */
+    return session;
+}
+```
+
+**Implications.**
+
+- `osw::SessionLock` exactly captures this contract: ctor takes a UUID
+  string, calls `switch_core_session_locate`, stores the result. dtor
+  calls `switch_core_session_rwunlock` iff the pointer is non-NULL.
+- The read lock prevents the session from being destroyed while we
+  hold it — but does NOT block writes / state transitions. The
+  channel can still hang up under us. Code must tolerate "I hold a
+  locked session but the channel is hanging up" (typically: bail with
+  no error).
+- Calling `switch_core_session_locate` with a NULL UUID safely returns
+  NULL (it's the outer `if (uuid_str)` guard at line 125).
+- The read-lock is **acquired** by `switch_core_session_read_lock` —
+  internally that calls `switch_thread_rwlock_rdlock`. Multiple
+  threads can hold read locks on the same session simultaneously. The
+  destroy path acquires a write lock; that blocks until all readers
+  release.
+
+**Used by W1 code:**
+
+- `include/osw/raii/session_lock.h` — `osw::SessionLock`, exercised by
+  `tests/unit/raii/session_lock_test.cc` (with the FS-mock seam).
+- W1 does NOT yet have a production caller for `SessionLock` — that
+  arrives in W3 (Control plane RPCs that look up a session by UUID).
+  The helper ships in W1 because it is part of the mandatory RAII
+  toolkit and Codex review expects every helper from
+  `memory-management.md` §"RAII helpers" to be present.
+
+---
+
 ## How to add a new FF entry
 
 If you find a previously-undocumented FreeSWITCH behaviour that
