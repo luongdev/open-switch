@@ -57,33 +57,31 @@ std::atomic<SinkFn> g_sink{&NullSink};
 
 using PatternList = std::vector<std::regex>;
 
-// We use a raw atomic<shared_ptr*> indirection so that
-// std::atomic<std::shared_ptr<>> is not strictly required (older libc++
-// editions before C++20 lack the partial specialisation). Free-store
-// allocation is one-shot at config load.
-std::shared_ptr<const PatternList>& PatternsSlot() noexcept {
-    static std::shared_ptr<const PatternList> slot{std::make_shared<const PatternList>()};
+// Redaction-pattern publication uses the C++20 partial specialisation
+// std::atomic<std::shared_ptr<T>>. libstdc++ in GCC 13+ (Debian trixie)
+// and libc++ in LLVM 16+ both ship it. The deprecated free-function
+// overloads std::atomic_{load,store}_explicit(std::shared_ptr<T>*, ...)
+// from C++11 were [[deprecated]]-tagged in C++20 (LWG 3766) and removed
+// in C++26; with -Werror they fail to compile, so we standardise on
+// the partial specialisation here.
+//
+// Writers (config load, SIGHUP reload) are rare; readers fire on every
+// log line. The partial specialisation is wait-free on platforms that
+// have a lock-free std::atomic<std::shared_ptr> implementation
+// (x86_64 libstdc++ uses a fine-grained spinlock internally — still
+// fast enough for our throughput).
+std::atomic<std::shared_ptr<const PatternList>>& PatternsSlot() noexcept {
+    static std::atomic<std::shared_ptr<const PatternList>> slot{
+        std::make_shared<const PatternList>()};
     return slot;
 }
 
-// A single std::mutex around the slot. Writers (config load, SIGHUP)
-// are rare; readers are on every log line. We pay the lock here only
-// because std::atomic<shared_ptr> isn't universally available; the
-// readers do atomic_load_explicit() which on libc++ delegates to a
-// short critical section.
-//
-// On a config-reload path the writer holds the mutex briefly to swap.
-// Readers never block writers (atomic_load_explicit is lock-free under
-// the hood on libc++ on x86_64; on platforms where it isn't, it's a
-// spinlock — still acceptable for our throughput.
-
 std::shared_ptr<const PatternList> LoadPatterns() noexcept {
-    return std::atomic_load_explicit(&PatternsSlot(), std::memory_order_acquire);
+    return PatternsSlot().load(std::memory_order_acquire);
 }
 
 void StorePatterns(std::shared_ptr<const PatternList> snap) noexcept {
-    std::atomic_store_explicit(&PatternsSlot(), std::move(snap),
-                               std::memory_order_release);
+    PatternsSlot().store(std::move(snap), std::memory_order_release);
 }
 
 std::string ApplyPatterns(std::string_view in) {
