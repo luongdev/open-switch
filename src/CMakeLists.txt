@@ -68,7 +68,6 @@ target_link_libraries(mod_open_switch
     PRIVATE
         osw_core_fs
         osw_core
-        osw_events_fs
         osw_events
         osw_control
         osw_observability_fs
@@ -79,6 +78,8 @@ target_link_libraries(mod_open_switch
         OpenSSL::Crypto
         PkgConfig::UUID
 )
+# osw_events_fs is added to the link list by the W2 commits that
+# introduce it (binder.cc, broadcaster.cc, handler.cc).
 
 if(OSW_INSTALL_MODULE)
     install(TARGETS mod_open_switch
