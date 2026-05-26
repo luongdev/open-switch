@@ -24,11 +24,14 @@
 
 #include "osw/events/binder.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -253,6 +256,24 @@ TEST_F(BinderTest, ConcurrentProducersAllEventsAccountedFor) {
     EXPECT_EQ(binder_->EventsEmitted(), total);
     EXPECT_EQ(rings_->Get(Tier::k1Critical)->Size(), total);
     EXPECT_EQ(binder_->DropsForTier(Tier::k1Critical), 0u);
+
+    // Codex W2 N-2: drain the ring + verify seqs are exactly
+    // {1..total} with no gaps and no duplicates. The MPSC seq
+    // generator is a per-tier atomic fetch_add; a subtle ordering
+    // bug in a future refactor (e.g. dropping memory_order_acq_rel)
+    // could miscount otherwise unnoticed if we only check totals.
+    std::vector<std::uint64_t> seqs;
+    seqs.reserve(total);
+    while (auto e = rings_->Get(Tier::k1Critical)->TryPop()) {
+        open_switch::events::v1::EventEnvelope env;
+        ASSERT_TRUE(env.ParseFromString(*e->envelope_bytes));
+        seqs.push_back(env.seq());
+    }
+    std::sort(seqs.begin(), seqs.end());
+    ASSERT_EQ(seqs.size(), total);
+    for (std::uint64_t i = 0; i < total; ++i) {
+        EXPECT_EQ(seqs[i], i + 1u) << "seq gap or dup at index " << i;
+    }
 }
 
 }  // namespace

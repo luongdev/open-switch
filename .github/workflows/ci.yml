@@ -157,7 +157,7 @@ jobs:
             -e TSAN_OPTIONS=halt_on_error=1:report_signal_unsafe=0 \
             open-switch/builder:tsan-${{ github.sha }} \
             ctest --test-dir /usr/src/open-switch/build --output-on-failure \
-                  -R 'ring_test|broadcaster_test|subscribe_replay_test'
+                  -R 'ring_test|broadcaster_test|subscribe_replay_test|binder_test'
 
   static-analysis:
     name: clang-format + clang-tidy
