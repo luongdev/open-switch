@@ -16,3 +16,10 @@ osw_add_unit_test(
     SOURCES ring_test.cc
     LIBS    osw_events
 )
+
+osw_add_unit_test(
+    NAME    envelope_test
+    LABEL   "events;unit"
+    SOURCES envelope_test.cc
+    LIBS    osw_events_test_helpers osw_events osw_proto
+)
