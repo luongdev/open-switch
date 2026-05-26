@@ -40,6 +40,7 @@ set_target_properties(osw_events PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # --- osw_events_fs (FS-dependent) ------------------------------------
 add_library(osw_events_fs STATIC
     envelope.cc
+    binder.cc
 )
 target_include_directories(osw_events_fs PRIVATE
     ${OSW_FREESWITCH_INCLUDE_DIR}
@@ -63,6 +64,7 @@ set_target_properties(osw_events_fs PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(OSW_BUILD_TESTS)
     add_library(osw_events_test_helpers STATIC
         envelope.cc
+        binder.cc
     )
     target_include_directories(osw_events_test_helpers PUBLIC
         ${CMAKE_SOURCE_DIR}/include
