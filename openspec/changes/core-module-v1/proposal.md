@@ -26,9 +26,15 @@ on a single gRPC port (with optional Redis sinks for events):
 1. **Control plane** — gRPC API for `Originate`, `Hangup`, `Bridge`,
    `Hold`, `Transfer`, `Execute`, `SetVariables`, `SubscribeEvents`,
    `Health`. Idempotent via `request_id`. mTLS-capable.
-2. **Event plane** — FS events bound by the module, routed through
-   tiered transports (Redis Streams for critical, Redis Pub/Sub for
-   ephemeral) plus an in-memory gRPC server-stream fallback for tail use.
+2. **Event plane** — FS events bound by the module, tier-classified
+   (Tier 1/2/3 by durability needs), buffered in per-tier in-memory
+   replay rings, and delivered to all active gRPC SubscribeEvents
+   subscribers. The subscribers (operator-owned) persist to durable
+   storage of their choice (Kafka, Redis, S3, file, …). The module
+   itself ships zero in-process transports beyond gRPC — durability
+   is explicitly the subscriber's responsibility. For Tier-1 no-loss
+   guarantees, operators run HA subscriber pairs; see
+   `designs/transport-adr.md` for the ADR rationale.
 3. **Media plane** — per-call bidirectional gRPC stream from the module
    (client) to an external service (server) for TTS playback, STT
    transcription, voicebot duplex, AMD detection, or recording relay.
@@ -43,7 +49,7 @@ Operators choose which to load; both may be loaded simultaneously.
 | Subsystem | Includes | Excludes (deferred) |
 |---|---|---|
 | Control gRPC | Originate, Hangup, HangupMany, Bridge, Execute, SetVariables, Hold/Unhold, BlindTransfer, SubscribeEvents, Health | Attended transfer state machine, conference control, presence |
-| Event routing | 3-tier model, Redis Streams sink, Redis Pub/Sub sink, in-memory gRPC stream sink, configurable header allowlist | Kafka/NATS sinks (plug-in interface present), CDR enrichment pipeline |
+| Event routing | 3-tier classification, in-memory per-tier replay rings, gRPC SubscribeEvents broadcast with ref-counted shared serialization, multi-subscriber HA support, since_seq replay, configurable header + variable allowlist | Direct in-module sinks (Redis / Kafka / NATS) — those move to subscriber side. CDR enrichment pipeline. |
 | Media bridge | Multi-bug-per-call manager, bidi gRPC streams, resampling (8/16/24/48 kHz), G.711/PCM/Opus, stereo split for recording relay | Inbound DTMF generation, mid-stream codec renegotiation, video |
 | Recording | Bug-priority architecture so FS native recording captures bot audio; spec for stereo vs mono | Built-in recording sink (use FS native `record_session`) |
 | Eavesdrop policy | Channel-variable flag, deny/audit/allow policy, audit-event emission | Per-supervisor RBAC matrix |
@@ -111,9 +117,13 @@ spec sign-off) covers the actual `src/` code drop.
    against a known gRPC version (`v1.74.x`) installed to `/opt/grpc` via
    the builder image, `-Wl,--exclude-libs,ALL` to isolate from other FS
    modules linking different gRPC versions.
-3. **Event loss under consumer slowness**. Mitigated by: Tier 1 uses
-   Redis Streams with bounded MAXLEN (configurable), backpressure
-   visible via metrics, slow-consumer drop policy is explicit per tier.
+3. **Event loss under consumer slowness or absence**. Mitigated by:
+   per-tier in-memory replay rings (FIFO evict on overflow), explicit
+   per-tier drop counters visible via Health RPC, per-subscriber
+   bounded queues (slow subscriber kicked, fast subscribers unaffected),
+   `since_seq` replay for reconnect within the ring window. For
+   no-loss Tier 1, operators run HA subscriber pair persisting to
+   durable storage. Trade-offs documented in `designs/transport-adr.md`.
 4. **Eavesdrop policy bypass**. Mitigated by: hook at the dialplan +
    state-handler layers, not just the gRPC API; threat model documented;
    audit events are Tier-1 themselves.

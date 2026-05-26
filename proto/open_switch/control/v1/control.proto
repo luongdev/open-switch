@@ -19,6 +19,7 @@ option cc_enable_arenas = true;
 
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
+import "open_switch/events/v1/events.proto";
 
 // ─── Service ──────────────────────────────────────────────────────────
 
@@ -54,10 +55,15 @@ service ControlService {
   // Full spec: openspec/changes/core-module-v1/specs/control-api/spec.md.
   // Reserved for v1.
 
-  // Subscribe to events via gRPC server-streaming. Intended for
-  // operators who do NOT want to set up a Redis consumer. Backed by an
-  // in-memory ring buffer; on overflow, the slowest subscriber is dropped.
-  // For durable event consumption, use the configured Redis sink instead.
+  // Subscribe to events via gRPC server-streaming. THIS IS THE SOLE
+  // EVENT TRANSPORT. The module delivers events to all active subscribers
+  // from its in-memory per-tier replay rings; subscribers persist to
+  // durable storage on their own side (Kafka / Redis / S3 / file / etc.).
+  //
+  // For Tier-1 (billing-grade) no-loss requirements, operators MUST run
+  // ≥ 2 subscribers per node in HA — see event-tiers.md §"No-loss
+  // reference architecture". Slow subscribers are kicked with
+  // RESOURCE_EXHAUSTED when their per-subscriber send queue overflows.
   rpc SubscribeEvents(SubscribeEventsRequest)
       returns (stream open_switch.events.v1.EventEnvelope);
 
@@ -95,6 +101,10 @@ message ErrorDetail {
     FREESWITCH_ERROR = 6;   // FS call returned non-success
     INTERNAL = 7;
     UNAVAILABLE = 8;        // transient; retry safe
+    ALREADY_EXISTS = 9;     // request_id reused with different method
+    FAILED_PRECONDITION = 10;  // channel state wrong
+    DEADLINE_EXCEEDED = 11;   // gRPC deadline before completion
+    UNAUTHENTICATED = 12;    // API key or mTLS failure
   }
   Type type = 1;
   string message = 2;
@@ -268,14 +278,27 @@ message BlindTransferResponse {
   ErrorDetail error = 99;
 }
 
-// ─── Events subscription (in-memory ring; durable use Redis) ────────
+// ─── Events subscription (in-memory ring; durability via HA subscribers) ──
 
 message SubscribeEventsRequest {
   RequestHeader header = 1;
-  // Filter by event class (Tier 1 / 2 / 3). Empty = all classes.
+  // Filter by tier (e.g. "TIER_1_CRITICAL"). Empty = all tiers.
   repeated string tiers = 2;
   // Filter by event name pattern (glob). Empty = all events.
   repeated string event_names = 3;
+  // Replay from this sequence (exclusive). The module replays from
+  // since_seq+1 to ring tail if still in the replay ring, then
+  // continues with live tail. If since_seq+1 has been evicted, the
+  // stream is rejected with RESOURCE_EXHAUSTED — the client retries
+  // without since_seq and accepts the gap.
+  //
+  // Sequences are monotonic per (node_id, tier). Subscribers should
+  // track the highest seq successfully processed per (node, tier).
+  uint64 since_seq = 4;
+  // Filter by emitting node identifier. Empty = events from any node
+  // (relevant only if the gRPC server fronts multiple module
+  // instances; in single-node deploys leave empty).
+  string node_id = 5;
 }
 
 // ─── Health ──────────────────────────────────────────────────────────
@@ -296,7 +319,14 @@ message HealthResponse {
   uint64 active_channels = 4;
   uint64 active_media_bugs = 5;
   uint64 events_emitted_total = 6;
+  // Active SubscribeEvents stream count.
+  uint32 subscriber_count = 7;
+  // Per-tier ring fill percentage (0-100).
+  uint32 tier1_ring_fill_pct = 8;
+  uint32 tier2_ring_fill_pct = 9;
+  uint32 tier3_ring_fill_pct = 10;
+  // Total events evicted (dropped) per tier since module load.
+  uint64 tier1_dropped_total = 11;
+  uint64 tier2_dropped_total = 12;
+  uint64 tier3_dropped_total = 13;
 }
-
-// Forward declaration — the actual EventEnvelope is in events/v1/events.proto.
-// Import handled by buf.gen.

@@ -9,8 +9,12 @@
 #   - Protobuf
 #   - Abseil (gRPC dep)
 #   - OpenSSL
-#   - hiredis + redis-plus-plus (Redis client)
 #   - libuuid
+#
+# Note: as of the Phase-1-fix-sprint (post-Codex C-4), the module no
+# longer ships any direct event-bus producer (no Redis, no Kafka). Events
+# are delivered via gRPC SubscribeEvents only. If future versions reintroduce
+# in-module event producers, those deps are added under new feature flags.
 #
 # Build (in builder container):
 #   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -67,6 +71,13 @@ add_compile_options(
     -fvisibility-inlines-hidden
 )
 
+# Isolate statically-linked deps inside our .so (gRPC + protobuf + abseil
+# all link static). Prevents symbol collision with other FreeSWITCH modules
+# that may link a different gRPC version. The module's SWITCH_MOD_DECLARE
+# export macros remain visible via __attribute__((visibility("default"))).
+# (Phase 1 Codex finding N-5: ensure -Wl,--exclude-libs,ALL is set.)
+add_link_options(-Wl,--exclude-libs,ALL)
+
 if(OSW_STRICT_WARNINGS)
     add_compile_options(-Werror)
 endif()
@@ -98,10 +109,6 @@ find_package(OpenSSL REQUIRED)
 find_package(Protobuf CONFIG REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
 message(STATUS "Using gRPC ${gRPC_VERSION} / Protobuf ${Protobuf_VERSION}")
-
-# Redis client (redis-plus-plus on top of hiredis)
-pkg_check_modules(HIREDIS REQUIRED IMPORTED_TARGET hiredis)
-find_package(redis++ CONFIG REQUIRED)
 
 # UUID
 pkg_check_modules(UUID REQUIRED IMPORTED_TARGET uuid)

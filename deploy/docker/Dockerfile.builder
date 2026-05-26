@@ -1,9 +1,15 @@
 # open-switch — builder stage
 #
 # Extends the open-gateway FreeSWITCH builder with the deps mod_open_switch
-# needs: gRPC C++ + protobuf + abseil + hiredis + redis-plus-plus + libuuid.
+# needs: gRPC C++ + protobuf + abseil + libuuid.
 # Outputs a /dist directory containing mod_open_switch.so ready to be
 # layered into the runner image.
+#
+# Phase-1-fix-sprint note: the previous draft of this Dockerfile installed
+# hiredis + redis-plus-plus for an in-module Redis event sink. That sink
+# was removed (see openspec/changes/core-module-v1/designs/transport-adr.md
+# revision). The module now ships zero in-process event-bus producers and
+# delivers events via gRPC streaming only. The Redis deps are removed.
 #
 # Requires the upstream builder image to be built and tagged. See
 # https://github.com/luongdev/open-gateway/tree/main/docker/freeswitch/builder
@@ -17,7 +23,7 @@
 ARG UPSTREAM_TAG=v1.10.12
 FROM open-gateway/freeswitch-builder:${UPSTREAM_TAG} AS fs-builder
 
-# ─── 1. Install gRPC C++ build deps and Redis client deps ──────────────
+# ─── 1. Install gRPC C++ build deps ──────────────────────────────────
 ARG GRPC_VERSION=v1.74.0
 
 RUN apt-get update -yq && \
@@ -25,8 +31,6 @@ RUN apt-get update -yq && \
         ca-certificates curl git \
         # gRPC build deps
         autoconf automake libtool pkg-config \
-        # hiredis + redis-plus-plus runtime
-        libhiredis-dev \
         # libuuid for UUIDv7 generation
         uuid-dev \
         # ASAN / UBSAN / Valgrind support
@@ -57,21 +61,7 @@ ENV PKG_CONFIG_PATH=${GRPC_INSTALL_DIR}/lib/pkgconfig
 ENV CMAKE_PREFIX_PATH=${GRPC_INSTALL_DIR}
 ENV LD_LIBRARY_PATH=${GRPC_INSTALL_DIR}/lib:${LD_LIBRARY_PATH}
 
-# ─── 3. Build redis-plus-plus on top of hiredis ───────────────────────
-ARG REDISPP_VERSION=1.3.13
-
-RUN cd /usr/src && \
-    git clone --depth 1 --branch ${REDISPP_VERSION} \
-        https://github.com/sewenew/redis-plus-plus.git redis-plus-plus && \
-    cd redis-plus-plus && mkdir build && cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release \
-          -DREDIS_PLUS_PLUS_CXX_STANDARD=20 \
-          -DREDIS_PLUS_PLUS_BUILD_TEST=OFF \
-          .. && \
-    make -j$(nproc) && make install && ldconfig && \
-    cd / && rm -rf /usr/src/redis-plus-plus
-
-# ─── 4. Copy module source + build ────────────────────────────────────
+# ─── 3. Copy module source + build ────────────────────────────────────
 WORKDIR /usr/src/open-switch
 COPY CMakeLists.txt ./
 COPY proto/ ./proto/
@@ -94,13 +84,15 @@ RUN mkdir build && cd build && \
     cmake --build . -j$(nproc) && \
     cmake --install .
 
-# ─── 5. Stage output to /dist ─────────────────────────────────────────
-RUN mkdir -p /dist/lib /dist/mod /dist/conf && \
+# ─── 4. Stage output to /dist ─────────────────────────────────────────
+RUN mkdir -p /dist/lib /dist/mod && \
     cp /usr/local/mod/mod_open_switch.so /dist/mod/ && \
-    cp -a ${GRPC_INSTALL_DIR}/lib/* /dist/lib/ 2>/dev/null || true && \
-    cp /usr/local/lib/libredis++.so* /dist/lib/ 2>/dev/null || true && \
-    cp /usr/lib/x86_64-linux-gnu/libhiredis* /dist/lib/ 2>/dev/null || \
-        cp /usr/lib/aarch64-linux-gnu/libhiredis* /dist/lib/ 2>/dev/null || true
+    cp -a ${GRPC_INSTALL_DIR}/lib/lib*.so* /dist/lib/ 2>/dev/null || true
 
-# Sanity: show what we built
-RUN ls -la /dist/mod && file /dist/mod/mod_open_switch.so
+# Sanity: show what we built + verify all dynamic deps resolve.
+RUN ls -la /dist/mod && file /dist/mod/mod_open_switch.so && \
+    LD_LIBRARY_PATH=/dist/lib:/opt/grpc/lib \
+      ldd /dist/mod/mod_open_switch.so && \
+    LD_LIBRARY_PATH=/dist/lib:/opt/grpc/lib \
+      ldd /dist/mod/mod_open_switch.so | grep -E "not found" && \
+      { echo "FATAL: missing shared deps"; exit 1; } || true

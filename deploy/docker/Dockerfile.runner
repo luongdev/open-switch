@@ -3,36 +3,64 @@
 # Extends the open-gateway FreeSWITCH runner with mod_open_switch.so and
 # its runtime library deps. Multi-arch via buildx.
 #
+# Phase-1-fix-sprint changes (Codex finding C-8):
+# - Removed libhiredis runtime dep (no Redis in module).
+# - Added setcap on FS binary so the freeswitch user inherits SYS_NICE +
+#   NET_RAW from the container cap set.
+# - Added explicit `ldd` verification of mod_open_switch.so to fail-fast
+#   on missing shared deps rather than silent-fail at module load.
+# - Cleaned up the osw-builder stage usage (single FROM, no double-build).
+#
 # Build:
 #   docker buildx build --platform linux/amd64,linux/arm64 \
 #     --build-arg UPSTREAM_TAG=v1.10.12 \
-#     --build-arg BUILDER_TAG=0.1.0 \
+#     --build-arg BUILDER_IMAGE=open-switch/builder:0.1.0 \
 #     -t open-switch/freeswitch:0.1.0 \
 #     -f deploy/docker/Dockerfile.runner .
 
 ARG UPSTREAM_TAG=v1.10.12
-ARG BUILDER_TAG=0.1.0
+ARG BUILDER_IMAGE=open-switch/builder:0.1.0
 
-FROM open-switch/builder:${BUILDER_TAG} AS osw-builder
+# Pull from the prebuilt builder (caller built it via Dockerfile.builder).
+FROM ${BUILDER_IMAGE} AS osw-build
+
 FROM open-gateway/freeswitch:${UPSTREAM_TAG} AS runner
 
 USER root
 
-# ─── 1. Install runtime libs needed by gRPC + Redis ──────────────────
+# ─── 1. Install runtime libs needed at module load ────────────────────
+# gRPC + protobuf + abseil are statically linked into mod_open_switch.so
+# (see CMakeLists.txt -Wl,--exclude-libs,ALL). At runtime only OS libs
+# remain dynamic.
 RUN apt-get update -yq && \
     apt-get install -yq --no-install-recommends \
         ca-certificates \
-        libhiredis1.1.0 \
-    && rm -rf /var/lib/apt/lists/* && \
-    # Best-effort: package name varies between trixie minor versions.
-    true
+        libuuid1 \
+        libcap2-bin \
+    && rm -rf /var/lib/apt/lists/*
 
-# ─── 2. Copy module + runtime libs from builder ───────────────────────
-COPY --from=osw-builder /dist/mod/mod_open_switch.so /usr/local/mod/
-COPY --from=osw-builder /dist/lib/ /usr/local/lib/
+# ─── 2. Copy module from builder ──────────────────────────────────────
+COPY --from=osw-build /dist/mod/mod_open_switch.so /usr/local/mod/
 RUN ldconfig
 
-# ─── 3. Drop sample module config (operator overrides via volume) ─────
+# ─── 3. Verify module loads (best-effort linker check; fail fast) ─────
+RUN ldd /usr/local/mod/mod_open_switch.so | tee /tmp/osw.ldd && \
+    if grep -q "not found" /tmp/osw.ldd; then \
+        echo "FATAL: mod_open_switch.so has unresolved shared deps"; \
+        cat /tmp/osw.ldd; \
+        exit 1; \
+    fi && \
+    rm /tmp/osw.ldd
+
+# ─── 4. Grant file capabilities to FS binary ──────────────────────────
+# Without these, `USER freeswitch` cannot use the SYS_NICE / NET_RAW caps
+# that compose.yaml grants to the container. Result without setcap:
+# FS falls back to non-realtime scheduling → audio jitter.
+# (Phase 1 Codex finding C-8 part 2.)
+RUN setcap 'cap_sys_nice,cap_net_raw=+ep' /usr/local/bin/freeswitch && \
+    getcap /usr/local/bin/freeswitch
+
+# ─── 5. Drop sample module config (operator overrides via volume) ─────
 COPY deploy/conf/open_switch.conf.xml.sample \
      /var/lib/freeswitch/.bootstrap/templates/autoload_configs/open_switch.conf.xml
 
@@ -44,6 +72,5 @@ COPY deploy/conf/open_switch.conf.xml.sample \
 USER freeswitch
 
 # Module exposes (defaults; configurable):
-#   - 50061/tcp  gRPC control + media + subscribe-events streams
-#   - (no listening port for event sinks; module is the producer)
+#   - 50061/tcp  gRPC control + media + events streams (single port)
 EXPOSE 50061/tcp

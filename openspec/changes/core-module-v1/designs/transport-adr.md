@@ -1,408 +1,289 @@
 # ADR: Event transport for mod_open_switch V1
 
-**Status**: Accepted
-**Date**: 2026-05-26
+**Status**: Accepted (revised 2026-05-26 after Phase 1 Codex review).
+**Date**: 2026-05-26 (rev. 2)
 **Deciders**: project owner + Opus 4.7 orchestrator
+**Supersedes**: the v1 Redis-Streams-and-PubSub draft of this ADR.
 
 ## Context
 
-The module's event plane (see [`event-tiers.md`](event-tiers.md))
-emits three tiers of events from FreeSWITCH:
+The module's event plane (see [`event-tiers.md`](event-tiers.md)) emits
+three tiers of FreeSWITCH events. The transport question is: how do
+those events reach external consumers?
 
-- Tier 1 (critical, billing-grade): ~10 ev/s typical, must not lose.
-- Tier 2 (state, recoverable): ~30-50 ev/s typical, tolerate < 0.1% loss.
-- Tier 3 (ephemeral, high-volume): ~100-500 ev/s, best-effort.
+### What changed since the first draft
 
-We need to pick transport(s) that satisfy these constraints, are
-operationally cheap, are well-supported from C++ inside the FS process,
-and are AGPL-compatible.
+The first draft of this ADR (committed 2cf00e7, since rewritten) picked
+Redis Streams + Redis Pub/Sub as the V1 transport with a pluggable
+`EventSink` interface so Kafka / NATS could be added later. Phase 1
+Codex review (`reviews/codex-phase1.md`, finding C-4) flagged that the
+Tier-1 "never drop" backpressure policy would block the FreeSWITCH
+event-dispatch thread under a sustained Redis outage. Because the FS
+event facility is the same bus mod_sofia uses to drive SIP state
+transitions, blocking that thread cascades into SIP call setup failure.
+"Lose billing > stall signaling" is the wrong trade for a SaaS contact
+center: a stalled SIP gateway looks dead.
 
-The project owner has explicitly:
+Project owner then proposed a simpler model:
 
-- ruled out Kafka ("không xài"),
-- ruled out Consul/etcd, Prometheus/Grafana for V1,
-- prefers Redis ("redis cài dễ"),
-- requires the module to "tuân thủ FS" — no heavy telemetry/control
-  plane bolted on at this phase.
+> "Có khi cái events khỏi bắn ra Redis đi, kệ mẹ cho cái gRPC server
+> bên ngoài nó xử? Chỉ cần bắn sang thôi là được. Nó đỡ phức tạp hơn
+> hẳn, nhưng vẫn nên có mapping."
+
+Translation: drop the in-module Redis transport entirely. Module's job
+is to classify, buffer briefly, and stream to external gRPC subscribers.
+The external subscribers (already running because they handle TTS / STT
+/ voicebot logic) pick their own durability: Kafka, Redis, S3, file,
+drop — their choice.
+
+The tier classification stays (it's still useful metadata so subscribers
+can route by criticality), but the module no longer commits to durable
+delivery itself.
 
 ## Decision
 
-**V1 transport: Redis Streams (Tier 1, Tier 2) + Redis Pub/Sub (Tier 3).**
+**V1 transport: gRPC server-streaming `SubscribeEvents`. This is the
+ONLY transport.** No Redis, no Kafka, no NATS in the module.
 
-A pluggable `EventSink` interface is added from day one so that Kafka,
-NATS, or other backends can be added later without rewriting the
-event-routing layer. **Only the Redis implementations ship in V1.**
+The pluggable `EventSink` interface from the previous draft is also
+**dropped from V1**. Future transports (if anyone asks for direct Redis
+producer, direct Kafka producer, etc.) get a new OpenSpec change and a
+new sink subsystem at that time, with the freedom to redesign the
+abstraction with implementation experience.
 
-## Alternatives considered
+## What this means concretely
 
-### A. Redis Streams + Redis Pub/Sub (chosen)
-
-**Pros**:
-
-- One transport system to operate. Operators commonly already have
-  Redis.
-- Redis Streams provide durability (AOF + RDB), consumer groups,
-  replay via offsets, at-least-once + dedup-capable, ordered per stream.
-- Redis Pub/Sub is ideal for fire-and-forget Tier 3 (no broker storage
-  overhead).
-- Sub-millisecond latency typical on LAN.
-- Mature C client: `hiredis` (BSD) → wrapped by `redis-plus-plus` (Apache 2.0).
-- `redis-plus-plus` supports async ops, connection pooling, cluster mode,
-  Sentinel.
-- Memory-bounded streams via `XADD MAXLEN ~` (approximate trim).
-
-**Cons**:
-
-- Single-master per stream key. Scale-out requires sharding by stream
-  name, which doesn't matter at our scale (< 100k ev/s).
-- Persistence is RAM-bounded; AOF replays on restart but can be slow.
-- Not as battle-tested as Kafka at 1M+ ev/s — but we're at 100/s, so
-  irrelevant.
-- Multi-region replication is harder than Kafka. V1 is single-cluster
-  per region.
-
-**Verdict**: Best fit for our scale + ops cost target.
-
-### B. Kafka + NATS (rejected by owner)
-
-**Pros**:
-
-- Industry standard. Kafka for durable, NATS for fire-and-forget.
-- Replay, multi-consumer, high throughput, multi-region capable.
-
-**Cons**:
-
-- Two systems to operate. Owner doesn't run Kafka today.
-- Kafka minimum 3-broker HA + ZK/KRaft + monitoring. Heavy for a
-  contact-center sized deployment.
-- librdkafka and nats.c both mature, but adds two C library deps to
-  the FS module.
-
-**Verdict**: Rejected by owner. Listed for completeness; the plug-in
-interface allows operators to add later.
-
-### C. NATS JetStream + NATS core
-
-**Pros**:
-
-- Single-binary deployment. Lightweight.
-- JetStream provides durability + consumer groups + replay.
-- Modern wire protocol; small footprint.
-
-**Cons**:
-
-- `nats.c` client is less mature than `hiredis` (smaller community).
-- Adding another infra component for the operator. They already need
-  Redis (or some equivalent) for sentence-cache use cases adjacent
-  to this stack.
-- C++ API ergonomics weaker than `redis-plus-plus`.
-
-**Verdict**: Solid alternative; not picked because operator already
-has/wants Redis.
-
-### D. gRPC server-streaming only (no broker)
-
-**Pros**:
-
-- Reuses gRPC stack already built for control plane.
-- No additional infrastructure.
-- TLS / auth via gRPC standard.
-
-**Cons**:
-
-- No durability. Consumer crash = events lost during downtime.
-- No replay.
-- Memory pressure if subscribers fall behind.
-- Reinvents pub/sub poorly.
-
-**Verdict**: Used as a FALLBACK only — the `SubscribeEvents` RPC
-provides this for operators who don't want any Redis. Not suitable
-as the primary Tier 1 / Tier 2 transport.
-
-### E. PostgreSQL LISTEN/NOTIFY
-
-**Pros**:
-
-- If operator already has Postgres for other things.
-
-**Cons**:
-
-- 8 KB payload limit per NOTIFY; our envelopes can exceed.
-- Notifications are not durable beyond the LISTEN session.
-- Backing each notification with a table row adds significant write
-  load to Postgres.
-
-**Verdict**: Niche; not picked.
-
-### F. RabbitMQ
-
-**Pros**:
-
-- Mature, well-understood.
-
-**Cons**:
-
-- Heavier ops than NATS or Redis.
-- AMQP semantics overkill for our needs.
-- Throughput lower than Kafka at high CCU.
-
-**Verdict**: Operationally heavier than Redis without clear benefit
-for our scale.
-
-### G. Apache Pulsar
-
-**Pros**:
-
-- Modern, multi-tenancy, geo-replication.
-
-**Cons**:
-
-- Three subsystems (broker + bookkeeper + ZK). Heaviest of the
-  options. Overkill.
-
-**Verdict**: Rejected.
-
-## Decision matrix
-
-| Criterion | Weight | A: Redis | B: Kafka+NATS | C: NATS | D: gRPC only | E: PG LISTEN | F: RabbitMQ | G: Pulsar |
-|---|---|---|---|---|---|---|---|---|
-| Operator ops cost | 0.30 | **9** | 3 | 7 | 10 | 8 | 5 | 1 |
-| Durability for Tier 1 | 0.25 | 8 | **10** | 8 | 1 | 6 | 8 | 10 |
-| Latency p99 | 0.15 | **9** | 7 | 9 | 10 | 7 | 8 | 7 |
-| C++ client maturity | 0.10 | **10** | 9 | 7 | 10 | 9 | 8 | 7 |
-| Multi-region readiness | 0.05 | 5 | **9** | 7 | 1 | 4 | 6 | 10 |
-| Owner alignment | 0.15 | **10** | 0 | 5 | 6 | 4 | 4 | 0 |
-| Weighted score | | **8.65** | 5.85 | 7.10 | 6.40 | 6.40 | 6.10 | 4.65 |
-
-Redis wins on weighted score, dominated by owner alignment + ops cost.
-
-## Architecture: pluggable EventSink interface
-
-```cpp
-namespace osw::transports {
-
-class EventSink {
- public:
-  virtual ~EventSink() = default;
-
-  // Backend identifier ("redis-streams", "redis-pubsub", "grpc-stream", ...).
-  virtual std::string_view backend() const = 0;
-
-  // Configuration name (from XML <sink name="...">).
-  virtual std::string_view name() const = 0;
-
-  // Synchronous send. Returns OK on durable accept, FAILED otherwise.
-  // The caller is expected to invoke this from the shipper thread,
-  // not the FS event thread.
-  virtual SendResult Send(const events::v1::EventEnvelope& envelope) = 0;
-
-  // Health probe used by the Health RPC.
-  virtual HealthStatus Health() const = 0;
-
-  // Graceful drain.
-  virtual void Drain(std::chrono::milliseconds timeout) = 0;
-};
-
-struct SendResult {
-  enum class Code {
-    OK,
-    RETRY_LATER,   // transient; shipper should back off and retry
-    DROP,          // permanent; shipper should drop and record metric
-  };
-  Code code;
-  std::string error;
-};
-
-}  // namespace osw::transports
+```text
+FS event facility
+       │ switch_event_bind callback
+       ▼
+[ Tier classifier — matches event name + subclass against routing rules ]
+       │ tier metadata attached to envelope
+       ▼
+[ Per-tier in-memory ring (1 per tier) — REPLAY BUFFER, not shipper queue ]
+       │ enqueue at tail; oldest evicted at head on overflow
+       ▼
+[ Subscriber broadcaster — for each active SubscribeEvents stream: ]
+       │ - filter envelope by subscriber's tier / event_name filters
+       │ - push ref-counted-shared envelope into per-subscriber send queue
+       ▼
+[ Per-subscriber bounded send queue (1 per stream) ]
+       │ gRPC sender thread drains and writes to wire
+       ▼
+External gRPC server (operator-owned)
+       │ operator routes to Kafka / Redis / S3 / file / dashboard / drop
+       ▼
+Whatever durability policy the operator chose
 ```
 
-V1 implementations:
+Module's contract (revised):
 
-- `RedisStreamsSink` (Tier 1, Tier 2)
-- `RedisPubSubSink` (Tier 3)
-- `GrpcStreamSink` (in-process fallback for `SubscribeEvents`)
-- `NullSink` (for tests)
+> "We classify events into tiers. We buffer events briefly in an
+> in-memory replay ring. We deliver to any subscriber that is connected
+> and can keep up. Durability beyond the replay window is YOUR job."
 
-V2+ implementations (NOT in V1; plug-in slot present):
+## Multi-subscriber broadcast
 
-- `KafkaSink`
-- `NatsJetStreamSink` (durable) + `NatsCoreSink` (fire-forget)
-- `FileRotatedSink` (for offline forensics)
+Multiple subscribers may connect simultaneously (default cap: 16).
+Common operator pattern is 2 subscribers for HA:
 
-## RedisStreamsSink — concrete design
+```text
+                          ┌──▶ subscriber A (primary)  ──▶ Kafka
+mod_open_switch ──events──┤
+                          └──▶ subscriber B (standby)  ──▶ Kafka
+```
 
-### Wire format
+If A fails, B has the events; downstream Kafka dedups by `event_id`.
 
-`XADD <stream> [MAXLEN ~ <n>] * envelope <serialized-protobuf>`
+If both A and B fail (network partition, both crash): events are lost
+during the partition. Operator's choice — that's the trade for module
+simplicity.
 
-The single field name is `envelope`. The value is the protobuf-binary
-serialised `EventEnvelope`. We do NOT split into multiple Redis fields
-because (a) the envelope is self-describing, (b) field-per-attribute
-inflates Redis memory, (c) protobuf forward-compat is easier with one
-opaque field.
+### Shared serialization (zero broadcast amplification)
 
-Stream IDs are Redis-assigned (`*`). The module retains them in logs
-for cross-referencing with consumer offsets.
+Each event is serialized to protobuf bytes **once**. The byte buffer is
+held by `std::shared_ptr<const std::string>` and the pointer is pushed
+into each subscriber's send queue. Memory per event = 1 × payload +
+N × 16 bytes overhead (independent of subscriber count).
 
-### MAXLEN approximate
+When all subscribers have drained an envelope past their cursor, the
+shared_ptr refcount drops to zero and the buffer is freed. The
+per-tier ring buffer holds its own shared_ptr until the entry is
+evicted from the ring (FIFO).
 
-`MAXLEN ~ N` (with the `~` modifier) lets Redis trim in bigger chunks
-for efficiency. For our use case the variance is acceptable (we treat
-MAXLEN as a soft cap, not a precise budget).
+### Per-subscriber pacing
 
-### Consumer groups
+Each subscriber has its own bounded send queue (default 4096 envelopes).
+A slow subscriber fills its own queue without affecting fast
+subscribers. When a subscriber's queue is full, the module:
 
-The module does NOT manage consumer groups. Consumers create groups
-on their side via `XGROUP CREATE`. The module is producer-only.
+1. Closes the gRPC stream with `RESOURCE_EXHAUSTED`.
+2. Increments `subscriber_kicked_count{cause="queue_full"}` metric.
+3. Logs at WARN level.
+4. The client reconnects (with `since_seq` if it tracked its last-seen
+   sequence) and resumes.
 
-### Connection management
+## `since_seq` replay
 
-- One `redis-plus-plus` connection per sink instance.
-- `redis-plus-plus` `RedisConnection` is thread-unsafe; we use one
-  connection per shipper thread (one per tier). Connection pool with
-  per-thread-pinned connections — NOT a shared pool, because the
-  shipper threads each have a single connection's worth of throughput.
-- Reconnect on error (exponential backoff 100ms → 30s cap).
-- TLS supported (Redis 6+).
-- AUTH via `requirepass` or ACL.
+Each emitted envelope carries a monotonic `seq` per (node, tier). When
+a subscriber reconnects after a drop, it may send:
 
-### Failure handling
-
-Per the Tier 1 backpressure policy:
-
-```cpp
-auto result = sink.Send(envelope);
-switch (result.code) {
-  case SendResult::Code::OK:
-    // metric: sent
-    break;
-  case SendResult::Code::RETRY_LATER:
-    // for Tier 1: re-queue at head of internal ring, sleep backoff
-    // for Tier 2: re-queue at head, bounded retry; after N seconds → drop
-    // for Tier 3: drop immediately
-    break;
-  case SendResult::Code::DROP:
-    // unrecoverable; emit Tier 1 alarm event and stop ringing
-    break;
+```protobuf
+SubscribeEventsRequest {
+  since_seq: 1003
 }
 ```
 
-### MULTI/EXEC?
+Meaning: "I last consumed seq 1003 inclusive; send me everything from
+1004 onward."
 
-Not used in V1. We send one envelope per XADD. The performance overhead
-is acceptable (Redis pipelining via `redis-plus-plus` can batch many
-XADDs on the wire). Pipelining is enabled (default in redis-plus-plus
-async API).
+Module behavior:
 
-## RedisPubSubSink — concrete design
+| Case | Response |
+|---|---|
+| `since_seq + 1` is still in the ring | Replay ring contents from `since_seq + 1` to ring tail, then continue live tail |
+| `since_seq + 1` has been evicted from the ring | Return `RESOURCE_EXHAUSTED` with message "since_seq outside replay window"; client retries without `since_seq` and accepts the gap |
+| `since_seq` omitted or 0 | Live tail only; no replay |
 
-### Wire format
+The replay window depends on ring size + event emission rate. With
+defaults (Tier-1 ring=16384, ~10 ev/s) replay covers ~25 minutes.
+Operators can tune by setting `event_ring_capacity_tierN` in config.
 
-`PUBLISH <channel> <serialized-protobuf-binary>`
+## Tier-specific behavior
 
-Single channel per sink configuration.
+Tier classification still affects backpressure handling, but the
+mechanics are now all in-process:
 
-### No persistence
+| Tier | Ring overflow policy | Per-subscriber-queue overflow policy |
+|---|---|---|
+| 1 | Evict oldest. Increment `tier1_ring_overflow_total`. Emit `osw::tier1_ring_overflow` event AT TIER 2 (cannot recurse into Tier 1 ring). | Kick subscriber. |
+| 2 | Evict oldest. Counter. | Kick subscriber. |
+| 3 | Evict oldest. Counter. | Kick subscriber. |
 
-Pub/Sub is fire-and-forget. Subscribers must be connected to receive.
-If the operator wants durability on Tier 3, they should configure that
-tier with `RedisStreamsSink` instead (with a small MAXLEN).
+Note: there is no longer a "Tier 1 never drops" guarantee. The module
+**cannot** guarantee no loss without durable storage, and durable
+storage is now the subscriber's responsibility. Operators wanting
+no-loss SHOULD:
 
-### Connection management
+1. Run ≥ 2 subscribers per node in HA.
+2. Each subscriber persists to durable store (Kafka topic, Redis Stream,
+   etc.) before ACK'ing in their own consumer pipeline.
+3. Downstream dedup by `event_id`.
 
-Same as Streams (one connection per shipper thread, exponential
-reconnect).
+This is documented in the operator guide as the "no-loss reference
+architecture".
 
-### Failure handling
+## Why this simplification is the right call
 
-`PUBLISH` itself doesn't fail except on connection error. On connection
-error: backoff + retry. Events accumulating in the Tier 3 ring during
-the outage will spill out via the ring's drop-oldest policy.
+- **Eliminates Phase 1 Codex finding C-4** by removing the cause: there
+  is no Redis to back-pressure on. The FS event-dispatch thread never
+  blocks on network I/O.
+- **Eliminates redis-plus-plus + hiredis dependencies** from the build.
+  Smaller .so, simpler Dockerfile.builder, smaller attack surface.
+- **Eliminates Redis ops burden for operators** who don't already run
+  Redis: no extra service, no ACL config, no Redis HA design.
+- **Pushes the durability decision to the right layer**: the operator
+  knows whether they want Kafka, Redis, S3, both, or none. Forcing a
+  Redis-only choice in the module constrains them.
+- **Module remains a relay, not a queue**: clearer mental model. The
+  FS-side concerns (binding, classification, buffering) stay; the
+  durability-side concerns (replication, retention, replay across
+  restarts) leave.
 
-## GrpcStreamSink — concrete design
+## What we give up
 
-In-process. The sink retains an in-memory ring buffer (configurable
-capacity, default 4096) and a set of subscribers (active gRPC
-SubscribeEvents streams). On `Send`:
+- **No durability across module restart**: events in flight when the
+  module reloads are lost. Mitigation: operators perform module
+  reload during low-traffic windows; durable Tier-1 events (e.g.,
+  CHANNEL_HANGUP_COMPLETE) usually have FS-side hooks the operator
+  can backstop with FS native CDR mechanisms.
+- **No durability across consumer-side outages > replay window**:
+  if all subscribers are down for longer than the replay ring covers,
+  the events outside that window are lost. Mitigation: HA subscriber
+  pair as above.
+- **No producer-side dedup**: at-most-once per (subscriber, event_id).
+  If the module re-emits during a retry path, subscribers see the
+  same event twice and must dedup by `event_id`.
+- **No replay from cold storage**: there is no module-side cold
+  archive. Subscribers wanting "look at last week's events" must
+  persist to their own store.
 
-1. Push envelope to ring.
-2. Notify all subscribers via per-subscriber condition variable.
-3. Each subscriber's reactor pops from ring and writes to gRPC stream.
+For Tier 1 events specifically (billing-grade), this means the operator
+MUST run an HA subscriber pair persisting to durable storage. The
+module documents this requirement loudly in the operator guide.
 
-If a subscriber is slow, its per-subscriber offset falls behind the
-ring tail. When the offset overruns the ring (we've discarded events
-since the subscriber last consumed), the subscriber's stream is
-closed with `RESOURCE_EXHAUSTED` and the operator must reconnect with
-a fresh offset (i.e., they lose events between the last consumed and
-the current ring head — by design).
+## Alternatives considered (revised)
 
-This is NOT a Tier 1 / Tier 2 transport. Operators relying on this
-for billing-grade events will lose data and we say so loudly in the
-config sample comments.
+This ADR reconsidered the same alternatives as the first draft:
 
-## Operational guidance (for the operator docs)
+### A. Redis Streams + Pub/Sub in-module (previous V1 pick)
 
-### Redis sizing
+**Reason rejected**: C-4 trade-off (FS signaling stall under outage) +
+adds ops burden + adds two build deps. Better to push durability to
+the subscriber layer.
 
-Per-tier estimate at 50 CCU + 10 calls/min:
+### B. Kafka + NATS in-module
 
-| Tier | Events/sec | Bytes/event (avg) | MB/hour | Recommended MAXLEN | Memory at MAXLEN |
-|---|---|---|---|---|---|
-| 1 | 10 | 1500 | 54 | 100k | ~150 MB |
-| 2 | 40 | 2000 | 288 | 50k | ~100 MB |
-| 3 | 200 | 800 (Pub/Sub no persist) | — | N/A | ~0 |
+**Reason rejected**: two services to operate, much heavier than Redis,
+already ruled out by project owner.
 
-Total Redis memory floor: ~250 MB for streams + Redis's own overhead.
-Single-node Redis with 1 GB RAM is plenty for V1.
+### C. NATS JetStream in-module
 
-### Redis HA
+**Reason rejected**: still adds an in-module dep + ops burden for
+durability that the subscriber layer can provide more flexibly.
 
-For HA: Sentinel + replica. The module can be configured with the
-Sentinel URL via `redis://<sentinel>?service=mymaster`.
+### D. gRPC streaming as sole transport (CHOSEN)
 
-Redis Cluster is NOT required for our throughput. Adding it adds
-operational complexity. If operator wants it: redis-plus-plus
-supports cluster mode; minor config change.
+**Pros**:
+- Operator already runs gRPC service for media bridge.
+- No extra ops surface.
+- Module remains pure relay.
+- No new build deps.
+- Multi-subscriber broadcast for HA is straightforward.
+- Eliminates entire class of "what if our durable store is down"
+  failure modes.
 
-### TLS
+**Cons**:
+- Module cannot promise no-loss alone. Operator must run HA
+  subscribers for that promise. Documented loudly.
+- Replay window bounded by in-memory ring (default ~25 min for Tier 1).
 
-Recommended for cross-host Redis. Set `url=rediss://...` (note `rediss`
-scheme). Provide CA cert via `ca_file` param.
+**Verdict**: chosen. Owner-aligned, simpler, addresses C-4.
 
-### ACL
+### E. PG LISTEN/NOTIFY, RabbitMQ, Pulsar
 
-Use Redis 6+ ACLs to restrict the module's user to:
-- `+xadd` on `osw.events.tier1`, `osw.events.tier2`
-- `+publish` on `osw.events.tier3`
-- `+ping`, `+info`, `+client` for health checks
-- Nothing else
+**Reason rejected**: same as previous draft (PG payload limit,
+RabbitMQ ops heaviness, Pulsar 3-subsystems).
 
-Consumer credentials are separate (they need `+xread`, `+xreadgroup`).
+## Future work
 
-## Migration / future work
+If a deployment ever needs in-module direct-to-Redis or direct-to-Kafka
+production (e.g., for very high-volume events that don't fit a
+subscriber-pull model), that capability gets its own OpenSpec change
+**after** V1 ships and we have implementation experience. The change
+would:
 
-When the operator wants to add Kafka/NATS for additional consumers:
+1. Introduce a new sink subsystem with first-class design (informed by
+   V1 lessons).
+2. Add new config schema for the new sink.
+3. Keep gRPC streaming as the default; new sinks are additive.
 
-1. Add `KafkaSink` (or `NatsJetStreamSink`) implementing `EventSink`.
-2. Update `open_switch.conf.xml` to add a sink + route some tier to it.
-3. The module can fan out to multiple sinks per tier (the routing
-   layer supports multiple `<rule sink="..."/>` matches by adding
-   more rules with same `match` to different sinks).
-
-The plug-in interface explicitly supports adding sinks without changes
-to the routing layer.
+V1 stays focused. The plug-in interface is NOT pre-built — premature
+abstractions hurt; we add the abstraction when there are 2 concrete
+implementations to abstract over.
 
 ## Consequences
 
-- **Operator runs Redis** (already common). One additional Docker
-  service.
-- **Consumers must dedup via `event_id`** because at-least-once is the
-  contract. Consumers must persist their last-seen offset to resume
-  after crash.
-- **Tier 1 events block the FS event thread under sustained Redis
-  outage**. This is acceptable because losing billing events is worse
-  than back-pressuring FS for a few minutes. Operators should monitor
-  Redis health.
-- **Kafka adopters need to wait or contribute a `KafkaSink`** to the
-  plug-in. The plug-in interface is stable from V1 so a Kafka sink
-  can land later without breaking the module ABI.
+- The `redis-plus-plus` + `hiredis` dependencies are removed from
+  `CMakeLists.txt` and `Dockerfile.builder`.
+- The Redis runtime container is removed from `compose.yaml.example`.
+- The `<event-sinks>` block is removed from
+  `open_switch.conf.xml.sample`; `<event-routing>` simplifies to
+  tier classification (no `sink` attribute).
+- The `SubscribeEventsRequest` proto gains `since_seq` and `node_id`
+  fields.
+- The Health RPC adds `subscriber_count` to its response.
+- Operator documentation must include the HA subscriber pattern as
+  the recommended posture for Tier-1 durability.
+- The Phase 1 Codex finding C-4 is resolved by deletion of the
+  blocking-backpressure design.

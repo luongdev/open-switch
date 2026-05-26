@@ -26,8 +26,34 @@
     <!-- Idempotency dedup cache TTL (seconds) for request_id matches -->
     <param name="idempotency_ttl_seconds" value="300"/>
 
-    <!-- In-memory event ring buffer size (for SubscribeEvents fallback) -->
-    <param name="event_ring_capacity" value="4096"/>
+    <!-- Node identifier (used in event envelopes' node_id field).
+         If empty, module reads HOSTNAME or generates a UUIDv7. -->
+    <param name="node_id" value=""/>
+
+    <!-- =====================================================
+         Event plane configuration.
+         The module classifies FS events into tiers 1/2/3 and
+         delivers them via gRPC SubscribeEvents to active
+         subscribers. Durability is the subscriber's responsibility.
+         See designs/transport-adr.md and designs/event-tiers.md.
+         ===================================================== -->
+
+    <!-- Per-tier in-memory replay ring capacities.
+         Larger = longer replay window for since_seq, more memory.
+         Sum of all three is hard-capped at 1048576 (1M entries) by
+         the loader; smaller per-tier caps below are configurable. -->
+    <param name="event_ring_capacity_tier1" value="16384"/>
+    <param name="event_ring_capacity_tier2" value="8192"/>
+    <param name="event_ring_capacity_tier3" value="4096"/>
+
+    <!-- Maximum concurrent SubscribeEvents streams. Reject 17th with
+         RESOURCE_EXHAUSTED. Typical HA pattern uses 2-4 subscribers. -->
+    <param name="max_subscribers" value="16"/>
+
+    <!-- Per-subscriber send queue capacity. When a subscriber's queue
+         fills, the module closes that subscriber's stream with
+         RESOURCE_EXHAUSTED. Fast subscribers are unaffected. -->
+    <param name="subscriber_send_queue_capacity" value="4096"/>
 
     <!-- Graceful drain on SIGTERM: stop accepting new calls, wait N s
          for active calls to finish before forcing shutdown -->
@@ -46,59 +72,44 @@
     <param name="bot_eavesdrop_policy" value="deny"/>
   </settings>
 
-  <!-- Event sinks: where module-emitted events go. -->
-  <event-sinks>
-    <sink name="tier1-critical" backend="redis-streams">
-      <param name="url"      value="redis://localhost:6379"/>
-      <param name="stream"   value="osw.events.tier1"/>
-      <param name="maxlen"   value="100000"/>   <!-- approximate cap (~) -->
-      <param name="approx"   value="true"/>     <!-- XADD MAXLEN ~ N -->
-    </sink>
-    <sink name="tier2-state" backend="redis-streams">
-      <param name="url"      value="redis://localhost:6379"/>
-      <param name="stream"   value="osw.events.tier2"/>
-      <param name="maxlen"   value="50000"/>
-      <param name="approx"   value="true"/>
-    </sink>
-    <sink name="tier3-ephemeral" backend="redis-pubsub">
-      <param name="url"      value="redis://localhost:6379"/>
-      <param name="channel"  value="osw.events.tier3"/>
-    </sink>
-  </event-sinks>
-
-  <!-- Event routing: maps FS event name patterns to a tier (and sink). -->
+  <!-- Event routing: maps FS event name patterns to a tier.
+       The tier becomes metadata in the EventEnvelope; subscribers
+       filter / route by tier on their side. -->
   <event-routing>
     <!-- Tier 1 (critical, billing-grade) -->
-    <rule match="CHANNEL_ANSWER"             tier="1" sink="tier1-critical"/>
-    <rule match="CHANNEL_BRIDGE"             tier="1" sink="tier1-critical"/>
-    <rule match="CHANNEL_HANGUP_COMPLETE"    tier="1" sink="tier1-critical"/>
-    <rule match="CHANNEL_DESTROY"            tier="1" sink="tier1-critical"/>
-    <rule match="RECORD_START"               tier="1" sink="tier1-critical"/>
-    <rule match="RECORD_STOP"                tier="1" sink="tier1-critical"/>
-    <rule match="CUSTOM" subclass="*::critical" tier="1" sink="tier1-critical"/>
+    <rule match="CHANNEL_ANSWER"             tier="1"/>
+    <rule match="CHANNEL_BRIDGE"             tier="1"/>
+    <rule match="CHANNEL_HANGUP_COMPLETE"    tier="1"/>
+    <rule match="CHANNEL_DESTROY"            tier="1"/>
+    <rule match="RECORD_START"               tier="1"/>
+    <rule match="RECORD_STOP"                tier="1"/>
+    <rule match="CUSTOM" subclass="*::critical"   tier="1"/>
+    <rule match="CUSTOM" subclass="osw::audit::*" tier="1"/>
+    <rule match="CUSTOM" subclass="osw::eavesdrop::*" tier="1"/>
 
     <!-- Tier 2 (semi-critical, recoverable) -->
-    <rule match="CHANNEL_CREATE"             tier="2" sink="tier2-state"/>
-    <rule match="CHANNEL_PROGRESS"           tier="2" sink="tier2-state"/>
-    <rule match="CHANNEL_PROGRESS_MEDIA"     tier="2" sink="tier2-state"/>
-    <rule match="CHANNEL_HANGUP"             tier="2" sink="tier2-state"/>
-    <rule match="CHANNEL_OUTGOING"           tier="2" sink="tier2-state"/>
-    <rule match="CHANNEL_ORIGINATE"          tier="2" sink="tier2-state"/>
-    <rule match="CHANNEL_PARK"               tier="2" sink="tier2-state"/>
-    <rule match="CHANNEL_UNPARK"             tier="2" sink="tier2-state"/>
-    <rule match="CHANNEL_STATE"              tier="2" sink="tier2-state"/>
-    <rule match="CHANNEL_CALLSTATE"          tier="2" sink="tier2-state"/>
-    <rule match="DTMF"                       tier="2" sink="tier2-state"/>
+    <rule match="CHANNEL_CREATE"             tier="2"/>
+    <rule match="CHANNEL_PROGRESS"           tier="2"/>
+    <rule match="CHANNEL_PROGRESS_MEDIA"     tier="2"/>
+    <rule match="CHANNEL_HANGUP"             tier="2"/>
+    <rule match="CHANNEL_OUTGOING"           tier="2"/>
+    <rule match="CHANNEL_ORIGINATE"          tier="2"/>
+    <rule match="CHANNEL_PARK"               tier="2"/>
+    <rule match="CHANNEL_UNPARK"             tier="2"/>
+    <rule match="CHANNEL_STATE"              tier="2"/>
+    <rule match="CHANNEL_CALLSTATE"          tier="2"/>
+    <rule match="DTMF"                       tier="2"/>
 
     <!-- Tier 3 (ephemeral, fire-and-forget) -->
-    <rule match="HEARTBEAT"                  tier="3" sink="tier3-ephemeral"/>
-    <rule match="SESSION_HEARTBEAT"          tier="3" sink="tier3-ephemeral"/>
-    <rule match="RE_SCHEDULE"                tier="3" sink="tier3-ephemeral"/>
-    <rule match="MODULE_LOAD"                tier="3" sink="tier3-ephemeral"/>
-    <rule match="MODULE_UNLOAD"              tier="3" sink="tier3-ephemeral"/>
+    <rule match="HEARTBEAT"                  tier="3"/>
+    <rule match="SESSION_HEARTBEAT"          tier="3"/>
+    <rule match="RE_SCHEDULE"                tier="3"/>
+    <rule match="MODULE_LOAD"                tier="3"/>
+    <rule match="MODULE_UNLOAD"              tier="3"/>
+    <rule match="CUSTOM" subclass="*::debug" tier="3"/>
 
-    <!-- Default fallback: tier 2 (state). Operator can change. -->
-    <rule match="*"                          tier="2" sink="tier2-state"/>
+    <!-- Default fallback: Tier 2. Operator can change. -->
+    <rule match="*"                          tier="2"/>
   </event-routing>
 
   <!-- Header allowlist: which FS event headers to include in the

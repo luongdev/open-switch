@@ -1,5 +1,11 @@
-# Example compose: FreeSWITCH + mod_open_switch + Redis.
-# Adjust IPs / ACLs / passwords before production use.
+# Example compose: FreeSWITCH + mod_open_switch.
+#
+# Phase-1-fix-sprint note: this compose no longer ships Redis. Module
+# event delivery is gRPC-only; operator's event consumer (running
+# wherever the operator chooses) does its own durability. See
+# openspec/changes/core-module-v1/designs/transport-adr.md.
+#
+# Adjust IPs / ACLs / passwords / TLS material before production use.
 
 services:
   freeswitch:
@@ -14,9 +20,7 @@ services:
       FS_MAX_SESSIONS: 5000
       FS_SESSIONS_PER_SECOND: 100
       FS_LOG_LEVEL: warning
-      # Module-specific config is supplied via XML config mounted below
       OPEN_SWITCH_GRPC_PORT: 50061
-      OPEN_SWITCH_REDIS_URL: redis://redis:6379
     cap_add:
       - SYS_NICE
       - SYS_RESOURCE
@@ -30,24 +34,27 @@ services:
       - ./conf/open_switch.conf.xml:/etc/freeswitch/autoload_configs/open_switch.conf.xml:ro
       - ./logs:/var/log/freeswitch
       - ./recordings:/opt/freeswitch/recordings
-    depends_on:
-      redis:
-        condition: service_healthy
+      # Optionally mount TLS material for gRPC mTLS:
+      # - ./tls:/etc/freeswitch/tls:ro
     restart: unless-stopped
 
-  redis:
-    image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes",
-              "--save", "60", "1000",
-              "--maxmemory-policy", "allkeys-lru"]
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-
-volumes:
-  redis-data:
+  # Operator's event subscriber goes here (or runs on a different host
+  # entirely). Examples for reference:
+  #
+  # event-consumer-primary:
+  #   image: my-org/osw-event-consumer:latest
+  #   environment:
+  #     OSW_GRPC_TARGET: freeswitch:50061
+  #     OSW_TLS_CA: /tls/ca.pem
+  #     KAFKA_BOOTSTRAP: kafka:9092
+  #     SUBSCRIBER_ROLE: primary
+  #   depends_on:
+  #     freeswitch:
+  #       condition: service_healthy
+  #
+  # event-consumer-standby:
+  #   image: my-org/osw-event-consumer:latest
+  #   environment:
+  #     OSW_GRPC_TARGET: freeswitch:50061
+  #     SUBSCRIBER_ROLE: standby
+  #     # ... same as primary; both write to durable store, dedup by event_id

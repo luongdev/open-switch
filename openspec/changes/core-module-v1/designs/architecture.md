@@ -96,45 +96,69 @@ The module binds to FreeSWITCH events via `switch_event_bind`, using a
 single callback for ALL events. The callback enqueues to an
 internal lock-free SPSC ring per tier; each tier has a dedicated
 consumer thread that converts FS events to `EventEnvelope` protobufs and
-ships through the configured sink.
+ships to active gRPC subscribers via the SubscribeEvents stream.
 
 ```text
 FS event_facility
        │
        ▼
 [ event_bind callback ]──┐
-       │                 │  Fast path: drop into per-tier SPSC ring,
-       │                 │  return to FS within microseconds. Heavy
-       │                 │  work (protobuf encode, network send) is on
-       │                 │  a separate thread.
+       │                 │  Fast path: tier classify, serialize once
+       │                 │  into a shared_ptr<const string>, push onto
+       │                 │  per-tier ring + each subscriber's send queue.
+       │                 │  Target return-to-FS latency ≤ 50 µs.
        ▼                 ▼
   Tier classifier (event_name + subclass match against routing rules)
        │
-       ├──▶ Tier 1 ring ──▶ shipper thread ──▶ Redis Streams XADD
-       ├──▶ Tier 2 ring ──▶ shipper thread ──▶ Redis Streams XADD
-       └──▶ Tier 3 ring ──▶ shipper thread ──▶ Redis PUBLISH
-                                                + In-memory ring for
-                                                gRPC SubscribeEvents
+       │  seq allocated here (per-tier std::atomic<uint64_t>)
+       │  envelope serialized to bytes once
+       │
+       ├──▶ Tier 1 ring (16384, FIFO evict on overflow)
+       ├──▶ Tier 2 ring (8192)
+       └──▶ Tier 3 ring (4096)
+            │
+            │  for each active gRPC SubscribeEvents stream:
+            │  - apply subscriber's tier + event_name filters
+            │  - push shared_ptr (16 B overhead) onto its bounded queue
+            ▼
+[ Per-subscriber send queues (4096 cap default) ]
+            │
+            │  gRPC sender thread per subscriber drains, writes to wire
+            ▼
+External gRPC subscriber (operator-owned)
+            │
+            │  operator's choice: persist to Kafka / Redis / S3 / file / ...
+            ▼
+Operator-defined durability policy
 ```
 
-Why per-tier rings: each tier has different latency/durability
-tolerances and different consumer behavior. Mixing them on a single
-queue lets a slow Tier-3 consumer block a Tier-1 (billing) event.
-Separate rings, separate threads, separate sinks.
+Why per-tier rings: each tier has different volume + replay-window
+needs. Mixing tier 3 heartbeats with tier 1 billing into a single ring
+means a heartbeat burst evicts a CHANNEL_ANSWER. Per-tier isolation
+prevents that.
 
-Ring sizing:
-- Tier 1: 4096 envelopes. At ~10 events/sec, that's ~7 minutes of
-  buffering. Overflow = SHIP TO REDIS WITH RETRY (do not drop).
-- Tier 2: 16384. Overflow = log warning, retry with exponential backoff.
-  If retry fails for > N seconds, downgrade to drop with metric.
-- Tier 3: 8192. Overflow = drop immediately, increment metric.
+Ring sizing (defaults; configurable per `event_ring_capacity_tierN`):
 
-Backpressure policy is per-tier and documented in
-[`event-tiers.md`](event-tiers.md).
+- Tier 1: 16384 envelopes. ≈25 min replay @ 10 ev/s.
+- Tier 2: 8192. ≈3 min @ 40 ev/s.
+- Tier 3: 4096. ≈20s @ 200 ev/s.
+
+Overflow policy is FIFO evict in all three tiers — the module does NOT
+block FS event delivery. Durability is the subscriber's responsibility
+(see [`event-tiers.md`](event-tiers.md) "No-loss reference architecture"
+and [`transport-adr.md`](transport-adr.md) for the ADR rationale).
+
+Subscriber broadcast uses ref-counted shared serialization: each event
+is serialized to bytes once, and each subscriber's queue holds a
+`std::shared_ptr<const std::string>`. Memory cost is `1 × payload +
+N × pointer-size` regardless of subscriber count.
 
 The FS `event_bind` callback runs in FreeSWITCH's event-emitting thread
 context. It MUST return quickly (target ≤ 50 µs per event) or it will
-back-pressure the entire FS process.
+back-pressure the entire FS process — including SIP signalling state
+machinery handled by mod_sofia. The new design (per Phase 1 Codex
+finding C-4) eliminates the network I/O that the previous Redis design
+introduced on this thread.
 
 ### Media plane — multi-bug per call
 
@@ -357,12 +381,14 @@ Orchestrator → gRPC Originate(request_id=abc, endpoints=[..],
 
 | Failure | Detection | Recovery |
 |---|---|---|
-| Redis down at sink | XADD fails | Tier-1: queue in-memory ring up to 4096, retry forever (back-pressure to event_bind callback) until ring full → tier-1 events are NEVER dropped — module logs critical and may eventually OOM if Redis stays down. Tier-2: bounded retry, then drop with metric. Tier-3: drop immediately. |
-| gRPC port bind fails | server_->BuildAndStart returns null | Module load fails. FreeSWITCH startup fails (deliberate — operator must fix or unload). |
-| FreeSWITCH crash | Process dies | Container orchestrator restarts. Module state is in-process; nothing to restore. Active calls are torn down by SIP-side BYE retransmits + ESL absence; orchestrators must idempotently retry. |
-| Module crash but FS survives | Module signal handler catches | Cannot easily recover; safer to crash FS to force a clean restart. We elect to ABORT the FS process on module-internal SIGSEGV (set up a custom handler that aborts to trigger container restart) rather than continue with a poisoned module. |
+| All subscribers offline | `subscriber_count==0`; ring fill grows | Events accumulate in per-tier ring up to capacity, then evict oldest. Module logs WARN every 30s with drop count. NO durability promise during this window — operator must run HA subscriber pair if no-loss is required (see [`event-tiers.md`](event-tiers.md) "No-loss reference architecture"). |
+| Slow subscriber | Per-subscriber queue fills | Close that subscriber's gRPC stream with `RESOURCE_EXHAUSTED`. Increment `subscriber_kicked_total{cause="queue_full"}`. Subscriber reconnects (with `since_seq` if tracked). Fast subscribers unaffected. |
+| Subscriber misses replay window | `since_seq` outside ring | Return `RESOURCE_EXHAUSTED` on subscribe. Subscriber retries without `since_seq` and accepts the gap. |
+| gRPC port bind fails | `server_->BuildAndStart` returns null | Module load fails. FreeSWITCH startup fails (deliberate — operator must fix or unload). |
+| FreeSWITCH crash | Process dies | Container orchestrator restarts. Module state is in-process; nothing to restore. Active calls are torn down by SIP-side BYE retransmits + subscriber disconnect; orchestrators must idempotently retry. |
+| Module crash but FS survives | `std::set_terminate` handler catches unhandled C++ exception; signal-safe abort on SIGSEGV/SIGABRT | Cannot easily recover from a poisoned module state. We `_exit()` the FS process via the terminate handler to trigger a clean container restart. (Phase 1 Codex finding I-11: avoid SIGSEGV handler racing FS's own; rely on `std::set_terminate` for C++ unhandled and signal-safe `_exit` only for hard signals.) |
 | Memory leak in module | LSAN in CI, Valgrind nightly | Block release on detection. Production: container restarts on OOM. |
-| Slow external bot service | gRPC stream stalls | Per-stream timeout (configurable per purpose). On timeout: module sends silence frames to channel, emits Tier-2 `bot_stream_stalled`. Operator can configure abandon-call vs continue-silent. |
+| Slow external bot service | gRPC media-stream stalls | Per-stream timeout (configurable per purpose). On timeout: module sends silence frames to channel, emits Tier-2 `bot_stream_stalled`. Operator can configure abandon-call vs continue-silent. |
 | Idempotency cache poisoned (wrong response cached) | None directly | Cache TTL is short (300s default); cache is per-process so a module reload clears it. |
 | Eavesdrop bypass attempt | Audit event fires when attempt detected | If `policy=deny`, FS hangs up the eavesdropper. If `policy=audit`, event still fires for SIEM follow-up. See [`security-and-eavesdrop.md`](security-and-eavesdrop.md). |
 
