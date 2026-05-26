@@ -45,6 +45,25 @@ target_compile_features(osw_observability_fs PUBLIC cxx_std_20)
 target_link_libraries(osw_observability_fs PUBLIC
     osw_observability
 )
+# audit.cc / log_default_sink.cc reference switch_event_* + switch_log_*
+# symbols from libfreeswitch.so. Declaring it INTERFACE here makes
+# CMake place -lfreeswitch AFTER libosw_observability_fs.a in every
+# consumer's link line, which is what GNU ld single-pass needs to
+# resolve the references. Without this, mod_open_switch.so works
+# (libfreeswitch is loaded by FS at module load time) but standalone
+# test binaries (server_test) failed to link with undefined refs to
+# switch_event_destroy / _fire_detailed / _create_subclass_detailed /
+# _add_header_string. find_library is intentional — we accept that
+# host builds without /usr/local/lib/libfreeswitch.so fall back to
+# the raw `-lfreeswitch` flag, which a non-CI host can still satisfy
+# by setting LIBRARY_PATH.
+find_library(FREESWITCH_LIBRARY NAMES freeswitch
+             HINTS /usr/local/lib NO_CMAKE_FIND_ROOT_PATH)
+if(FREESWITCH_LIBRARY)
+    target_link_libraries(osw_observability_fs INTERFACE ${FREESWITCH_LIBRARY})
+else()
+    target_link_options(osw_observability_fs INTERFACE -lfreeswitch)
+endif()
 # SWITCH_API_VISIBILITY=1 keeps the SWITCH_MOD_DECLARE_DATA macro
 # alive for any FS macros that expand inside the TU. This static
 # lib never EXPORTS the visibility-default symbol itself (only the

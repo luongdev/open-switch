@@ -50,13 +50,22 @@ endforeach()
 #                     LIBS    osw_raii_test_helpers)
 #
 function(osw_add_unit_test)
-    cmake_parse_arguments(_TST "" "NAME;LABEL" "SOURCES;LIBS;DEFINES" ${ARGN})
+    # LABEL is multi-value so callers can pass `LABEL "raii;unit"` —
+    # CMake expands semicolons inside quoted args into a 2-element list
+    # before the function call, so a single-value LABEL would silently
+    # drop the second label (causing `ctest -L unit` to find 0 tests
+    # when callers expect a hierarchical label).
+    cmake_parse_arguments(_TST "" "NAME" "LABEL;SOURCES;LIBS;DEFINES" ${ARGN})
     if(NOT _TST_NAME OR NOT _TST_SOURCES)
         message(FATAL_ERROR "osw_add_unit_test requires NAME and SOURCES")
     endif()
     if(NOT _TST_LABEL)
         set(_TST_LABEL "unit")
     endif()
+    # Ensure every test carries the "unit" label so `ctest -L unit`
+    # picks it up even if the caller specified only a subsystem label.
+    list(APPEND _TST_LABEL "unit")
+    list(REMOVE_DUPLICATES _TST_LABEL)
 
     add_executable(${_TST_NAME} ${_TST_SOURCES})
     target_link_libraries(${_TST_NAME} PRIVATE

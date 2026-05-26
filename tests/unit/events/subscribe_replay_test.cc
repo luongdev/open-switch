@@ -161,30 +161,29 @@ TEST(SubscribeReplayTest, SinceSeqAboveMaxSeqReturnsEmpty) {
     EXPECT_TRUE(snap.entries.empty());
 }
 
-TEST(SubscribeReplayTest, ReplayThenLiveTailDeliversBothToSubscriber) {
-    // End-to-end check: a subscriber registers with since_seq pointing
-    // into the ring, the handler-side replay pre-loads the tail slice
-    // into the SendQueue, then the broadcaster delivers further events
-    // live. The test simulates the handler's replay step manually then
-    // pushes more events through the broadcaster's WorkerLoop.
+TEST(SubscribeReplayTest, ReplaySlicePreLoadsIntoSendQueue) {
+    // Replay slice (the handler's pre-AddSubscriber step): given a ring
+    // with history 1..5 and since_seq=3, the slice should contain seqs
+    // 4 and 5 in order, both pushed into the new subscriber's queue.
+    //
+    // The deterministic end-to-end (replay slice + live tail without
+    // duplication) is covered by AtomicAddSubscriberClosesReplayLiveTailGap
+    // below using the post-pop hook to control worker timing. This test
+    // intentionally does NOT exercise the live-tail path — without the
+    // hook, the worker could pop ring entries before or after the
+    // replay step, making the test racy.
     auto rings = std::make_unique<RingSet>(64, 64, 64);
     osw::Health health;
-    auto bcast = std::make_unique<Broadcaster>(rings.get(), &health);
-
     Ring* t1 = rings->Get(Tier::k1Critical);
     ASSERT_NE(t1, nullptr);
 
-    // Pre-populate the ring with 5 events (the "history" the
-    // subscriber will replay from).
     std::uint64_t dropped = 0;
     for (std::uint64_t i = 1; i <= 5; ++i) {
         t1->Push(MakeEntry(i), &dropped);
     }
 
-    // Subscriber asks for since_seq=3 → handler should replay seqs 4,5.
     auto sub = std::make_shared<Subscriber>("s-replay", SubscriberFilter{}, /*cap=*/32);
 
-    // Mimic the handler's replay step.
     auto snap = t1->SnapshotFromSeq(3);
     ASSERT_TRUE(snap.found_in_window);
     for (const auto& entry : snap.entries) {
@@ -192,23 +191,9 @@ TEST(SubscribeReplayTest, ReplayThenLiveTailDeliversBothToSubscriber) {
     }
     EXPECT_EQ(sub->Queue().Size(), 2u);
 
-    // Now register + start the broadcaster so live-tail flows in.
-    bcast->AddSubscriber(sub);
-    bcast->Start();
-
-    // Push 3 more events live.
-    for (std::uint64_t i = 6; i <= 8; ++i) {
-        t1->Push(MakeEntry(i), &dropped);
-    }
-
-    // Wait up to 1s for live-tail delivery.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-    while (sub->Queue().Size() < 5 && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    EXPECT_EQ(sub->Queue().Size(), 5u);  // 2 replayed + 3 live
-
-    bcast->Stop();
+    // Verify shutdown semantics: RequestClose propagates the reason
+    // (no broadcaster needed to exercise this path).
+    sub->RequestClose(KickReason::kShutdown);
     EXPECT_TRUE(sub->IsClosed());
     EXPECT_EQ(sub->GetKickReason(), KickReason::kShutdown);
 }
@@ -220,13 +205,16 @@ TEST(SubscribeReplayTest, ReplayHonoursEventNameFilter) {
     // scanner + MatchesFilter as the broadcaster's live-tail dispatch.
     Ring ring(64);
     std::uint64_t dropped = 0;
-    // Mixed events: CHANNEL_ANSWER (1,3,5), CHANNEL_HANGUP_COMPLETE (2,4,6).
-    ring.Push(MakeEntryWithName(1, "CHANNEL_ANSWER"), &dropped);
-    ring.Push(MakeEntryWithName(2, "CHANNEL_HANGUP_COMPLETE"), &dropped);
-    ring.Push(MakeEntryWithName(3, "CHANNEL_ANSWER"), &dropped);
-    ring.Push(MakeEntryWithName(4, "CHANNEL_HANGUP_COMPLETE"), &dropped);
-    ring.Push(MakeEntryWithName(5, "CHANNEL_ANSWER"), &dropped);
-    ring.Push(MakeEntryWithName(6, "CHANNEL_HANGUP_COMPLETE"), &dropped);
+    // Mixed events: CHANNEL_ANSWER (101,103,105), CHANNEL_HANGUP_COMPLETE
+    // (102,104,106). Seqs start at 101 so the test can call
+    // SnapshotFromSeq(100) — since_seq=0 is a "live-tail only" sentinel
+    // per proto so it returns empty entries; we want the full slice.
+    ring.Push(MakeEntryWithName(101, "CHANNEL_ANSWER"), &dropped);
+    ring.Push(MakeEntryWithName(102, "CHANNEL_HANGUP_COMPLETE"), &dropped);
+    ring.Push(MakeEntryWithName(103, "CHANNEL_ANSWER"), &dropped);
+    ring.Push(MakeEntryWithName(104, "CHANNEL_HANGUP_COMPLETE"), &dropped);
+    ring.Push(MakeEntryWithName(105, "CHANNEL_ANSWER"), &dropped);
+    ring.Push(MakeEntryWithName(106, "CHANNEL_HANGUP_COMPLETE"), &dropped);
 
     SubscriberFilter f;
     f.event_name_globs = {"CHANNEL_ANSWER"};
@@ -234,7 +222,7 @@ TEST(SubscribeReplayTest, ReplayHonoursEventNameFilter) {
 
     // Mimic the handler's filtered replay step (the same routing.h
     // scanner + Subscriber::MatchesFilter chain).
-    auto snap = ring.SnapshotFromSeq(0);
+    auto snap = ring.SnapshotFromSeq(100);
     ASSERT_TRUE(snap.found_in_window);
     for (const auto& entry : snap.entries) {
         const auto rf = osw::events::ExtractRoutingFields(*entry.envelope_bytes);
@@ -242,24 +230,26 @@ TEST(SubscribeReplayTest, ReplayHonoursEventNameFilter) {
             continue;
         ASSERT_TRUE(sub->Queue().TryPush(entry.envelope_bytes));
     }
-    // Only the 3 CHANNEL_ANSWER entries (seqs 1, 3, 5) should be queued.
+    // Only the 3 CHANNEL_ANSWER entries (seqs 101, 103, 105) should be queued.
     EXPECT_EQ(sub->Queue().Size(), 3u);
 }
 
 TEST(SubscribeReplayTest, ReplayHonoursNodeIdFilter) {
     Ring ring(64);
     std::uint64_t dropped = 0;
-    // Alternating node_ids: node-a (1,3,5), node-b (2,4,6).
-    ring.Push(RingEntry{1, MakeBytes(1, "CHANNEL_ANSWER", "node-a")}, &dropped);
-    ring.Push(RingEntry{2, MakeBytes(2, "CHANNEL_ANSWER", "node-b")}, &dropped);
-    ring.Push(RingEntry{3, MakeBytes(3, "CHANNEL_ANSWER", "node-a")}, &dropped);
-    ring.Push(RingEntry{4, MakeBytes(4, "CHANNEL_ANSWER", "node-b")}, &dropped);
+    // Alternating node_ids: node-a (101,103), node-b (102,104). Seqs
+    // start at 101 so SnapshotFromSeq(100) returns the full slice;
+    // since_seq=0 is the "live-tail only" sentinel and returns empty.
+    ring.Push(RingEntry{101, MakeBytes(101, "CHANNEL_ANSWER", "node-a")}, &dropped);
+    ring.Push(RingEntry{102, MakeBytes(102, "CHANNEL_ANSWER", "node-b")}, &dropped);
+    ring.Push(RingEntry{103, MakeBytes(103, "CHANNEL_ANSWER", "node-a")}, &dropped);
+    ring.Push(RingEntry{104, MakeBytes(104, "CHANNEL_ANSWER", "node-b")}, &dropped);
 
     SubscriberFilter f;
     f.node_id = "node-a";
     auto sub = std::make_shared<Subscriber>("s-node", f, /*cap=*/16);
 
-    auto snap = ring.SnapshotFromSeq(0);
+    auto snap = ring.SnapshotFromSeq(100);
     ASSERT_TRUE(snap.found_in_window);
     for (const auto& entry : snap.entries) {
         const auto rf = osw::events::ExtractRoutingFields(*entry.envelope_bytes);
