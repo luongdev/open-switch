@@ -33,11 +33,14 @@
 // <switch.h> for the actual definitions. Module's header consumers
 // (other osw::* internals that just need to call Instance().something)
 // can include this without <switch.h>.
+//
+// IMPORTANT: the typedef names below must match <switch_types.h> exactly
+// (`typedef struct fspr_pool_t switch_memory_pool_t;`). The earlier
+// version used `apr_pool_t`, which compiled in isolation but conflicted
+// when a TU pulled in both this header and <switch.h>.
 extern "C" {
-struct apr_pool_t;
-using switch_memory_pool_t = apr_pool_t;
-struct switch_loadable_module_interface;
-using switch_loadable_module_interface_t = switch_loadable_module_interface;
+typedef struct fspr_pool_t switch_memory_pool_t;
+typedef struct switch_loadable_module_interface switch_loadable_module_interface_t;
 }
 
 namespace osw {
