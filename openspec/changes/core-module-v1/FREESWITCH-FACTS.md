@@ -1911,6 +1911,160 @@ SWITCH_DECLARE(switch_event_header_t *) switch_event_get_header_ptr(switch_event
 
 ---
 
+## FF-020 — `switch_event_create_subclass` requires `SWITCH_EVENT_CUSTOM` + non-NULL subclass, adds `Event-Subclass` header
+
+**Claim.** `switch_event_create_subclass(event, event_id, subclass_name)`
+is a macro that expands to
+`switch_event_create_subclass_detailed(__FILE__, __SWITCH_FUNC__,
+__LINE__, event, event_id, subclass_name)`. The
+detailed function:
+
+1. Sets `*event = NULL` unconditionally on entry.
+2. Returns `SWITCH_STATUS_GENERR` (without allocating) if
+   `event_id` is neither `SWITCH_EVENT_CLONE` nor `SWITCH_EVENT_CUSTOM`
+   AND `subclass_name` is non-NULL. (Translation: only CUSTOM /
+   CLONE events may carry a subclass name; the function refuses
+   to set a subclass on, e.g., a `SWITCH_EVENT_CHANNEL_HANGUP`
+   event.)
+3. Allocates a new event (or pops from the recycle queue),
+   memsets to zero, sets `event_id`.
+4. If `subclass_name != NULL`: stores `subclass_name` (DUP'd) into
+   `(*event)->subclass_name` AND calls
+   `switch_event_add_header_string(*event, SWITCH_STACK_BOTTOM,
+   "Event-Subclass", subclass_name)` so the wire form carries
+   the subclass under the `Event-Subclass` header.
+5. Returns `SWITCH_STATUS_SUCCESS`.
+
+The wire-side subclass identifier is therefore the
+`Event-Subclass` header value. Subscribers / handlers that filter
+on subclass match against this header.
+
+Subclass names that you intend to FIRE (publish) should be
+reserved up-front via `switch_event_reserve_subclass(name)` at
+module load — but reservation is optional for FIRING (only required
+for FS internal accounting). Reservation IS required to bind to a
+specific subclass via `switch_event_bind(..., SWITCH_EVENT_CUSTOM,
+subclass_name, ...)`. Our W2 module binds to `SWITCH_EVENT_ALL` and
+filters in-process, so we do not need to reserve our `osw.audit.*`
+subclasses to receive them — but reserving is still polite and
+audit-friendly (the bind path in `switch_event_bind_removable` at
+lines 2071-2079 auto-reserves on demand, so a missed reservation is
+not catastrophic).
+
+**Source.**
+
+- Macro: `src/include/switch_event.h:150-153`.
+- `switch_event_create_subclass_detailed`: `src/switch_event.c:747-787`.
+- `switch_event_reserve_subclass_detailed`: `src/switch_event.c:485-522`.
+
+**Permalinks.**
+
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_event.h#L150-L153>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L747-L787>
+- <https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_event.c#L485-L522>
+
+**Excerpt — macro (lines 150-153 of switch_event.h):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_event_create_subclass_detailed(const char *file, const char *func, int line,
+                                                                      switch_event_t **event, switch_event_types_t event_id, const char *subclass_name);
+#define switch_event_create_subclass(_e, _eid, _sn) switch_event_create_subclass_detailed(__FILE__, (const char * )__SWITCH_FUNC__, __LINE__, _e, _eid, _sn)
+```
+
+**Excerpt — `switch_event_create_subclass_detailed` (lines 747-787):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_event_create_subclass_detailed(const char *file, const char *func, int line,
+                                                                      switch_event_t **event, switch_event_types_t event_id, const char *subclass_name)
+{
+#ifdef SWITCH_EVENT_RECYCLE
+    void *pop;
+#endif
+
+    *event = NULL;
+
+    if ((event_id != SWITCH_EVENT_CLONE && event_id != SWITCH_EVENT_CUSTOM) && subclass_name) {
+        return SWITCH_STATUS_GENERR;
+    }
+#ifdef SWITCH_EVENT_RECYCLE
+    if (EVENT_RECYCLE_QUEUE && switch_queue_trypop(EVENT_RECYCLE_QUEUE, &pop) == SWITCH_STATUS_SUCCESS && pop) {
+        *event = (switch_event_t *) pop;
+    } else {
+#endif
+        *event = ALLOC(sizeof(switch_event_t));
+        switch_assert(*event);
+#ifdef SWITCH_EVENT_RECYCLE
+    }
+#endif
+
+    memset(*event, 0, sizeof(switch_event_t));
+
+    if (event_id == SWITCH_EVENT_REQUEST_PARAMS || event_id == SWITCH_EVENT_CHANNEL_DATA || event_id == SWITCH_EVENT_MESSAGE) {
+        (*event)->flags |= EF_UNIQ_HEADERS;
+    }
+
+    if (event_id != SWITCH_EVENT_CLONE) {
+        (*event)->event_id = event_id;
+        switch_event_prep_for_delivery_detailed(file, func, line, *event);
+    }
+
+    if (subclass_name) {
+        (*event)->subclass_name = DUP(subclass_name);
+        switch_event_add_header_string(*event, SWITCH_STACK_BOTTOM, "Event-Subclass", subclass_name);
+    }
+
+    return SWITCH_STATUS_SUCCESS;
+}
+```
+
+**Implications.**
+
+- The W2 audit helper `osw::audit::Emit(name, headers)` calls
+  `switch_event_create_subclass(&ev, SWITCH_EVENT_CUSTOM, full_subclass)`
+  where `full_subclass = "osw.audit." + name`. It must pass
+  `SWITCH_EVENT_CUSTOM` (not `SWITCH_EVENT_ALL` or another id); any
+  other event_id with a non-NULL subclass returns
+  `SWITCH_STATUS_GENERR` and the caller's `ev` stays NULL.
+- The W2 audit subclass family is `osw.audit.*`:
+  `osw.audit.module_loaded`, `osw.audit.module_shutdown_with_pending_events`,
+  `osw.audit.subscriber_connected`,
+  `osw.audit.subscriber_disconnected`,
+  `osw.audit.subscriber_kicked` (RESOURCE_EXHAUSTED), and any
+  future-W3+ control-API audit subclasses (`osw.audit.originate_started`,
+  etc.).
+- The classifier (`src/events/tier.cc`) recognises subclasses
+  matching the glob `osw.audit.*` and routes them to Tier 1
+  unconditionally (per W2 default rules).
+- Subscribers that filter by `subclass_name` on the envelope side
+  (the `EventEnvelope.subclass_name` field, populated from the
+  `Event-Subclass` header in the envelope builder) will receive
+  the dotted-namespace string we passed in. There is no FS-side
+  case normalisation; ours stays lowercase by convention.
+- We deliberately do NOT call `switch_event_reserve_subclass`
+  at module load for the `osw.audit.*` family. We bind to
+  `SWITCH_EVENT_ALL` so reservation is unnecessary for our own
+  receive path, and the auto-reservation in
+  `switch_event_bind_removable:2071-2079` would only fire if some
+  third party tried to bind to our exact subclass — which is
+  fine. If a future caller wants to bind a SPECIFIC subclass
+  filter at the FS level, we will need to reserve it first; the
+  cost is negligible and the entry would be tracked in
+  `src/events/binder.cc::Init()`.
+
+**Used by W2 code:**
+
+- `src/observability/audit.cc` — `osw::audit::Emit` builds the
+  CUSTOM event with `Event-Subclass = "osw.audit." + name`, adds
+  caller-supplied headers, and fires via `osw::EventGuard::fire()`.
+  The event then re-enters our own pipeline via the binder
+  callback (Tier 1 by classifier rule) and ships to subscribers.
+- `tests/unit/observability/audit_test.cc` — exercises the helper
+  against the FS-mock seam; verifies `Event-Subclass` is set to the
+  full dotted name and the subclass-name slot on the envelope is
+  populated.
+
+---
+
 ## How to add a new FF entry
 
 If you find a previously-undocumented FreeSWITCH behaviour that
