@@ -30,12 +30,21 @@ class TierTest : public ::testing::Test {};
 
 TEST_F(TierTest, DefaultRulesMapWellKnownEvents) {
     TierClassifier c(osw::events::MakeDefaultRules());
+    // Full channel-lifecycle set is Tier-1 (must-persist) — subscribers
+    // need every state transition to reconstruct call state.
+    EXPECT_EQ(c.Classify("CHANNEL_CREATE", ""), Tier::k1Critical);
+    EXPECT_EQ(c.Classify("CHANNEL_PROGRESS", ""), Tier::k1Critical);
+    EXPECT_EQ(c.Classify("CHANNEL_ANSWER", ""), Tier::k1Critical);
+    EXPECT_EQ(c.Classify("CHANNEL_BRIDGE", ""), Tier::k1Critical);
+    EXPECT_EQ(c.Classify("CHANNEL_UNBRIDGE", ""), Tier::k1Critical);
+    EXPECT_EQ(c.Classify("CHANNEL_DESTROY", ""), Tier::k1Critical);
     EXPECT_EQ(c.Classify("CHANNEL_HANGUP_COMPLETE", ""), Tier::k1Critical);
     EXPECT_EQ(c.Classify("CDR_REPORT", ""), Tier::k1Critical);
+    EXPECT_EQ(c.Classify("RECORD_START", ""), Tier::k1Critical);
     EXPECT_EQ(c.Classify("RECORD_STOP", ""), Tier::k1Critical);
-    EXPECT_EQ(c.Classify("CHANNEL_CREATE", ""), Tier::k2State);
-    EXPECT_EQ(c.Classify("CHANNEL_ANSWER", ""), Tier::k2State);
+    // Tier-2 state events that are not in the lifecycle set.
     EXPECT_EQ(c.Classify("DTMF", ""), Tier::k2State);
+    // Tier-3 ephemeral noise.
     EXPECT_EQ(c.Classify("HEARTBEAT", ""), Tier::k3Ephemeral);
     EXPECT_EQ(c.Classify("MEDIA_BUG_START", ""), Tier::k3Ephemeral);
     EXPECT_EQ(c.Classify("LOG", ""), Tier::k3Ephemeral);
