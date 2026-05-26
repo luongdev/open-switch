@@ -73,17 +73,25 @@ jobs:
             open-switch/builder:ci-${{ github.sha }} \
             ctest --test-dir /usr/src/open-switch/build --output-on-failure -L integration
 
+      # W1 Foundation lands real unit tests under `ctest -L unit`
+      # (raii, observability, core, control). Run them under the same
+      # ASAN+LSAN env as integration tests. The integration label
+      # remains for the W5 FS-in-container suite — guarded
+      # MIN_INTEGRATION_TESTS check stays disabled until W5 enables it.
+      - name: Run unit tests under ASAN (raii + observability + core + control)
+        run: |
+          docker run --rm \
+            -e ASAN_OPTIONS=halt_on_error=1:abort_on_error=1:detect_leaks=1:detect_stack_use_after_return=1:strict_string_checks=1:check_initialization_order=1 \
+            -e LSAN_OPTIONS=exitcode=23:print_suppressions=0 \
+            open-switch/builder:ci-${{ github.sha }} \
+            ctest --test-dir /usr/src/open-switch/build --output-on-failure -L unit
+
       # Phase 1 Codex finding I-16: an empty integration test set would
-      # trivially pass `ctest -L integration`, giving a false green. Once
-      # the implementation lands, this step asserts a minimum number of
-      # tests is registered. The threshold is intentionally low at first
-      # and increases as the suite grows.
-      #
-      # NOTE: This guard is disabled during Phase 1 (src/ is empty). The
-      # first implementation commit MUST enable it and pick a non-zero
-      # MIN_INTEGRATION_TESTS appropriate for the landed test set.
+      # trivially pass `ctest -L integration`, giving a false green. The
+      # check is enabled once W5 lands real integration coverage; for
+      # W1-W4 it stays disabled.
       - name: Verify integration suite has minimum tests registered
-        if: false  # TODO(impl-phase): enable when src/ lands
+        if: false  # TODO(W5): enable when FS-in-container integration suite lands
         env:
           MIN_INTEGRATION_TESTS: "10"
         run: |
@@ -97,6 +105,18 @@ jobs:
             exit 1
           fi
 
+      # Verify the module exports the interface symbol with the right
+      # visibility. FREESWITCH-FACTS FF-009 §"Implications": `nm -D
+      # --defined-only` MUST show `mod_open_switch_module_interface` as
+      # `D` (global data). If the macro expanded with hidden visibility,
+      # the symbol would be `d` and FS's dlsym would fail at load.
+      - name: Verify mod_open_switch interface symbol is global
+        run: |
+          docker run --rm \
+            open-switch/builder:ci-${{ github.sha }} \
+            bash -c "nm -D --defined-only /dist/mod/mod_open_switch.so \
+                       | grep ' mod_open_switch_module_interface$'"
+
   static-analysis:
     name: clang-format + clang-tidy
     runs-on: ubuntu-24.04
@@ -106,8 +126,39 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/work" -w /work \
             silkeh/clang:18 \
-            bash -c "find src -name '*.cc' -o -name '*.h' | xargs clang-format --dry-run --Werror"
-      # clang-tidy step added once src/ has real code.
+            bash -c "find src include tests -name '*.cc' -o -name '*.h' | \
+                     xargs clang-format --dry-run --Werror"
+      # clang-tidy needs the compile_commands.json that CMake produces
+      # under build/ — run inside the builder container that already
+      # has the build tree from the build-and-asan job. We re-use the
+      # same image tag.
+      - name: Set up buildx (for image extraction)
+        uses: docker/setup-buildx-action@v3
+      - name: Build builder image (no ASAN; tests off; for tidy artifacts only)
+        run: |
+          docker buildx build \
+            --build-arg OSW_ENABLE_ASAN=OFF \
+            --build-arg OSW_BUILD_TESTS=ON \
+            --build-arg BUILD_TYPE=Debug \
+            --build-arg UPSTREAM_TAG=v1.10.12 \
+            --target fs-builder \
+            -f deploy/docker/Dockerfile.builder \
+            --load \
+            -t open-switch/builder:ci-tidy-${{ github.sha }} \
+            .
+      - name: Run clang-tidy across src/
+        run: |
+          docker run --rm \
+            open-switch/builder:ci-tidy-${{ github.sha }} \
+            bash -c "cd /usr/src/open-switch && \
+                     find src -name '*.cc' \
+                       -not -path 'src/observability/log_default_sink.cc' \
+                       | xargs clang-tidy -p build --warnings-as-errors='*'"
+          # log_default_sink.cc and other FS-dependent TUs include
+          # <switch.h>; clang-tidy on macOS hosts struggled with FS
+          # macros earlier. We rely on the Linux builder image's tidy
+          # which has the FS headers and gRPC available — this command
+          # exercises the full set there.
 
   docs-lint:
     name: Spec docs lint (markdownlint)
