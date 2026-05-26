@@ -12,12 +12,13 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-#include "src/control/control_service_skeleton.h"
-
 #include <grpcpp/grpcpp.h>
 
 #include "open_switch/control/v1/control.pb.h"
+
 #include "osw/observability/health.h"
+
+#include "src/control/control_service_skeleton.h"
 
 namespace osw::control {
 
@@ -26,30 +27,30 @@ namespace {
 open_switch::control::v1::HealthResponse::Status MapStatus(Health::Status s) noexcept {
     using Out = open_switch::control::v1::HealthResponse;
     switch (s) {
-        case Health::Status::kServing:     return Out::SERVING;
-        case Health::Status::kNotServing:  return Out::NOT_SERVING;
-        case Health::Status::kDraining:    return Out::DRAINING;
-        case Health::Status::kUnspecified: return Out::STATUS_UNSPECIFIED;
+        case Health::Status::kServing:
+            return Out::SERVING;
+        case Health::Status::kNotServing:
+            return Out::NOT_SERVING;
+        case Health::Status::kDraining:
+            return Out::DRAINING;
+        case Health::Status::kUnspecified:
+            return Out::STATUS_UNSPECIFIED;
     }
     return Out::STATUS_UNSPECIFIED;
 }
 
 }  // namespace
 
-grpc::Status ControlServiceSkeleton::Health(
-    grpc::ServerContext* /*ctx*/,
-    const open_switch::control::v1::HealthRequest* /*req*/,
-    open_switch::control::v1::HealthResponse* resp) {
-
+grpc::Status ControlServiceSkeleton::Health(grpc::ServerContext* /*ctx*/,
+                                            const open_switch::control::v1::HealthRequest* /*req*/,
+                                            open_switch::control::v1::HealthResponse* resp) {
     if (!resp || !health_) {
-        return grpc::Status(grpc::StatusCode::INTERNAL,
-                            "health aggregator not initialised");
+        return grpc::Status(grpc::StatusCode::INTERNAL, "health aggregator not initialised");
     }
 
     const auto snap = health_->GetSnapshot();
     resp->set_status(MapStatus(snap.status));
-    resp->set_module_version(module_version_.empty() ? snap.module_version
-                                                     : module_version_);
+    resp->set_module_version(module_version_.empty() ? snap.module_version : module_version_);
     resp->set_freeswitch_version(freeswitch_version_.empty() ? snap.freeswitch_version
                                                              : freeswitch_version_);
     resp->set_active_channels(snap.active_channels);
@@ -66,13 +67,22 @@ grpc::Status ControlServiceSkeleton::Health(
     return grpc::Status::OK;
 }
 
-ControlServiceSkeleton::ControlServiceSkeleton(osw::Health* health) noexcept
-    : health_(health) {}
+ControlServiceSkeleton::ControlServiceSkeleton(osw::Health* health) noexcept : health_(health) {}
 
 void ControlServiceSkeleton::SetVersions(std::string module_version,
                                          std::string freeswitch_version) {
-    module_version_     = std::move(module_version);
+    module_version_ = std::move(module_version);
     freeswitch_version_ = std::move(freeswitch_version);
+}
+
+void ControlServiceSkeleton::SetEventPlane(events::Broadcaster* broadcaster,
+                                           events::RingSet* rings,
+                                           std::uint32_t max_subscribers,
+                                           std::uint32_t subscriber_send_queue_capacity) noexcept {
+    broadcaster_ = broadcaster;
+    rings_ = rings;
+    max_subscribers_ = max_subscribers;
+    subscriber_send_queue_capacity_ = subscriber_send_queue_capacity;
 }
 
 }  // namespace osw::control

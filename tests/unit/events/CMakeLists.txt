@@ -37,3 +37,10 @@ osw_add_unit_test(
     SOURCES broadcaster_test.cc
     LIBS    osw_events osw_observability osw_proto
 )
+
+osw_add_unit_test(
+    NAME    subscribe_replay_test
+    LABEL   "events;unit"
+    SOURCES subscribe_replay_test.cc
+    LIBS    osw_events osw_observability osw_proto
+)

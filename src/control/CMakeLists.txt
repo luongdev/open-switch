@@ -1,14 +1,19 @@
 # src/control/CMakeLists.txt — gRPC control plane skeleton.
 #
-# W1 ships:
+# Two libraries:
+#
 #   osw_control      — FS-agnostic. GrpcServer + ControlServiceSkeleton +
 #                      Health handler (real impl) + UNIMPLEMENTED stubs
 #                      for the rest. Links osw_proto (which carries gRPC
-#                      + protobuf transitively).
+#                      + protobuf transitively). Tests link this directly.
 #
-# osw_control_fs is reserved for W3 control handlers that call FS APIs
-# (switch_ivr_originate, etc.). W1 doesn't need it; we don't create the
-# target so the source-list isn't lying about non-existent files.
+#   osw_control_fs   — FS-dependent control handlers. Currently holds
+#                      the SubscribeEvents handler (it calls
+#                      osw::audit::Emit, which lives in
+#                      osw_observability_fs because it invokes
+#                      switch_event_fire). Linked into the module .so
+#                      only. W3 control handlers (Originate, Hangup, ...)
+#                      will land here too.
 
 add_library(osw_control STATIC
     server.cc
@@ -25,8 +30,31 @@ target_include_directories(osw_control
 )
 target_compile_features(osw_control PUBLIC cxx_std_20)
 target_link_libraries(osw_control PUBLIC
+    osw_events
     osw_observability
     osw_proto
     Threads::Threads
 )
 set_target_properties(osw_control PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# --- osw_control_fs (FS-dependent handlers) ---------------------------
+add_library(osw_control_fs STATIC
+    handlers/subscribe_events_handler.cc
+)
+target_include_directories(osw_control_fs
+    PUBLIC
+        ${CMAKE_SOURCE_DIR}/include
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}                  # for "src/control/..." includes
+        ${OSW_PROTO_GEN_DIR}                 # for "open_switch/.../*.pb.h"
+)
+target_compile_features(osw_control_fs PUBLIC cxx_std_20)
+target_link_libraries(osw_control_fs PUBLIC
+    osw_control
+    osw_events
+    osw_observability
+    osw_observability_fs                     # for osw::audit::Emit
+    osw_proto
+    Threads::Threads
+)
+set_target_properties(osw_control_fs PROPERTIES POSITION_INDEPENDENT_CODE ON)
