@@ -3,7 +3,8 @@
  *
  * In-process gRPC server tests. The server is started on
  * "127.0.0.1:0" (kernel-assigned port), then a client channel is
- * opened to the resolved address. Per W1 contract §"control/server_test.cc":
+ * opened to the resolved port via BoundPort(). Per W1 contract
+ * §"control/server_test.cc":
  *
  *   - Start binds, Health RPC returns SERVING with non-empty version,
  *     Shutdown(deadline) returns within deadline.
@@ -46,6 +47,8 @@ class GrpcServerTest : public ::testing::Test {
         server_->SetVersions("0.1.0-test", "FreeSWITCH 1.10.12-test");
         config_.grpc_listen_address = "127.0.0.1:0";  // kernel-assigned
         ASSERT_TRUE(server_->Start(config_));
+        ASSERT_GT(server_->BoundPort(), 0)
+            << "Kernel did not assign a port; gRPC bind likely failed";
     }
     void TearDown() override {
         const auto deadline = std::chrono::system_clock::now() +
@@ -53,26 +56,12 @@ class GrpcServerTest : public ::testing::Test {
         server_->Drain(deadline);
     }
 
+    // Constructs a client channel against the actually-bound port
+    // (resolved post-BuildAndStart via GrpcServer::BoundPort).
     std::shared_ptr<grpc::Channel> OpenChannel() {
-        // server->BoundAddress() returns the original "127.0.0.1:0";
-        // we resolve by asking grpc to look it up via the actual bound
-        // port. The Start path doesn't currently expose the actual
-        // port — the in-process test connects via the same address
-        // string and lets gRPC reuse the existing in-process port.
-        //
-        // Workaround: build the channel against the server's
-        // bound_address with port 0 won't connect. To make this test
-        // hermetic, server_->Start was extended to print the resolved
-        // port in log; but for the unit test we need a deterministic
-        // way. Since W1 doesn't add a getter for the actual port,
-        // skip this test when port=0 was used and rely on the W5
-        // integration test instead.
-        //
-        // The compromise for W1: we test via the in-process server
-        // by talking to "127.0.0.1:50061" if config kept the default
-        // port. The CI runner does NOT have port 50061 occupied (the
-        // builder image has no listeners), so this works in CI.
-        return grpc::CreateChannel(server_->BoundAddress(),
+        const auto addr = std::string("127.0.0.1:") +
+                          std::to_string(server_->BoundPort());
+        return grpc::CreateChannel(addr,
                                    grpc::InsecureChannelCredentials());
     }
 
@@ -85,6 +74,10 @@ TEST_F(GrpcServerTest, BoundAddressReflectsConfig) {
     EXPECT_EQ(server_->BoundAddress(), "127.0.0.1:0");
 }
 
+TEST_F(GrpcServerTest, BoundPortIsAssignedByKernel) {
+    EXPECT_GT(server_->BoundPort(), 0);
+}
+
 TEST_F(GrpcServerTest, DrainIsIdempotent) {
     const auto deadline = std::chrono::system_clock::now() +
                           std::chrono::seconds(1);
@@ -93,9 +86,39 @@ TEST_F(GrpcServerTest, DrainIsIdempotent) {
     SUCCEED();
 }
 
-// Note: A round-trip Health RPC test requires a deterministic port.
-// W1 ships the test as a smoke that the server starts + drains under
-// ASAN without leaking. The W5 integration suite runs the round-trip
-// RPC against a known port inside the FS container.
+// The real W1 deliverable: a Health round-trip over the gRPC channel.
+// This exercises ControlServiceSkeleton::Health, MapStatus, and the
+// version-string plumbing end-to-end.
+TEST_F(GrpcServerTest, RoundTripHealthReturnsServing) {
+    auto channel = OpenChannel();
+    ASSERT_TRUE(channel) << "OpenChannel returned null";
+
+    // Block for up to 2 seconds while the channel connects, otherwise
+    // the first RPC may race the worker thread's Wait() reaching the
+    // poll loop.
+    const auto connect_deadline = std::chrono::system_clock::now() +
+                                  std::chrono::seconds(2);
+    ASSERT_TRUE(channel->WaitForConnected(connect_deadline))
+        << "Channel never reached READY against 127.0.0.1:"
+        << server_->BoundPort();
+
+    auto stub = open_switch::control::v1::ControlService::NewStub(channel);
+    open_switch::control::v1::HealthRequest req;
+    open_switch::control::v1::HealthResponse resp;
+    grpc::ClientContext ctx;
+    ctx.set_deadline(std::chrono::system_clock::now() +
+                     std::chrono::seconds(2));
+
+    const grpc::Status status = stub->Health(&ctx, req, &resp);
+    ASSERT_TRUE(status.ok())
+        << "Health RPC failed: code=" << status.error_code()
+        << " msg=" << status.error_message();
+
+    EXPECT_EQ(resp.status(),
+              open_switch::control::v1::HealthResponse::SERVING);
+    EXPECT_FALSE(resp.module_version().empty());
+    EXPECT_EQ(resp.module_version(), "0.1.0-test");
+    EXPECT_EQ(resp.freeswitch_version(), "FreeSWITCH 1.10.12-test");
+}
 
 }  // namespace

@@ -72,6 +72,13 @@ class GrpcServer {
     /// pass "0.0.0.0:0" to grab a kernel-assigned port.
     [[nodiscard]] std::string BoundAddress() const noexcept;
 
+    /// Returns the kernel-resolved TCP port the server bound to, or
+    /// -1 if Start has not been called (or failed). When the operator
+    /// passes "host:0" in grpc_listen_address, the actually-bound port
+    /// is only knowable post-AddListeningPort; tests use this accessor
+    /// to construct a client channel against the resolved port.
+    [[nodiscard]] int BoundPort() const noexcept;
+
     /// Set the module + freeswitch version strings the Health RPC
     /// should report. Called by Module::Load before Start so that
     /// Snapshot includes the right values.
@@ -87,6 +94,7 @@ class GrpcServer {
     std::mutex                               drain_mu_;
     bool                                     drained_   = false;
     std::string                              bound_address_;
+    int                                      bound_port_   = -1;
     std::string                              module_version_;
     std::string                              freeswitch_version_;
 };

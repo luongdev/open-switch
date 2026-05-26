@@ -95,6 +95,9 @@ bool GrpcServer::Start(const Config& config) {
     int bound_port = 0;
     builder.AddListeningPort(config.grpc_listen_address, creds_, &bound_port);
     builder.RegisterService(service_.get());
+    // Note: bound_port is filled in by BuildAndStart() (the resolver
+    // runs there, not at AddListeningPort registration). We capture
+    // it into the member after BuildAndStart succeeds.
     if (config.grpc_max_concurrent_streams > 0) {
         builder.SetResourceQuota(grpc::ResourceQuota("osw_quota"));
         builder.AddChannelArgument(
@@ -112,12 +115,13 @@ bool GrpcServer::Start(const Config& config) {
         return false;
     }
     bound_address_ = config.grpc_listen_address;
-    // If operator used port 0, the actual bound port is in bound_port.
+    bound_port_    = bound_port;
+    // If operator used port 0, the actual bound port is in bound_port_.
     // Preserve the original config string but log the resolved port for
     // diagnostics.
     osw::log::Info("control",
                    "gRPC server listening on %s (bound port=%d)",
-                   bound_address_.c_str(), bound_port);
+                   bound_address_.c_str(), bound_port_);
 
     // Worker thread that blocks in Wait(). Drain joins it.
     worker_ = std::thread([this]() {
@@ -157,6 +161,10 @@ void GrpcServer::Drain(std::chrono::system_clock::time_point deadline) {
 
 std::string GrpcServer::BoundAddress() const noexcept {
     return bound_address_;
+}
+
+int GrpcServer::BoundPort() const noexcept {
+    return bound_port_;
 }
 
 }  // namespace osw::control
