@@ -33,19 +33,19 @@ namespace {
 
 // W2-default Tier-1 events. See header comment for rationale.
 constexpr const char* kDefaultTier1Events[] = {
-    "CHANNEL_HANGUP_COMPLETE",
+    "CHANNEL_CREATE",
+    "CHANNEL_PROGRESS",
+    "CHANNEL_ANSWER",
     "CHANNEL_BRIDGE",
     "CHANNEL_UNBRIDGE",
+    "CHANNEL_DESTROY",
+    "CHANNEL_HANGUP_COMPLETE",
     "CDR_REPORT",
     "RECORD_START",
     "RECORD_STOP",
 };
 
 constexpr const char* kDefaultTier2Events[] = {
-    "CHANNEL_CREATE",
-    "CHANNEL_DESTROY",
-    "CHANNEL_ANSWER",
-    "CHANNEL_PROGRESS",
     "CHANNEL_CALLSTATE",
     "CHANNEL_HOLD",
     "CHANNEL_UNHOLD",
