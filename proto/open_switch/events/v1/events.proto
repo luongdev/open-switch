@@ -22,9 +22,9 @@ syntax = "proto3";
 
 package open_switch.events.v1;
 
-option cc_enable_arenas = true;
-
 import "google/protobuf/timestamp.proto";
+
+option cc_enable_arenas = true;
 
 // ─── Envelope (the unit of transport) ────────────────────────────────
 
@@ -78,9 +78,9 @@ message EventEnvelope {
 
 enum Tier {
   TIER_UNSPECIFIED = 0;
-  TIER_1_CRITICAL = 1;   // must persist; billing/CDR-grade
-  TIER_2_STATE    = 2;   // important; eventually-consistent OK
-  TIER_3_EPHEMERAL = 3;  // best-effort; drop on consumer slowness
+  TIER_1_CRITICAL = 1; // must persist; billing/CDR-grade
+  TIER_2_STATE = 2; // important; eventually-consistent OK
+  TIER_3_EPHEMERAL = 3; // best-effort; drop on consumer slowness
 }
 
 // ─── Common helpers consumers can downcast from headers ──────────────
@@ -115,6 +115,6 @@ message DtmfHeaders {
 
 message CdrHeaders {
   // Full CDR JSON / XML body delivered in EventEnvelope.body.
-  string cdr_format = 1;  // "json" or "xml"
+  string cdr_format = 1; // "json" or "xml"
   google.protobuf.Timestamp completed_at = 2;
 }
