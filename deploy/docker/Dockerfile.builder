@@ -71,6 +71,7 @@ COPY include/ ./include/
 COPY tests/ ./tests/
 
 ARG OSW_ENABLE_ASAN=OFF
+ARG OSW_ENABLE_TSAN=OFF
 ARG OSW_STRICT_WARNINGS=ON
 ARG OSW_BUILD_TESTS=OFF
 ARG BUILD_TYPE=Release
@@ -78,6 +79,7 @@ ARG BUILD_TYPE=Release
 RUN mkdir build && cd build && \
     cmake -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
           -DOSW_ENABLE_ASAN=${OSW_ENABLE_ASAN} \
+          -DOSW_ENABLE_TSAN=${OSW_ENABLE_TSAN} \
           -DOSW_STRICT_WARNINGS=${OSW_STRICT_WARNINGS} \
           -DOSW_BUILD_TESTS=${OSW_BUILD_TESTS} \
           -DOSW_FREESWITCH_INCLUDE_DIR=/usr/local/include/freeswitch \

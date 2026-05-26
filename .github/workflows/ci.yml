@@ -117,6 +117,48 @@ jobs:
             bash -c "nm -D --defined-only /dist/mod/mod_open_switch.so \
                        | grep ' mod_open_switch_module_interface$'"
 
+  tsan-race-check:
+    name: TSAN race check (events)
+    runs-on: ubuntu-24.04
+    # Mutually exclusive with ASAN per the root CMakeLists guard. We
+    # build a separate image with OSW_ENABLE_TSAN=ON and run the
+    # race-prone unit tests (per-tier ring, broadcaster, replay).
+    #
+    # Gating policy (W2 closeout): TSAN runs in fail-soft mode for the
+    # initial W2 land. Once the suite has shaken out on real CI runs
+    # for at least one wave we flip continue-on-error to false and
+    # gate strictly. The Ring + Broadcaster code was designed with
+    # explicit lock-order discipline (tier ring mu → roster mu →
+    # SendQueue mu) so the expectation is that TSAN passes cleanly.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build builder image (TSAN ON)
+        run: |
+          docker buildx build \
+            --build-arg OSW_ENABLE_ASAN=OFF \
+            --build-arg OSW_ENABLE_TSAN=ON \
+            --build-arg OSW_BUILD_TESTS=ON \
+            --build-arg BUILD_TYPE=Debug \
+            --build-arg UPSTREAM_TAG=v1.10.12 \
+            --target fs-builder \
+            -f deploy/docker/Dockerfile.builder \
+            --load \
+            -t open-switch/builder:tsan-${{ github.sha }} \
+            .
+
+      - name: Run race-sensitive unit tests under TSAN
+        run: |
+          docker run --rm \
+            -e TSAN_OPTIONS=halt_on_error=1:report_signal_unsafe=0 \
+            open-switch/builder:tsan-${{ github.sha }} \
+            ctest --test-dir /usr/src/open-switch/build --output-on-failure \
+                  -R 'ring_test|broadcaster_test|subscribe_replay_test'
+
   static-analysis:
     name: clang-format + clang-tidy
     runs-on: ubuntu-24.04
