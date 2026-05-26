@@ -143,7 +143,11 @@ add_subdirectory(src)
 # ─── Tests ────────────────────────────────────────────────────────────
 if(OSW_BUILD_TESTS)
     enable_testing()
-    # add_subdirectory(tests)
+    # tests/CMakeLists.txt fetches GoogleTest via FetchContent and
+    # registers the RAII / unit / integration test categories with
+    # CTest. CI runs `ctest -L unit` and `ctest -L integration` under
+    # ASAN; see .github/workflows/ci.yml.
+    add_subdirectory(tests)
 endif()
 
 # ─── Summary ──────────────────────────────────────────────────────────
