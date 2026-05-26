@@ -72,8 +72,11 @@ struct SubscriberFilter {
     /// Tiers the subscriber wants. Empty = all tiers.
     std::unordered_set<Tier> tiers;
 
-    /// Event-name globs. Empty = match all event names. Match is
-    /// prefix-only ("foo*" matches "foobar"; literal otherwise).
+    /// Event-name globs. Empty = match all event names. V1 supports
+    /// prefix-wildcard only (Codex W2.5 C-2): a trailing `*` matches
+    /// any suffix (`foo*` → `foobar`); any other input is an exact
+    /// match (`foo` → `foo` only). Generic glob (`*` anywhere, `?`,
+    /// `[abc]`) is NOT supported.
     std::vector<std::string> event_name_globs;
 
     /// Node filter. Empty = any node. When non-empty, the envelope's

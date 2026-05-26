@@ -633,7 +633,15 @@ message SubscribeEventsRequest {
 - If the subscriber's offset falls behind the ring tail (drop
   detected), the stream is closed with `RESOURCE_EXHAUSTED`.
 - Filtering by `tiers` (e.g., `["TIER_1_CRITICAL"]`) and `event_names`
-  (glob patterns) is applied before send.
+  is applied before send. The `event_names` matcher is **prefix-
+  wildcard only** in V1 (Codex W2.5 C-2): a trailing `*` matches any
+  suffix (e.g. `CHANNEL_*` matches `CHANNEL_HANGUP_COMPLETE`); any
+  other input is an exact-string match. Generic glob syntax
+  (`*` anywhere, `?`, `[abc]` character classes) is NOT supported in
+  V1 — operators that need richer matching should subscribe to all
+  events for the tier and filter client-side. The same filter is
+  applied to both the replay window and the live tail (Codex W2.5
+  C-1).
 
 **Durability beyond the replay window is the subscriber's
 responsibility.** For Tier-1 (billing-grade) no-loss requirements,

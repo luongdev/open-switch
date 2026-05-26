@@ -299,7 +299,12 @@ message SubscribeEventsRequest {
   RequestHeader header = 1;
   // Filter by tier (e.g. "TIER_1_CRITICAL"). Empty = all tiers.
   repeated string tiers = 2;
-  // Filter by event name pattern (glob). Empty = all events.
+  // Filter by event name pattern. V1 supports PREFIX-WILDCARD only:
+  // a trailing `*` matches any suffix (e.g. `CHANNEL_*` matches
+  // `CHANNEL_HANGUP_COMPLETE`); anything else is an exact match.
+  // Generic glob syntax (`*` anywhere, `?`, `[abc]` character classes)
+  // is NOT supported in V1 — see the W2.5 review (Codex C-2) and
+  // `specs/control-api/spec.md` §SubscribeEvents. Empty = all events.
   repeated string event_names = 3;
   // Replay from this sequence (exclusive). The module replays from
   // since_seq+1 to ring tail if still in the replay ring, then
