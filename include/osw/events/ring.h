@@ -162,6 +162,16 @@ class Ring {
     std::condition_variable cv_;
     std::deque<RingEntry> q_;  // guarded by mu_
     std::atomic<bool> closed_{false};
+
+    // Codex W2 I-6: highest seq ever pushed into the ring (across the
+    // ring's lifetime, NOT just what's currently resident). Used by
+    // SnapshotFromSeq to distinguish:
+    //   - fresh ring (max_seq_ever_pushed_ == 0)
+    //   - ring whose contents were evicted (since_seq < max_seq_ever
+    //     but q_ is empty)
+    // Both cases land at q_.empty() but only the latter should be
+    // reported as "since_seq evicted". Updated under mu_ inside Push().
+    std::uint64_t max_seq_ever_pushed_ = 0;
 };
 
 }  // namespace osw::events

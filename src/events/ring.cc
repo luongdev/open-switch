@@ -30,6 +30,12 @@ bool Ring::Push(RingEntry entry, std::uint64_t* dropped_out) noexcept {
             q_.pop_front();
             evicted = true;
         }
+        // Track the highest seq we have EVER seen so SnapshotFromSeq
+        // can distinguish "fresh ring" from "ring whose contents were
+        // evicted" (Codex W2 I-6). Monotonic-non-decreasing under mu_.
+        if (entry.seq > max_seq_ever_pushed_) {
+            max_seq_ever_pushed_ = entry.seq;
+        }
         q_.push_back(std::move(entry));
     }
     if (evicted && dropped_out) {
@@ -84,13 +90,28 @@ Ring::ReplaySnapshot Ring::SnapshotFromSeq(std::uint64_t since_seq) const noexce
     std::lock_guard<std::mutex> lk(mu_);
 
     if (q_.empty()) {
-        // Live-tail. since_seq is meaningless against an empty ring; we
-        // can't tell if since_seq has been evicted or simply never existed.
-        // The convention: an empty ring is always "in window" — the
-        // subscriber attaches at HEAD and the next produced event is
-        // delivered live. This matches the contract: "since_seq == 0:
-        // live tail only" and degrades safely for empty rings at startup.
-        snap.found_in_window = true;
+        // Empty ring — distinguish two cases (Codex W2 I-6):
+        //   (a) fresh ring (no Push ever happened):
+        //         max_seq_ever_pushed_ == 0. since_seq is meaningless
+        //         against an empty fresh ring; we attach at HEAD and
+        //         the next produced event is delivered live. Report
+        //         found_in_window=true.
+        //   (b) drained ring (Push happened, all entries since
+        //         evicted): max_seq_ever_pushed_ > 0. If the client
+        //         asked to resume at a seq below max_seq_ever_pushed_,
+        //         their resume point was definitely evicted (any
+        //         entry whose seq we ever observed has since been
+        //         removed). Report found_in_window=false so the
+        //         handler returns RESOURCE_EXHAUSTED.
+        //
+        // Edge case: since_seq >= max_seq_ever_pushed_ on a drained
+        // ring still means "caught up; just live-tail" — in window.
+        if (max_seq_ever_pushed_ == 0 || since_seq >= max_seq_ever_pushed_) {
+            snap.found_in_window = true;
+        } else {
+            snap.found_in_window = false;
+            snap.current_max_seq = max_seq_ever_pushed_;
+        }
         return snap;
     }
 

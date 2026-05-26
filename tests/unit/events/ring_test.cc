@@ -202,6 +202,56 @@ TEST_F(RingTest, SnapshotBoundaryAtMinSeq) {
     EXPECT_EQ(snap.entries[0].seq, 5u);
 }
 
+TEST_F(RingTest, EmptyFreshRingIsInWindow) {
+    // Codex W2 I-6: a ring that has never been pushed into reports
+    // found_in_window=true so a fresh subscriber attaches at HEAD and
+    // future events arrive via live tail.
+    Ring r(4);
+    auto snap = r.SnapshotFromSeq(0);
+    EXPECT_TRUE(snap.found_in_window);
+    EXPECT_TRUE(snap.entries.empty());
+    EXPECT_EQ(snap.current_max_seq, 0u);
+
+    // Non-zero since_seq on a fresh ring also reports in-window — the
+    // client says "I've seen up to N; nothing past it exists yet".
+    auto snap2 = r.SnapshotFromSeq(100);
+    EXPECT_TRUE(snap2.found_in_window);
+    EXPECT_TRUE(snap2.entries.empty());
+}
+
+TEST_F(RingTest, EmptyDrainedRingReportsEvicted) {
+    // Codex W2 I-6: a ring that had entries up to seq=N but was then
+    // fully drained (e.g. broadcaster popped everything, or a quiet
+    // tier on a slow-event-rate system) should NOT silently report
+    // found_in_window=true for since_seq < N — the subscriber's
+    // resume point was evicted; they need to know.
+    Ring r(4);
+    std::uint64_t dropped = 0;
+    r.Push(Entry(10), &dropped);
+    r.Push(Entry(11), &dropped);
+    r.Push(Entry(12), &dropped);
+
+    // Drain via TryPop.
+    while (r.TryPop().has_value()) {
+    }
+    EXPECT_EQ(r.Size(), 0u);
+
+    // since_seq=5 is BELOW the highest seq ever observed (12) — the
+    // resume point at 5+1=6 was evicted/never-in-window.
+    auto snap = r.SnapshotFromSeq(5);
+    EXPECT_FALSE(snap.found_in_window);
+    EXPECT_EQ(snap.current_max_seq, 12u);
+
+    // since_seq=12 (== highest observed) means "caught up; live-tail".
+    auto snap2 = r.SnapshotFromSeq(12);
+    EXPECT_TRUE(snap2.found_in_window);
+    EXPECT_TRUE(snap2.entries.empty());
+
+    // since_seq above max_seq_ever_pushed_ — also live-tail.
+    auto snap3 = r.SnapshotFromSeq(99);
+    EXPECT_TRUE(snap3.found_in_window);
+}
+
 TEST_F(RingTest, EightProducersAllSeqsPresentNoDuplicates) {
     constexpr int kProducers = 8;
     constexpr int kPerProducer = 256;

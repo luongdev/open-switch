@@ -96,13 +96,13 @@ TEST(SubscribeReplayTest, SinceSeqZeroReturnsEmptyWindow) {
     }
     auto snap = ring.SnapshotFromSeq(0);
     EXPECT_TRUE(snap.found_in_window);
-    // since_seq=0 (exclusive) returns entries with seq > 0 — i.e. all.
-    // The handler still treats this as "live-tail only" because the
-    // SubscribeEvents proto contract states since_seq=0 means "no
-    // replay". The Ring is correct; the handler short-circuits when
-    // since_seq == 0 in subscribe_events_handler.cc (ReplaySinceSeq is
-    // only called if since_seq > 0).
-    EXPECT_EQ(snap.entries.size(), 5u);
+    // since_seq=0 means "live-tail only" per the proto. Ring::
+    // SnapshotFromSeq special-cases since_seq=0 to return an empty
+    // entries slice (the handler also short-circuits before calling
+    // ReplaySinceSeq when since_seq=0). Mirrors ring_test.cc's
+    // SnapshotSinceZeroIsLiveTail.
+    EXPECT_TRUE(snap.entries.empty());
+    EXPECT_EQ(snap.current_max_seq, 5u);
 }
 
 TEST(SubscribeReplayTest, SinceSeqInWindowReturnsTailSlice) {
