@@ -38,18 +38,16 @@ namespace osw {
 /// Cited FACTs:
 /// - FF-016 — switch_core_session_locate read-lock contract.
 class SessionLock {
- public:
+  public:
     /// Constructs by locating `uuid`. If `uuid` is null or the UUID
     /// is unknown / tearing down, the resulting guard is empty.
     explicit SessionLock(const char* uuid) noexcept
         : session_(::osw::raii::fs::SessionLocate(uuid)) {}
 
     /// Releases the lock iff held. Non-throwing.
-    ~SessionLock() noexcept {
-        ::osw::raii::fs::SessionRwunlock(session_);
-    }
+    ~SessionLock() noexcept { ::osw::raii::fs::SessionRwunlock(session_); }
 
-    SessionLock(const SessionLock&)            = delete;
+    SessionLock(const SessionLock&) = delete;
     SessionLock& operator=(const SessionLock&) = delete;
 
     /// Transfers ownership of the held lock. The source becomes empty.
@@ -60,7 +58,7 @@ class SessionLock {
     SessionLock& operator=(SessionLock&& other) noexcept {
         if (this != &other) {
             ::osw::raii::fs::SessionRwunlock(session_);
-            session_       = other.session_;
+            session_ = other.session_;
             other.session_ = nullptr;
         }
         return *this;
@@ -87,7 +85,7 @@ class SessionLock {
         }
     }
 
- private:
+  private:
     switch_core_session_t* session_;
 };
 

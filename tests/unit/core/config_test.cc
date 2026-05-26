@@ -24,7 +24,9 @@
 
 namespace {
 
-osw::Config Defaults() { return osw::Config{}; }
+osw::Config Defaults() {
+    return osw::Config{};
+}
 
 TEST(ConfigValidateTest, HappyPathDefaultsAreValid) {
     const auto v = osw::Validate(Defaults());
@@ -68,7 +70,7 @@ TEST(ConfigValidateTest, RejectsTLSCAWithoutCert) {
 TEST(ConfigValidateTest, AcceptsTLSCertPlusKey) {
     auto c = Defaults();
     c.grpc_tls_cert_path = "/etc/ssl/cert.pem";
-    c.grpc_tls_key_path  = "/etc/ssl/key.pem";
+    c.grpc_tls_key_path = "/etc/ssl/key.pem";
     const auto v = osw::Validate(c);
     EXPECT_TRUE(v.ok);
 }

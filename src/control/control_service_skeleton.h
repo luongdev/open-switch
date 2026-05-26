@@ -18,7 +18,6 @@
 #define OSW_CONTROL_CONTROL_SERVICE_SKELETON_H_
 
 #include <atomic>
-#include <cstdint>
 #include <string>
 
 #include <grpcpp/grpcpp.h>
@@ -28,55 +27,16 @@
 namespace osw {
 class Health;
 
-namespace events {
-class Broadcaster;
-class RingSet;
-}  // namespace events
-
 namespace control {
 
 class ControlServiceSkeleton final : public open_switch::control::v1::ControlService::Service {
   public:
     /// `health` is the module-wide Health aggregator. Non-owning.
-    /// Use fully qualified ::osw::Health to disambiguate from the
-    /// inherited `Health` RPC method declared by the generated
-    /// ControlService::Service base class.
-    explicit ControlServiceSkeleton(::osw::Health* health) noexcept;
+    explicit ControlServiceSkeleton(Health* health) noexcept;
 
     /// Set version strings reported by Health RPC. Called by GrpcServer
     /// before the server starts serving.
     void SetVersions(std::string module_version, std::string freeswitch_version);
-
-    /// Inject the W2 event-plane bridges. Called by Module::Load after
-    /// Broadcaster + RingSet are constructed (and before Start()-ing the
-    /// gRPC server, so the SubscribeEvents handler always sees a valid
-    /// broadcaster pointer when the first RPC arrives).
-    ///
-    /// Pre-W2 builds (and tests that don't exercise SubscribeEvents)
-    /// leave these as nullptr; SubscribeEvents then returns UNIMPLEMENTED
-    /// rather than crashing.
-    ///
-    /// Both pointers are non-owning. The Module singleton outlives the
-    /// gRPC server's RPC threads (Drain joins them before tearing down
-    /// Module-owned subsystems).
-    void SetEventPlane(events::Broadcaster* broadcaster,
-                       events::RingSet* rings,
-                       std::uint32_t max_subscribers,
-                       std::uint32_t subscriber_send_queue_capacity) noexcept;
-
-    /// Per-subscriber default send-queue capacity (set via SetEventPlane).
-    [[nodiscard]] std::uint32_t SubscriberSendQueueCapacity() const noexcept {
-        return subscriber_send_queue_capacity_.load(std::memory_order_acquire);
-    }
-    [[nodiscard]] std::uint32_t MaxSubscribers() const noexcept {
-        return max_subscribers_.load(std::memory_order_acquire);
-    }
-    [[nodiscard]] events::Broadcaster* Broadcaster() const noexcept {
-        return broadcaster_.load(std::memory_order_acquire);
-    }
-    [[nodiscard]] events::RingSet* RingSet() const noexcept {
-        return rings_.load(std::memory_order_acquire);
-    }
 
     // --- Health (real impl) ----------------------------------------
     grpc::Status Health(grpc::ServerContext* ctx,
@@ -129,21 +89,6 @@ class ControlServiceSkeleton final : public open_switch::control::v1::ControlSer
     osw::Health* health_;
     std::string module_version_;
     std::string freeswitch_version_;
-    // W2 event-plane bridges. nullptr in W1-only builds + tests.
-    //
-    // Codex W2 review C-3: these are written by `SetEventPlane`
-    // (Module::Load step 7) and read by every SubscribeEvents RPC
-    // handler. The grpc server starts accepting RPCs in step 6, so
-    // any RPC that wins the step-6→step-7 race reads the default-
-    // initialised value while another thread writes the bridge in.
-    // Plain pointer reads/writes are NOT atomic per the C++ memory
-    // model — TSAN strict mode will flag this. Use `std::atomic`
-    // with acquire/release so the write happens-before the read on
-    // any architecture.
-    std::atomic<events::Broadcaster*> broadcaster_{nullptr};
-    std::atomic<events::RingSet*> rings_{nullptr};
-    std::atomic<std::uint32_t> max_subscribers_{0};
-    std::atomic<std::uint32_t> subscriber_send_queue_capacity_{4096};
 };
 
 }  // namespace control

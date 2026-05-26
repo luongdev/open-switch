@@ -33,14 +33,11 @@
 // <switch.h> for the actual definitions. Module's header consumers
 // (other osw::* internals that just need to call Instance().something)
 // can include this without <switch.h>.
-//
-// IMPORTANT: the typedef names below must match <switch_types.h> exactly
-// (`typedef struct fspr_pool_t switch_memory_pool_t;`). The earlier
-// version used `apr_pool_t`, which compiled in isolation but conflicted
-// when a TU pulled in both this header and <switch.h>.
 extern "C" {
-typedef struct fspr_pool_t switch_memory_pool_t;
-typedef struct switch_loadable_module_interface switch_loadable_module_interface_t;
+struct apr_pool_t;
+using switch_memory_pool_t = apr_pool_t;
+struct switch_loadable_module_interface;
+using switch_loadable_module_interface_t = switch_loadable_module_interface;
 }
 
 namespace osw {
@@ -48,13 +45,6 @@ namespace osw {
 namespace control {
 class GrpcServer;  // forward; defined in osw/control/server.h
 }
-
-namespace events {
-class Binder;          // forward; defined in osw/events/binder.h
-class Broadcaster;     // forward; defined in osw/events/subscribe/broadcaster.h
-class RingSet;         // forward; defined in osw/events/binder.h
-class TierClassifier;  // forward; defined in osw/events/tier.h
-}  // namespace events
 
 class Module {
   public:
@@ -96,18 +86,6 @@ class Module {
     Health health_;
     Lifecycle lifecycle_;
     std::unique_ptr<control::GrpcServer> grpc_server_;
-
-    // W2 event-plane subsystems. Construction order in Module::Load:
-    //   1. classifier_  (FS-agnostic; built from tier rules)
-    //   2. rings_       (per-tier MPSC FIFO rings)
-    //   3. binder_      (switch_event_bind shim; Init() registers with FS)
-    //   4. broadcaster_ (3 worker threads draining rings into subscribers)
-    // Destruction order is the reverse: broadcaster.Stop() → binder.Stop()
-    // → rings.~RingSet → classifier.~TierClassifier. See Module::Shutdown.
-    std::unique_ptr<events::TierClassifier> classifier_;
-    std::unique_ptr<events::RingSet> rings_;
-    std::unique_ptr<events::Binder> binder_;
-    std::unique_ptr<events::Broadcaster> broadcaster_;
 };
 
 }  // namespace osw

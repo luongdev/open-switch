@@ -28,7 +28,7 @@ switch_event_t* const kEventA = reinterpret_cast<switch_event_t*>(0x30A);
 switch_event_t* const kEventB = reinterpret_cast<switch_event_t*>(0x30B);
 
 class EventGuardTest : public ::testing::Test {
- protected:
+  protected:
     void SetUp() override { osw::raii::fs::MockReset(); }
 };
 
@@ -104,7 +104,7 @@ TEST_F(EventGuardTest, MoveConstructionTransfersOwnership) {
     m.next_event = kEventA;
     osw::EventGuard a;
     osw::EventGuard b(std::move(a));
-    EXPECT_FALSE(static_cast<bool>(a));   // NOLINT(*-use-after-move)
+    EXPECT_FALSE(static_cast<bool>(a));  // NOLINT(*-use-after-move)
     EXPECT_TRUE(static_cast<bool>(b));
     EXPECT_EQ(b.get(), kEventA);
     EXPECT_EQ(m.event_destroy_calls.load(), 0);  // nothing destroyed yet
@@ -125,7 +125,7 @@ TEST_F(EventGuardTest, MoveAssignmentDestroysDestinationsPrior) {
     b = std::move(a);  // destroys B's prior event, takes A's
     EXPECT_EQ(m.event_destroy_calls.load(), 1);
 
-    EXPECT_FALSE(static_cast<bool>(a));   // NOLINT(*-use-after-move)
+    EXPECT_FALSE(static_cast<bool>(a));  // NOLINT(*-use-after-move)
     EXPECT_TRUE(static_cast<bool>(b));
     EXPECT_EQ(b.get(), kEventA);
 }

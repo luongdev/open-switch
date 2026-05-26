@@ -26,8 +26,7 @@
 
 namespace {
 
-switch_core_session_t* const kSession =
-    reinterpret_cast<switch_core_session_t*>(0x40A);
+switch_core_session_t* const kSession = reinterpret_cast<switch_core_session_t*>(0x40A);
 switch_media_bug_t* const kBugA = reinterpret_cast<switch_media_bug_t*>(0x50A);
 switch_media_bug_t* const kBugB = reinterpret_cast<switch_media_bug_t*>(0x50B);
 
@@ -38,7 +37,7 @@ switch_bool_t TestCallback(switch_media_bug_t*, void*, switch_abc_type_t) {
 }
 
 class MediaBugLeaseTest : public ::testing::Test {
- protected:
+  protected:
     void SetUp() override { osw::raii::fs::MockReset(); }
 };
 
@@ -46,8 +45,7 @@ TEST_F(MediaBugLeaseTest, SuccessfulAddStoresBugAndRemovesOnDestruction) {
     auto& m = osw::raii::fs::Mock();
     m.next_bug = kBugA;
     {
-        osw::MediaBugLease lease(kSession, "name", "fn", &TestCallback,
-                                 nullptr, 0, 0);
+        osw::MediaBugLease lease(kSession, "name", "fn", &TestCallback, nullptr, 0, 0);
         EXPECT_TRUE(static_cast<bool>(lease));
         EXPECT_EQ(lease.get(), kBugA);
         EXPECT_EQ(m.media_bug_add_calls.load(), 1);
@@ -60,8 +58,7 @@ TEST_F(MediaBugLeaseTest, FailedAddLeavesLeaseEmpty) {
     auto& m = osw::raii::fs::Mock();
     m.next_bug_add_status = SWITCH_STATUS_GENERR;
     {
-        osw::MediaBugLease lease(kSession, "name", "fn", &TestCallback,
-                                 nullptr, 0, 0);
+        osw::MediaBugLease lease(kSession, "name", "fn", &TestCallback, nullptr, 0, 0);
         EXPECT_FALSE(static_cast<bool>(lease));
         EXPECT_EQ(lease.get(), nullptr);
         EXPECT_EQ(m.media_bug_add_calls.load(), 1);
@@ -72,8 +69,7 @@ TEST_F(MediaBugLeaseTest, FailedAddLeavesLeaseEmpty) {
 TEST_F(MediaBugLeaseTest, NullSessionSkipsAddCall) {
     auto& m = osw::raii::fs::Mock();
     {
-        osw::MediaBugLease lease(nullptr, "name", "fn", &TestCallback,
-                                 nullptr, 0, 0);
+        osw::MediaBugLease lease(nullptr, "name", "fn", &TestCallback, nullptr, 0, 0);
         EXPECT_FALSE(static_cast<bool>(lease));
     }
     EXPECT_EQ(m.media_bug_add_calls.load(), 0);
@@ -83,8 +79,7 @@ TEST_F(MediaBugLeaseTest, NullSessionSkipsAddCall) {
 TEST_F(MediaBugLeaseTest, ExplicitRemoveIsEagerAndIdempotent) {
     auto& m = osw::raii::fs::Mock();
     m.next_bug = kBugA;
-    osw::MediaBugLease lease(kSession, "name", "fn", &TestCallback,
-                             nullptr, 0, 0);
+    osw::MediaBugLease lease(kSession, "name", "fn", &TestCallback, nullptr, 0, 0);
     EXPECT_TRUE(static_cast<bool>(lease));
     lease.remove();
     EXPECT_FALSE(static_cast<bool>(lease));
@@ -99,7 +94,7 @@ TEST_F(MediaBugLeaseTest, MoveConstructionTransfersOwnership) {
     m.next_bug = kBugA;
     osw::MediaBugLease a(kSession, "n", "fn", &TestCallback, nullptr, 0, 0);
     osw::MediaBugLease b(std::move(a));
-    EXPECT_FALSE(static_cast<bool>(a));   // NOLINT(*-use-after-move)
+    EXPECT_FALSE(static_cast<bool>(a));  // NOLINT(*-use-after-move)
     EXPECT_TRUE(static_cast<bool>(b));
     EXPECT_EQ(b.get(), kBugA);
     EXPECT_EQ(m.media_bug_remove_calls.load(), 0);
@@ -117,7 +112,7 @@ TEST_F(MediaBugLeaseTest, MoveAssignmentRemovesDestinationsPrior) {
     EXPECT_EQ(m.media_bug_remove_calls.load(), 0);
     b = std::move(a);
     EXPECT_EQ(m.media_bug_remove_calls.load(), 1);
-    EXPECT_FALSE(static_cast<bool>(a));   // NOLINT(*-use-after-move)
+    EXPECT_FALSE(static_cast<bool>(a));  // NOLINT(*-use-after-move)
     EXPECT_TRUE(static_cast<bool>(b));
     EXPECT_EQ(b.get(), kBugA);
     // b's destructor here -> 1 more remove (total 2).

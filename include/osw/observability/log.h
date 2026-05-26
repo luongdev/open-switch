@@ -53,11 +53,11 @@ namespace osw::log {
 /// Log severity. Matches FreeSWITCH log levels by intent; the underlying
 /// mapping to switch_log_level_t is in log.cc.
 enum class Level : int {
-    kTrace    = 0,
-    kDebug    = 1,
-    kInfo     = 2,
-    kWarn     = 3,
-    kError    = 4,
+    kTrace = 0,
+    kDebug = 1,
+    kInfo = 2,
+    kWarn = 3,
+    kError = 4,
     kCritical = 5,
 };
 
@@ -111,15 +111,15 @@ std::string_view CurrentTraceparent() noexcept;
 /// the duration of its scope. Pushes/pops in stack order; nested
 /// scopes are supported.
 class TraceScope {
- public:
+  public:
     explicit TraceScope(std::string traceparent);
     ~TraceScope() noexcept;
-    TraceScope(const TraceScope&)            = delete;
+    TraceScope(const TraceScope&) = delete;
     TraceScope& operator=(const TraceScope&) = delete;
-    TraceScope(TraceScope&&)                 = delete;
-    TraceScope& operator=(TraceScope&&)      = delete;
+    TraceScope(TraceScope&&) = delete;
+    TraceScope& operator=(TraceScope&&) = delete;
 
- private:
+  private:
     std::string previous_;
 };
 
@@ -134,31 +134,28 @@ class TraceScope {
 // Bare user data MUST go through "%s" — these are printf-style and
 // take any format string.
 
-void Logv(Level level, std::string_view subsystem,
-          const char* fmt, std::va_list ap) noexcept;
+void Logv(Level level, std::string_view subsystem, const char* fmt, std::va_list ap) noexcept;
 
-void Logf(Level level, std::string_view subsystem,
-          const char* fmt, ...) noexcept
+void Logf(Level level, std::string_view subsystem, const char* fmt, ...) noexcept
     __attribute__((format(printf, 3, 4)));
 
 // Convenience wrappers — fixed level.
 
-#define OSW_LOG_DEFINE_LEVEL_FN(name, level_enum)                              \
-    inline void name(std::string_view subsystem, const char* fmt, ...)         \
-        noexcept __attribute__((format(printf, 2, 3)));                        \
-    inline void name(std::string_view subsystem, const char* fmt, ...)         \
-        noexcept {                                                             \
-        std::va_list ap;                                                       \
-        va_start(ap, fmt);                                                     \
-        Logv(level_enum, subsystem, fmt, ap);                                  \
-        va_end(ap);                                                            \
+#define OSW_LOG_DEFINE_LEVEL_FN(name, level_enum)                                 \
+    inline void name(std::string_view subsystem, const char* fmt, ...) noexcept   \
+        __attribute__((format(printf, 2, 3)));                                    \
+    inline void name(std::string_view subsystem, const char* fmt, ...) noexcept { \
+        std::va_list ap;                                                          \
+        va_start(ap, fmt);                                                        \
+        Logv(level_enum, subsystem, fmt, ap);                                     \
+        va_end(ap);                                                               \
     }
 
-OSW_LOG_DEFINE_LEVEL_FN(Trace,    Level::kTrace)
-OSW_LOG_DEFINE_LEVEL_FN(Debug,    Level::kDebug)
-OSW_LOG_DEFINE_LEVEL_FN(Info,     Level::kInfo)
-OSW_LOG_DEFINE_LEVEL_FN(Warn,     Level::kWarn)
-OSW_LOG_DEFINE_LEVEL_FN(Error,    Level::kError)
+OSW_LOG_DEFINE_LEVEL_FN(Trace, Level::kTrace)
+OSW_LOG_DEFINE_LEVEL_FN(Debug, Level::kDebug)
+OSW_LOG_DEFINE_LEVEL_FN(Info, Level::kInfo)
+OSW_LOG_DEFINE_LEVEL_FN(Warn, Level::kWarn)
+OSW_LOG_DEFINE_LEVEL_FN(Error, Level::kError)
 OSW_LOG_DEFINE_LEVEL_FN(Critical, Level::kCritical)
 
 #undef OSW_LOG_DEFINE_LEVEL_FN

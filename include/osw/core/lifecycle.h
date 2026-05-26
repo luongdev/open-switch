@@ -27,12 +27,12 @@ namespace osw {
 class Health;  // forward decl; lifecycle.cc includes the header
 
 class Lifecycle {
- public:
+  public:
     enum class State : int {
-        kLoaded   = 0,  // construction complete, gRPC not yet started
-        kServing  = 1,  // gRPC bound and accepting RPCs
+        kLoaded = 0,    // construction complete, gRPC not yet started
+        kServing = 1,   // gRPC bound and accepting RPCs
         kDraining = 2,  // SIGTERM observed; rejecting new RPCs
-        kStopped  = 3,  // shutdown returned
+        kStopped = 3,   // shutdown returned
     };
 
     /// `health` is the module-wide Health aggregator. The Lifecycle
@@ -40,9 +40,7 @@ class Lifecycle {
     /// singleton.
     explicit Lifecycle(Health* health) noexcept : health_(health) {}
 
-    [[nodiscard]] State GetState() const noexcept {
-        return state_.load(std::memory_order_acquire);
-    }
+    [[nodiscard]] State GetState() const noexcept { return state_.load(std::memory_order_acquire); }
 
     /// Move to kServing. Idempotent.
     void TransitionToServing() noexcept;
@@ -56,9 +54,9 @@ class Lifecycle {
     /// all subsystems have torn down. Idempotent.
     void MarkStopped() noexcept;
 
- private:
+  private:
     std::atomic<State> state_{State::kLoaded};
-    Health*            health_;
+    Health* health_;
 };
 
 }  // namespace osw

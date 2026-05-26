@@ -23,25 +23,25 @@
 
 #include "osw/observability/log.h"
 
-#include <gtest/gtest.h>
-
 #include <mutex>
 #include <regex>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include <gtest/gtest.h>
+
 namespace {
 
 struct LogRecord {
     osw::log::Level level{osw::log::Level::kInfo};
-    std::string     subsystem;
-    std::string     traceparent;
-    std::string     message;
+    std::string subsystem;
+    std::string traceparent;
+    std::string message;
 };
 
 class TestSink {
- public:
+  public:
     static std::vector<LogRecord>& Records() {
         static std::vector<LogRecord> records;
         return records;
@@ -69,7 +69,7 @@ class TestSink {
 };
 
 class LogTest : public ::testing::Test {
- protected:
+  protected:
     void SetUp() override {
         prev_sink_ = osw::log::SetSinkForTesting(&TestSink::Sink);
         osw::log::SetRedactionPatterns({});
@@ -137,8 +137,7 @@ TEST_F(LogTest, E164PatternRedactsPhoneNumber) {
     // E.164: optional '+', up to 15 digits.
     osw::log::SetRedactionPatterns({std::regex(R"(\+\d{8,15})")});
     EXPECT_EQ(osw::log::RedactionPatternCountForTesting(), 1u);
-    EXPECT_EQ(osw::log::ApplyRedactionForTesting("dst=+84905555555 ok"),
-              "dst=[REDACTED] ok");
+    EXPECT_EQ(osw::log::ApplyRedactionForTesting("dst=+84905555555 ok"), "dst=[REDACTED] ok");
 }
 
 TEST_F(LogTest, USTenDigitPatternRedactsNumber) {

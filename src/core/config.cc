@@ -62,8 +62,7 @@ ConfigValidation Validate(const Config& cfg) {
         return ConfigValidation::Fail("idempotency_cache_capacity must be >= 16");
     }
     if (cfg.idempotency_in_flight_max_wait_seconds == 0) {
-        return ConfigValidation::Fail(
-            "idempotency_in_flight_max_wait_seconds must be > 0");
+        return ConfigValidation::Fail("idempotency_in_flight_max_wait_seconds must be > 0");
     }
 
     // --- Drain ------------------------------------------------------------
@@ -79,8 +78,7 @@ ConfigValidation Validate(const Config& cfg) {
         "trace", "debug", "info", "warn", "error", "crit"};
     if (!kValidLevels.contains(cfg.log_level)) {
         std::ostringstream oss;
-        oss << "log_level must be one of trace/debug/info/warn/error/crit; got: "
-            << cfg.log_level;
+        oss << "log_level must be one of trace/debug/info/warn/error/crit; got: " << cfg.log_level;
         return ConfigValidation::Fail(oss.str());
     }
 
@@ -93,8 +91,7 @@ ConfigValidation Validate(const Config& cfg) {
             (void)std::regex(cfg.pii_redaction_patterns[i]);
         } catch (const std::regex_error& e) {
             std::ostringstream oss;
-            oss << "pii_redaction_patterns[" << i << "] is not a valid regex: "
-                << e.what();
+            oss << "pii_redaction_patterns[" << i << "] is not a valid regex: " << e.what();
             return ConfigValidation::Fail(oss.str());
         }
     }

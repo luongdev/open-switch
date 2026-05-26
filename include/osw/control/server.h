@@ -30,7 +30,6 @@
 #define OSW_CONTROL_SERVER_H_
 
 #include <chrono>
-#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -42,11 +41,6 @@
 namespace osw {
 class Health;
 struct Config;
-
-namespace events {
-class Broadcaster;
-class RingSet;
-}  // namespace events
 
 namespace control {
 
@@ -89,22 +83,6 @@ class GrpcServer {
     /// should report. Called by Module::Load before Start so that
     /// Snapshot includes the right values.
     void SetVersions(std::string module_version, std::string freeswitch_version);
-
-    /// Inject the W2 event-plane bridges (Broadcaster + RingSet)
-    /// into the ControlServiceSkeleton so that the SubscribeEvents
-    /// handler can route. Called by Module::Load AFTER Broadcaster +
-    /// RingSet are constructed and Start()-ed. Pre-W2 builds and
-    /// tests that don't exercise SubscribeEvents leave these as
-    /// nullptr; SubscribeEvents then returns UNIMPLEMENTED rather
-    /// than crashing.
-    ///
-    /// Pointers are non-owning. The Module singleton outlives the
-    /// gRPC server's RPC threads (Drain joins them before tearing
-    /// down Module-owned subsystems).
-    void SetEventPlane(events::Broadcaster* broadcaster,
-                       events::RingSet* rings,
-                       std::uint32_t max_subscribers,
-                       std::uint32_t subscriber_send_queue_capacity) noexcept;
 
   private:
     Health* health_;
