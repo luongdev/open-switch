@@ -19,8 +19,6 @@
 
 #include "osw/events/ring.h"
 
-#include <gtest/gtest.h>
-
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -28,6 +26,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <gtest/gtest.h>
 
 namespace {
 
@@ -111,8 +111,8 @@ TEST_F(RingTest, WaitAndPopBatchRespectsMaxBatch) {
 
 TEST_F(RingTest, WaitAndPopBatchReturnsEmptyOnTimeout) {
     Ring r(16);
-    const auto t0    = std::chrono::steady_clock::now();
-    auto batch       = r.WaitAndPopBatch(8, std::chrono::milliseconds(20));
+    const auto t0 = std::chrono::steady_clock::now();
+    auto batch = r.WaitAndPopBatch(8, std::chrono::milliseconds(20));
     const auto delta = std::chrono::steady_clock::now() - t0;
     EXPECT_TRUE(batch.empty());
     EXPECT_GE(delta, std::chrono::milliseconds(15));
@@ -203,7 +203,7 @@ TEST_F(RingTest, SnapshotBoundaryAtMinSeq) {
 }
 
 TEST_F(RingTest, EightProducersAllSeqsPresentNoDuplicates) {
-    constexpr int kProducers   = 8;
+    constexpr int kProducers = 8;
     constexpr int kPerProducer = 256;
 
     Ring r(kProducers * kPerProducer + 16);  // never overflows
@@ -214,15 +214,15 @@ TEST_F(RingTest, EightProducersAllSeqsPresentNoDuplicates) {
     for (int p = 0; p < kProducers; ++p) {
         producers.emplace_back([&, p]() {
             for (int i = 0; i < kPerProducer; ++i) {
-                const std::uint64_t my_seq =
-                    seq_gen.fetch_add(1, std::memory_order_relaxed) + 1;
+                const std::uint64_t my_seq = seq_gen.fetch_add(1, std::memory_order_relaxed) + 1;
                 std::uint64_t dropped = 0;  // unused; not over-capacity
                 r.Push(Entry(my_seq, "p" + std::to_string(p)), &dropped);
                 EXPECT_EQ(dropped, 0u);
             }
         });
     }
-    for (auto& t : producers) t.join();
+    for (auto& t : producers)
+        t.join();
 
     // Drain.
     std::vector<RingEntry> all;
@@ -240,7 +240,8 @@ TEST_F(RingTest, EightProducersAllSeqsPresentNoDuplicates) {
     // the EventEnvelope.seq field — NOT by the ring's drain order.
     std::vector<std::uint64_t> seqs;
     seqs.reserve(all.size());
-    for (const auto& e : all) seqs.push_back(e.seq);
+    for (const auto& e : all)
+        seqs.push_back(e.seq);
     std::sort(seqs.begin(), seqs.end());
     for (std::size_t i = 0; i < seqs.size(); ++i) {
         EXPECT_EQ(seqs[i], static_cast<std::uint64_t>(i + 1));
@@ -248,9 +249,9 @@ TEST_F(RingTest, EightProducersAllSeqsPresentNoDuplicates) {
 }
 
 TEST_F(RingTest, FourProducersOverflowAccountsAllEntries) {
-    constexpr int kProducers   = 4;
+    constexpr int kProducers = 4;
     constexpr int kPerProducer = 1000;
-    constexpr int kCapacity    = 64;
+    constexpr int kCapacity = 64;
 
     Ring r(kCapacity);
     std::atomic<std::uint64_t> seq_gen{0};
@@ -262,18 +263,18 @@ TEST_F(RingTest, FourProducersOverflowAccountsAllEntries) {
         producers.emplace_back([&]() {
             std::uint64_t local_dropped = 0;
             for (int i = 0; i < kPerProducer; ++i) {
-                const std::uint64_t my_seq =
-                    seq_gen.fetch_add(1, std::memory_order_relaxed) + 1;
+                const std::uint64_t my_seq = seq_gen.fetch_add(1, std::memory_order_relaxed) + 1;
                 r.Push(Entry(my_seq), &local_dropped);
             }
             drops_total.fetch_add(local_dropped, std::memory_order_relaxed);
         });
     }
-    for (auto& t : producers) t.join();
+    for (auto& t : producers)
+        t.join();
 
     // produced - kept = dropped.
     const std::size_t produced = static_cast<std::size_t>(kProducers * kPerProducer);
-    const std::size_t kept     = r.Size();
+    const std::size_t kept = r.Size();
     EXPECT_LE(kept, static_cast<std::size_t>(kCapacity));
     EXPECT_EQ(produced - kept, drops_total.load());
 }

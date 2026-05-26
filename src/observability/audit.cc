@@ -59,14 +59,15 @@ bool EmitImpl(std::string_view name, const std::vector<Header>& headers) noexcep
     // destructor path destroys the event if we never fire it (e.g.,
     // header-add failure).
     switch_event_t* raw = nullptr;
-    switch_status_t s   = ::osw::raii::fs::EventCreateSubclass(
-        &raw, SWITCH_EVENT_CUSTOM, full_subclass.c_str());
+    switch_status_t s =
+        ::osw::raii::fs::EventCreateSubclass(&raw, SWITCH_EVENT_CUSTOM, full_subclass.c_str());
     if (s != SWITCH_STATUS_SUCCESS || raw == nullptr) {
         // log::Warn so the failure is visible without spamming at INFO.
         osw::log::Warn(kSubsystem,
                        "audit::Emit: switch_event_create_subclass failed (status=%d) "
                        "for subclass='%s'",
-                       static_cast<int>(s), full_subclass.c_str());
+                       static_cast<int>(s),
+                       full_subclass.c_str());
         return false;
     }
     osw::EventGuard guard = osw::EventGuard::adopt(raw);
@@ -76,8 +77,7 @@ bool EmitImpl(std::string_view name, const std::vector<Header>& headers) noexcep
     // so we don't need to keep the source buffers alive past the call.
     for (const auto& h : headers) {
         switch_status_t hs = ::osw::raii::fs::EventAddHeaderString(
-            guard.get(), SWITCH_STACK_BOTTOM,
-            h.name.c_str(), h.value.c_str());
+            guard.get(), SWITCH_STACK_BOTTOM, h.name.c_str(), h.value.c_str());
         if (hs != SWITCH_STATUS_SUCCESS) {
             // Log and continue — a single header failure should not abort
             // the audit emission. The event still has Event-Subclass + any
@@ -85,7 +85,8 @@ bool EmitImpl(std::string_view name, const std::vector<Header>& headers) noexcep
             osw::log::Warn(kSubsystem,
                            "audit::Emit: add_header_string failed (status=%d) "
                            "for subclass='%s' header='%s'",
-                           static_cast<int>(hs), full_subclass.c_str(),
+                           static_cast<int>(hs),
+                           full_subclass.c_str(),
                            h.name.c_str());
         }
     }
@@ -99,7 +100,8 @@ bool EmitImpl(std::string_view name, const std::vector<Header>& headers) noexcep
         osw::log::Warn(kSubsystem,
                        "audit::Emit: switch_event_fire failed (status=%d) "
                        "for subclass='%s'",
-                       static_cast<int>(fs), full_subclass.c_str());
+                       static_cast<int>(fs),
+                       full_subclass.c_str());
         return false;
     }
     return true;

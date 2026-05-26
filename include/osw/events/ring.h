@@ -76,21 +76,21 @@ namespace osw::events {
 /// shared_ptr<const string> so multiple subscriber send queues can
 /// share the underlying buffer without copying).
 struct RingEntry {
-    std::uint64_t                        seq            = 0;
-    std::shared_ptr<const std::string>   envelope_bytes;
+    std::uint64_t seq = 0;
+    std::shared_ptr<const std::string> envelope_bytes;
 };
 
 class Ring {
- public:
+  public:
     /// `capacity` is the maximum number of entries the ring holds;
     /// when a Push would exceed it, the oldest entry is evicted.
     /// Must be >= 1; values below cap at 1.
     explicit Ring(std::size_t capacity);
 
-    Ring(const Ring&)            = delete;
+    Ring(const Ring&) = delete;
     Ring& operator=(const Ring&) = delete;
-    Ring(Ring&&)                 = delete;
-    Ring& operator=(Ring&&)      = delete;
+    Ring(Ring&&) = delete;
+    Ring& operator=(Ring&&) = delete;
 
     /// Push an entry. Returns true if the entry was enqueued WITHOUT
     /// eviction; false if an existing entry was evicted to make room.
@@ -111,8 +111,7 @@ class Ring {
     /// per-entry overhead). Returns an empty vector if closed or
     /// timed-out empty.
     [[nodiscard]] std::vector<RingEntry> WaitAndPopBatch(
-        std::size_t max_batch,
-        std::chrono::milliseconds timeout) noexcept;
+        std::size_t max_batch, std::chrono::milliseconds timeout) noexcept;
 
     /// Returns a snapshot of all entries currently in the ring whose
     /// `seq > since_seq`. The snapshot is the "replay window" for a
@@ -131,16 +130,16 @@ class Ring {
     /// gets found_in_window=true with entries empty — there's nothing
     /// to replay, the broadcaster will deliver subsequent events.
     struct ReplaySnapshot {
-        bool                     found_in_window = false;
-        std::vector<RingEntry>   entries;
-        std::uint64_t            current_min_seq = 0;  // ring's lowest seq (0 if empty)
-        std::uint64_t            current_max_seq = 0;  // ring's highest seq (0 if empty)
+        bool found_in_window = false;
+        std::vector<RingEntry> entries;
+        std::uint64_t current_min_seq = 0;  // ring's lowest seq (0 if empty)
+        std::uint64_t current_max_seq = 0;  // ring's highest seq (0 if empty)
     };
     [[nodiscard]] ReplaySnapshot SnapshotFromSeq(std::uint64_t since_seq) const noexcept;
 
     /// Current size and capacity. For the Health.tierN_ring_fill_pct
     /// metric: fill_pct = 100 * Size() / Capacity().
-    [[nodiscard]] std::size_t Size()     const noexcept;
+    [[nodiscard]] std::size_t Size() const noexcept;
     [[nodiscard]] std::size_t Capacity() const noexcept { return capacity_; }
 
     /// Drain target — close the ring so that:
@@ -155,16 +154,14 @@ class Ring {
     /// broadcaster will pop the rest and then notice `closed_`.
     void Close() noexcept;
 
-    [[nodiscard]] bool IsClosed() const noexcept {
-        return closed_.load(std::memory_order_acquire);
-    }
+    [[nodiscard]] bool IsClosed() const noexcept { return closed_.load(std::memory_order_acquire); }
 
- private:
-    const std::size_t           capacity_;
-    mutable std::mutex          mu_;
-    std::condition_variable     cv_;
-    std::deque<RingEntry>       q_;        // guarded by mu_
-    std::atomic<bool>           closed_{false};
+  private:
+    const std::size_t capacity_;
+    mutable std::mutex mu_;
+    std::condition_variable cv_;
+    std::deque<RingEntry> q_;  // guarded by mu_
+    std::atomic<bool> closed_{false};
 };
 
 }  // namespace osw::events

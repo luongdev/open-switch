@@ -19,8 +19,7 @@
 
 namespace osw::events {
 
-Ring::Ring(std::size_t capacity)
-    : capacity_(capacity == 0 ? 1 : capacity) {}
+Ring::Ring(std::size_t capacity) : capacity_(capacity == 0 ? 1 : capacity) {}
 
 bool Ring::Push(RingEntry entry, std::uint64_t* dropped_out) noexcept {
     bool evicted = false;
@@ -57,7 +56,7 @@ std::optional<RingEntry> Ring::TryPop() noexcept {
 }
 
 std::vector<RingEntry> Ring::WaitAndPopBatch(std::size_t max_batch,
-                                              std::chrono::milliseconds timeout) noexcept {
+                                             std::chrono::milliseconds timeout) noexcept {
     std::unique_lock<std::mutex> lk(mu_);
     if (q_.empty() && !closed_.load(std::memory_order_acquire)) {
         // Block until the producer signals OR Close() broadcasts OR

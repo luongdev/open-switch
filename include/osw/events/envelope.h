@@ -121,12 +121,12 @@ struct EnvelopeBuildConfig {
 /// On any failure (null ev, allocation failure, unrecoverable proto
 /// error), returns nullptr. Never throws.
 [[nodiscard]] open_switch::events::v1::EventEnvelope* BuildEnvelope(
-    switch_event_t*                       ev,
-    Tier                                  tier,
-    std::uint64_t                         seq,
-    std::string_view                      node_id,
-    const EnvelopeBuildConfig&            cfg,
-    google::protobuf::Arena*              arena) noexcept;
+    switch_event_t* ev,
+    Tier tier,
+    std::uint64_t seq,
+    std::string_view node_id,
+    const EnvelopeBuildConfig& cfg,
+    google::protobuf::Arena* arena) noexcept;
 
 // --- Helpers, exposed for testing -----------------------------------
 

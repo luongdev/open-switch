@@ -28,6 +28,7 @@
 #include <google/protobuf/arena.h>
 
 #include "open_switch/events/v1/events.pb.h"
+
 #include "osw/observability/health.h"
 #include "osw/observability/log.h"
 #include "osw/raii/fs_api.h"
@@ -43,8 +44,8 @@ std::atomic<Binder*>& BinderInstanceSlot() noexcept;
 
 namespace {
 
-constexpr const char* kSubsystem  = "events.binder";
-constexpr const char* kBindId     = "mod_open_switch";
+constexpr const char* kSubsystem = "events.binder";
+constexpr const char* kBindId = "mod_open_switch";
 
 // FF-018 bind: SWITCH_EVENT_ALL with NULL subclass = receive every
 // event. The classifier later filters / maps to tiers in-process.
@@ -52,11 +53,15 @@ constexpr int kSwitchEventAll = SWITCH_EVENT_ALL;
 
 std::size_t TierIndex(Tier t) noexcept {
     switch (t) {
-        case Tier::k1Critical:  return 0;
-        case Tier::k2State:     return 1;
-        case Tier::k3Ephemeral: return 2;
+        case Tier::k1Critical:
+            return 0;
+        case Tier::k2State:
+            return 1;
+        case Tier::k3Ephemeral:
+            return 2;
         case Tier::kUnspecified:
-        default:                return 2;  // unspecified falls to Tier 3 slot
+        default:
+            return 2;  // unspecified falls to Tier 3 slot
     }
 }
 
@@ -69,11 +74,15 @@ RingSet::RingSet(std::size_t cap1, std::size_t cap2, std::size_t cap3)
 
 Ring* RingSet::Get(Tier t) noexcept {
     switch (t) {
-        case Tier::k1Critical:  return &tier1_;
-        case Tier::k2State:     return &tier2_;
-        case Tier::k3Ephemeral: return &tier3_;
+        case Tier::k1Critical:
+            return &tier1_;
+        case Tier::k2State:
+            return &tier2_;
+        case Tier::k3Ephemeral:
+            return &tier3_;
         case Tier::kUnspecified:
-        default:                return nullptr;
+        default:
+            return nullptr;
     }
 }
 
@@ -89,18 +98,20 @@ bool RingSet::AllEmpty() const noexcept {
 
 // --- Binder ----------------------------------------------------------
 
-Binder::Binder(RingSet*                rings,
-               const TierClassifier*   classifier,
-               EnvelopeBuildConfig     envelope_cfg,
-               std::string             node_id,
-               Health*                 health) noexcept
+Binder::Binder(RingSet* rings,
+               const TierClassifier* classifier,
+               EnvelopeBuildConfig envelope_cfg,
+               std::string node_id,
+               Health* health) noexcept
     : rings_(rings),
       classifier_(classifier),
       envelope_cfg_(std::move(envelope_cfg)),
       node_id_(std::move(node_id)),
       health_(health) {
-    for (auto& s : next_seq_) s.store(0, std::memory_order_relaxed);
-    for (auto& d : dropped_)  d.store(0, std::memory_order_relaxed);
+    for (auto& s : next_seq_)
+        s.store(0, std::memory_order_relaxed);
+    for (auto& d : dropped_)
+        d.store(0, std::memory_order_relaxed);
 }
 
 Binder::~Binder() noexcept {
@@ -120,8 +131,7 @@ bool Binder::Init() noexcept {
     // finds a valid Binder. Cleared on Stop().
     Binder* expected = nullptr;
     if (!internal::BinderInstanceSlot().compare_exchange_strong(
-            expected, this,
-            std::memory_order_acq_rel, std::memory_order_acquire)) {
+            expected, this, std::memory_order_acq_rel, std::memory_order_acquire)) {
         // Another Binder is already active — disallow.
         osw::log::Error(kSubsystem,
                         "Binder::Init refused — another Binder instance is "
@@ -132,18 +142,15 @@ bool Binder::Init() noexcept {
         // FF-018 bind. SWITCH_EVENT_ALL + NULL subclass = receive every
         // event. The user_data slot is the Binder instance, kept for
         // future use; the shim uses the process-singleton slot.
-        const switch_status_t s = ::osw::raii::fs::EventBind(
-            kBindId,
-            static_cast<switch_event_types_t>(kSwitchEventAll),
-            /*subclass_name=*/nullptr,
-            &osw_event_handler,
-            this);
+        const switch_status_t s =
+            ::osw::raii::fs::EventBind(kBindId,
+                                       static_cast<switch_event_types_t>(kSwitchEventAll),
+                                       /*subclass_name=*/nullptr,
+                                       &osw_event_handler,
+                                       this);
         if (s != SWITCH_STATUS_SUCCESS) {
-            osw::log::Error(kSubsystem,
-                            "switch_event_bind failed: status=%d",
-                            static_cast<int>(s));
-            internal::BinderInstanceSlot().store(nullptr,
-                                                  std::memory_order_release);
+            osw::log::Error(kSubsystem, "switch_event_bind failed: status=%d", static_cast<int>(s));
+            internal::BinderInstanceSlot().store(nullptr, std::memory_order_release);
             return false;
         }
         active_.store(true, std::memory_order_release);
@@ -153,13 +160,11 @@ bool Binder::Init() noexcept {
         return true;
     } catch (const std::exception& e) {
         osw::log::Error(kSubsystem, "Binder::Init threw: %s", e.what());
-        internal::BinderInstanceSlot().store(nullptr,
-                                              std::memory_order_release);
+        internal::BinderInstanceSlot().store(nullptr, std::memory_order_release);
         return false;
     } catch (...) {
         osw::log::Error(kSubsystem, "Binder::Init threw unknown exception");
-        internal::BinderInstanceSlot().store(nullptr,
-                                              std::memory_order_release);
+        internal::BinderInstanceSlot().store(nullptr, std::memory_order_release);
         return false;
     }
 }
@@ -174,8 +179,7 @@ void Binder::Stop() noexcept {
         // FF-018 unbind waits under wrlock for any in-flight dispatch
         // to release the rdlock — after this returns, no further
         // osw_event_handler invocations will happen.
-        const switch_status_t s =
-            ::osw::raii::fs::EventUnbindCallback(&osw_event_handler);
+        const switch_status_t s = ::osw::raii::fs::EventUnbindCallback(&osw_event_handler);
         if (s != SWITCH_STATUS_SUCCESS) {
             // FS-side returns FALSE when no binding existed — non-fatal.
             osw::log::Debug(kSubsystem,
@@ -188,8 +192,7 @@ void Binder::Stop() noexcept {
         // returns: FF-018 guarantees in-flight dispatch threads have
         // completed by the time wrlock returns, so the shim's
         // `b->HandleEvent(event)` cannot race against destruction.
-        internal::BinderInstanceSlot().store(nullptr,
-                                              std::memory_order_release);
+        internal::BinderInstanceSlot().store(nullptr, std::memory_order_release);
         osw::log::Info(kSubsystem, "Binder::Stop unbound osw_event_handler");
     } catch (const std::exception& e) {
         osw::log::Error(kSubsystem, "Binder::Stop threw: %s", e.what());
@@ -215,7 +218,7 @@ void Binder::HandleEvent(switch_event_t* ev) noexcept {
         // classifier, then BuildEnvelope copies everything else.
         const char* en_raw = ::osw::raii::fs::EventGetHeader(ev, "Event-Name");
         const char* sc_raw = ::osw::raii::fs::EventGetHeader(ev, "Event-Subclass");
-        const std::string_view event_name    = en_raw ? std::string_view(en_raw) : "";
+        const std::string_view event_name = en_raw ? std::string_view(en_raw) : "";
         const std::string_view subclass_name = sc_raw ? std::string_view(sc_raw) : "";
 
         const Tier tier = classifier_->Classify(event_name, subclass_name);
@@ -231,8 +234,7 @@ void Binder::HandleEvent(switch_event_t* ev) noexcept {
 
         // Per-tier sequence allocation. fetch_add returns the
         // pre-increment value; +1 makes seqs start at 1.
-        const std::uint64_t seq =
-            next_seq_[tidx].fetch_add(1, std::memory_order_relaxed) + 1;
+        const std::uint64_t seq = next_seq_[tidx].fetch_add(1, std::memory_order_relaxed) + 1;
 
         // BuildEnvelope returns an arena-owned proto. We serialize to
         // a fresh std::string and ship via shared_ptr<const string>.
@@ -257,7 +259,7 @@ void Binder::HandleEvent(switch_event_t* ev) noexcept {
         std::shared_ptr<const std::string> bytes_const = std::move(bytes);
 
         RingEntry entry;
-        entry.seq            = seq;
+        entry.seq = seq;
         entry.envelope_bytes = std::move(bytes_const);
 
         std::uint64_t local_dropped = 0;
@@ -280,7 +282,8 @@ std::uint64_t Binder::DropsForTier(Tier t) const noexcept {
 }
 
 void Binder::IncrementHealthCounters() noexcept {
-    if (health_ == nullptr) return;
+    if (health_ == nullptr)
+        return;
     // events_emitted is the raw counter; SetEventsEmittedTotal accepts
     // the latest value (atomic store inside Health). Per-tier dropped
     // counters and ring fills are surfaced separately so the broadcaster
@@ -291,15 +294,15 @@ void Binder::IncrementHealthCounters() noexcept {
     if (rings_ != nullptr) {
         auto set_fill = [&](Tier t, void (Health::*setter)(std::uint32_t)) {
             if (Ring* r = rings_->Get(t)) {
-                const std::size_t sz   = r->Size();
-                const std::size_t cap  = r->Capacity();
-                const std::uint32_t pct = cap == 0 ? 0
-                    : static_cast<std::uint32_t>((sz * 100) / cap);
+                const std::size_t sz = r->Size();
+                const std::size_t cap = r->Capacity();
+                const std::uint32_t pct =
+                    cap == 0 ? 0 : static_cast<std::uint32_t>((sz * 100) / cap);
                 (health_->*setter)(pct);
             }
         };
-        set_fill(Tier::k1Critical,  &Health::SetTier1RingFillPct);
-        set_fill(Tier::k2State,     &Health::SetTier2RingFillPct);
+        set_fill(Tier::k1Critical, &Health::SetTier1RingFillPct);
+        set_fill(Tier::k2State, &Health::SetTier2RingFillPct);
         set_fill(Tier::k3Ephemeral, &Health::SetTier3RingFillPct);
 
         health_->SetTier1DroppedTotal(dropped_[0].load(std::memory_order_relaxed));

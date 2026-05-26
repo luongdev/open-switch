@@ -58,9 +58,9 @@ namespace osw::events {
 
 enum class Tier : int {
     kUnspecified = 0,
-    k1Critical   = 1,
-    k2State      = 2,
-    k3Ephemeral  = 3,
+    k1Critical = 1,
+    k2State = 2,
+    k3Ephemeral = 3,
 };
 
 /// Returns a stable lowercase string for a Tier ("tier1", "tier2",
@@ -94,7 +94,7 @@ struct TierRules {
 /// matching. The Classify method is thread-safe (the rules table is
 /// read-only after construction).
 class TierClassifier {
- public:
+  public:
     explicit TierClassifier(TierRules rules);
 
     /// Classifies an (event_name, subclass_name) pair. Both strings are
@@ -109,14 +109,14 @@ class TierClassifier {
     /// Read-only access for tests + debug introspection.
     [[nodiscard]] const TierRules& Rules() const noexcept { return rules_; }
 
- private:
+  private:
     struct CompiledGlob {
         std::string prefix;
-        bool        has_wildcard = false;  // true when source ended in '*'
-        Tier        tier         = Tier::k3Ephemeral;
+        bool has_wildcard = false;  // true when source ended in '*'
+        Tier tier = Tier::k3Ephemeral;
     };
 
-    TierRules                 rules_;
+    TierRules rules_;
     std::vector<CompiledGlob> compiled_globs_;
 };
 

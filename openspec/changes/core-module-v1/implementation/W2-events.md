@@ -36,11 +36,17 @@ eb59eff feat(events): Binder — switch_event_bind wrapper + exception boundary
 3acedc2 feat(events): Broadcaster + per-subscriber SendQueue + Subscriber + tests
 f8cba4f feat(control): SubscribeEvents real handler + since_seq replay logic
 ad982d1 feat(core): Module wiring — Binder + RingSet + Broadcaster + Health
-<this commit>  test(events): CI TSAN gate + W2 closeout
+b46470d test(events): CI TSAN gate + W2 closeout
+0103aab chore(events): apply silkeh/clang:18 format to W2 earlier-commit files
 ```
 
-12 atomic commits + closeout. Each commit was format-checked under
-`silkeh/clang:18` (the exact image CI runs) before landing.
+13 commits + closeout (the trailing `chore` re-formats 16 files
+authored earlier in the wave under a locally-installed clang-format
+that disagreed with silkeh/clang:18 on a handful of indent edge cases;
+pure whitespace, no semantic changes). Every commit verified under
+`silkeh/clang:18 clang-format --dry-run --Werror` against the files
+it touched. After the chore commit, **every C++ file the W2 branch
+touches is silkeh/clang:18-clean** (33 files in scope).
 
 ---
 

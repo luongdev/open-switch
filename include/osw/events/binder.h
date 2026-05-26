@@ -91,12 +91,10 @@ namespace events {
 /// A bundle of three Rings, one per tier. Owned by the Module
 /// singleton; Binder + Broadcaster hold non-owning views.
 class RingSet {
- public:
-    RingSet(std::size_t capacity_tier1,
-            std::size_t capacity_tier2,
-            std::size_t capacity_tier3);
+  public:
+    RingSet(std::size_t capacity_tier1, std::size_t capacity_tier2, std::size_t capacity_tier3);
 
-    RingSet(const RingSet&)            = delete;
+    RingSet(const RingSet&) = delete;
     RingSet& operator=(const RingSet&) = delete;
 
     /// Access the ring for a tier. Returns nullptr for kUnspecified.
@@ -109,31 +107,31 @@ class RingSet {
     /// Module's drain-wait loop.
     [[nodiscard]] bool AllEmpty() const noexcept;
 
- private:
+  private:
     Ring tier1_;
     Ring tier2_;
     Ring tier3_;
 };
 
 class Binder {
- public:
+  public:
     /// `rings`, `classifier`, `health` are non-owning. The Module
     /// singleton owns them; the Binder borrows.
     /// `node_id` is captured by value; used as the EventEnvelope.node_id
     /// for every emitted envelope. `envelope_cfg` is the operator's
     /// include-list configuration (default at MakeDefaultEnvelopeConfig()).
-    Binder(RingSet*                     rings,
-           const TierClassifier*        classifier,
-           EnvelopeBuildConfig          envelope_cfg,
-           std::string                  node_id,
-           Health*                      health) noexcept;
+    Binder(RingSet* rings,
+           const TierClassifier* classifier,
+           EnvelopeBuildConfig envelope_cfg,
+           std::string node_id,
+           Health* health) noexcept;
 
     ~Binder() noexcept;
 
-    Binder(const Binder&)            = delete;
+    Binder(const Binder&) = delete;
     Binder& operator=(const Binder&) = delete;
-    Binder(Binder&&)                 = delete;
-    Binder& operator=(Binder&&)      = delete;
+    Binder(Binder&&) = delete;
+    Binder& operator=(Binder&&) = delete;
 
     /// Register `osw_event_handler` with the FS event facility via
     /// switch_event_bind (FF-018). Returns true on success. Safe to
@@ -147,9 +145,7 @@ class Binder {
     void Stop() noexcept;
 
     /// True iff Init() succeeded and Stop() has not yet been called.
-    [[nodiscard]] bool IsActive() const noexcept {
-        return active_.load(std::memory_order_acquire);
-    }
+    [[nodiscard]] bool IsActive() const noexcept { return active_.load(std::memory_order_acquire); }
 
     // --- Internals exposed for testing ---------------------------------
 
@@ -165,24 +161,24 @@ class Binder {
     }
     [[nodiscard]] std::uint64_t DropsForTier(Tier t) const noexcept;
 
- private:
+  private:
     void IncrementHealthCounters() noexcept;
 
-    RingSet*                     rings_;
-    const TierClassifier*        classifier_;
-    EnvelopeBuildConfig          envelope_cfg_;
-    std::string                  node_id_;
-    Health*                      health_;
+    RingSet* rings_;
+    const TierClassifier* classifier_;
+    EnvelopeBuildConfig envelope_cfg_;
+    std::string node_id_;
+    Health* health_;
 
     // Per-tier monotonic sequence counters. fetch_add returns the
     // pre-increment value; the producer uses (returned + 1) as the
     // seq so seq numbers start at 1.
-    std::array<std::atomic<std::uint64_t>, 3> next_seq_;   // tier1/2/3
-    std::array<std::atomic<std::uint64_t>, 3> dropped_;    // counts evictions
+    std::array<std::atomic<std::uint64_t>, 3> next_seq_;  // tier1/2/3
+    std::array<std::atomic<std::uint64_t>, 3> dropped_;   // counts evictions
 
-    std::atomic<std::uint64_t>   events_emitted_{0};
-    std::atomic<bool>            active_{false};
-    std::mutex                   stop_mu_;  // serialises Stop()
+    std::atomic<std::uint64_t> events_emitted_{0};
+    std::atomic<bool> active_{false};
+    std::mutex stop_mu_;  // serialises Stop()
 };
 
 /// The C-linkage shim that switch_event_bind invokes. Defined in

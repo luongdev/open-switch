@@ -24,13 +24,13 @@
 
 #include "osw/events/binder.h"
 
-#include <gtest/gtest.h>
-
 #include <atomic>
 #include <chrono>
 #include <memory>
 #include <string>
 #include <thread>
+
+#include <gtest/gtest.h>
 
 #include "osw/events/envelope.h"
 #include "osw/events/ring.h"
@@ -52,12 +52,12 @@ using osw::events::TierClassifier;
 switch_event_t* const kEv = reinterpret_cast<switch_event_t*>(0xB001);
 
 class BinderTest : public ::testing::Test {
- protected:
+  protected:
     void SetUp() override {
         osw::raii::fs::MockReset();
-        rings_      = std::make_unique<RingSet>(256, 256, 256);
+        rings_ = std::make_unique<RingSet>(256, 256, 256);
         classifier_ = std::make_unique<TierClassifier>(MakeDefaultRules());
-        health_     = std::make_unique<osw::Health>();
+        health_ = std::make_unique<osw::Health>();
     }
     void TearDown() override {
         // Make sure no Binder leaks into the shim slot across tests.
@@ -65,24 +65,21 @@ class BinderTest : public ::testing::Test {
         binder_.reset();
     }
 
-    void SetHeader(switch_event_t* ev,
-                   const std::string& name,
-                   const std::string& value) {
+    void SetHeader(switch_event_t* ev, const std::string& name, const std::string& value) {
         auto& m = osw::raii::fs::Mock();
         std::lock_guard<std::mutex> g(m.capture_mu);
         m.events_by_ptr[ev].headers.emplace_back(name, value);
     }
 
-    std::unique_ptr<RingSet>        rings_;
+    std::unique_ptr<RingSet> rings_;
     std::unique_ptr<TierClassifier> classifier_;
-    std::unique_ptr<osw::Health>    health_;
-    std::unique_ptr<Binder>         binder_;
+    std::unique_ptr<osw::Health> health_;
+    std::unique_ptr<Binder> binder_;
 };
 
 TEST_F(BinderTest, InitRegistersForAllEventsAndIsIdempotent) {
     binder_ = std::make_unique<Binder>(
-        rings_.get(), classifier_.get(),
-        MakeDefaultEnvelopeConfig(), "node-x", health_.get());
+        rings_.get(), classifier_.get(), MakeDefaultEnvelopeConfig(), "node-x", health_.get());
 
     EXPECT_FALSE(binder_->IsActive());
     EXPECT_TRUE(binder_->Init());
@@ -93,10 +90,10 @@ TEST_F(BinderTest, InitRegistersForAllEventsAndIsIdempotent) {
     {
         std::lock_guard<std::mutex> g(m.capture_mu);
         ASSERT_EQ(m.bindings.size(), 1u);
-        EXPECT_EQ(m.bindings[0].id,            "mod_open_switch");
-        EXPECT_EQ(m.bindings[0].event,         SWITCH_EVENT_ALL);
+        EXPECT_EQ(m.bindings[0].id, "mod_open_switch");
+        EXPECT_EQ(m.bindings[0].event, SWITCH_EVENT_ALL);
         EXPECT_EQ(m.bindings[0].subclass_name, "");
-        EXPECT_EQ(m.bindings[0].callback,      &osw::events::osw_event_handler);
+        EXPECT_EQ(m.bindings[0].callback, &osw::events::osw_event_handler);
         EXPECT_TRUE(m.bindings[0].active);
     }
 
@@ -107,8 +104,7 @@ TEST_F(BinderTest, InitRegistersForAllEventsAndIsIdempotent) {
 
 TEST_F(BinderTest, StopUnbindsAndIsIdempotent) {
     binder_ = std::make_unique<Binder>(
-        rings_.get(), classifier_.get(),
-        MakeDefaultEnvelopeConfig(), "node-x", health_.get());
+        rings_.get(), classifier_.get(), MakeDefaultEnvelopeConfig(), "node-x", health_.get());
     EXPECT_TRUE(binder_->Init());
 
     binder_->Stop();
@@ -131,16 +127,14 @@ TEST_F(BinderTest, BindFailurePropagates) {
     m.next_event_bind_status = SWITCH_STATUS_GENERR;
 
     binder_ = std::make_unique<Binder>(
-        rings_.get(), classifier_.get(),
-        MakeDefaultEnvelopeConfig(), "node-x", health_.get());
+        rings_.get(), classifier_.get(), MakeDefaultEnvelopeConfig(), "node-x", health_.get());
     EXPECT_FALSE(binder_->Init());
     EXPECT_FALSE(binder_->IsActive());
 }
 
 TEST_F(BinderTest, ShimWithNullEventIsNoOp) {
     binder_ = std::make_unique<Binder>(
-        rings_.get(), classifier_.get(),
-        MakeDefaultEnvelopeConfig(), "node-x", health_.get());
+        rings_.get(), classifier_.get(), MakeDefaultEnvelopeConfig(), "node-x", health_.get());
     EXPECT_TRUE(binder_->Init());
 
     osw::events::osw_event_handler(nullptr);
@@ -155,12 +149,11 @@ TEST_F(BinderTest, ShimWithNoBinderIsNoOp) {
 
 TEST_F(BinderTest, HandleEventRoutesToTier1ForHangupComplete) {
     binder_ = std::make_unique<Binder>(
-        rings_.get(), classifier_.get(),
-        MakeDefaultEnvelopeConfig(), "node-x", health_.get());
+        rings_.get(), classifier_.get(), MakeDefaultEnvelopeConfig(), "node-x", health_.get());
 
-    SetHeader(kEv, "Event-Name",           "CHANNEL_HANGUP_COMPLETE");
+    SetHeader(kEv, "Event-Name", "CHANNEL_HANGUP_COMPLETE");
     SetHeader(kEv, "Event-Date-Timestamp", "1748287234000000");
-    SetHeader(kEv, "Unique-ID",            "u-1");
+    SetHeader(kEv, "Unique-ID", "u-1");
 
     binder_->HandleEvent(kEv);
     EXPECT_EQ(binder_->EventsEmitted(), 1u);
@@ -168,7 +161,7 @@ TEST_F(BinderTest, HandleEventRoutesToTier1ForHangupComplete) {
     Ring* t1 = rings_->Get(Tier::k1Critical);
     ASSERT_NE(t1, nullptr);
     EXPECT_EQ(t1->Size(), 1u);
-    EXPECT_EQ(rings_->Get(Tier::k2State)->Size(),    0u);
+    EXPECT_EQ(rings_->Get(Tier::k2State)->Size(), 0u);
     EXPECT_EQ(rings_->Get(Tier::k3Ephemeral)->Size(), 0u);
 
     auto entry = t1->TryPop();
@@ -179,24 +172,22 @@ TEST_F(BinderTest, HandleEventRoutesToTier1ForHangupComplete) {
 
 TEST_F(BinderTest, HandleEventRoutesAuditSubclassToTier1) {
     binder_ = std::make_unique<Binder>(
-        rings_.get(), classifier_.get(),
-        MakeDefaultEnvelopeConfig(), "node-x", health_.get());
+        rings_.get(), classifier_.get(), MakeDefaultEnvelopeConfig(), "node-x", health_.get());
 
-    SetHeader(kEv, "Event-Name",     "CUSTOM");
+    SetHeader(kEv, "Event-Name", "CUSTOM");
     SetHeader(kEv, "Event-Subclass", "osw.audit.module_loaded");
 
     binder_->HandleEvent(kEv);
 
-    EXPECT_EQ(rings_->Get(Tier::k1Critical)->Size(),  1u);
-    EXPECT_EQ(rings_->Get(Tier::k2State)->Size(),     0u);
+    EXPECT_EQ(rings_->Get(Tier::k1Critical)->Size(), 1u);
+    EXPECT_EQ(rings_->Get(Tier::k2State)->Size(), 0u);
     EXPECT_EQ(rings_->Get(Tier::k3Ephemeral)->Size(), 0u);
 }
 
 TEST_F(BinderTest, HandleEventOverflowIncrementsDrops) {
     rings_ = std::make_unique<RingSet>(2, 256, 256);  // tier 1 cap = 2
     binder_ = std::make_unique<Binder>(
-        rings_.get(), classifier_.get(),
-        MakeDefaultEnvelopeConfig(), "node-x", health_.get());
+        rings_.get(), classifier_.get(), MakeDefaultEnvelopeConfig(), "node-x", health_.get());
 
     SetHeader(kEv, "Event-Name", "CHANNEL_HANGUP_COMPLETE");
 
@@ -205,24 +196,22 @@ TEST_F(BinderTest, HandleEventOverflowIncrementsDrops) {
     binder_->HandleEvent(kEv);  // overflow → evict + drop counter
     binder_->HandleEvent(kEv);  // overflow → evict + drop counter
 
-    EXPECT_EQ(binder_->EventsEmitted(),            4u);
+    EXPECT_EQ(binder_->EventsEmitted(), 4u);
     EXPECT_EQ(binder_->DropsForTier(Tier::k1Critical), 2u);
-    EXPECT_EQ(rings_->Get(Tier::k1Critical)->Size(),  2u);
+    EXPECT_EQ(rings_->Get(Tier::k1Critical)->Size(), 2u);
     EXPECT_EQ(health_->GetSnapshot().tier1_dropped_total, 2u);
 }
 
 TEST_F(BinderTest, HandleEventWithNullEventIsNoOp) {
     binder_ = std::make_unique<Binder>(
-        rings_.get(), classifier_.get(),
-        MakeDefaultEnvelopeConfig(), "node-x", health_.get());
+        rings_.get(), classifier_.get(), MakeDefaultEnvelopeConfig(), "node-x", health_.get());
     binder_->HandleEvent(nullptr);
     EXPECT_EQ(binder_->EventsEmitted(), 0u);
 }
 
 TEST_F(BinderTest, HandleEventSerializedEnvelopeIsParseable) {
     binder_ = std::make_unique<Binder>(
-        rings_.get(), classifier_.get(),
-        MakeDefaultEnvelopeConfig(), "node-test", health_.get());
+        rings_.get(), classifier_.get(), MakeDefaultEnvelopeConfig(), "node-test", health_.get());
 
     SetHeader(kEv, "Event-Name", "HEARTBEAT");
 
@@ -232,21 +221,20 @@ TEST_F(BinderTest, HandleEventSerializedEnvelopeIsParseable) {
     open_switch::events::v1::EventEnvelope env;
     ASSERT_TRUE(env.ParseFromString(*e->envelope_bytes));
     EXPECT_EQ(env.event_name(), "HEARTBEAT");
-    EXPECT_EQ(env.tier(),       open_switch::events::v1::TIER_3_EPHEMERAL);
-    EXPECT_EQ(env.node_id(),    "node-test");
-    EXPECT_EQ(env.seq(),        1u);
+    EXPECT_EQ(env.tier(), open_switch::events::v1::TIER_3_EPHEMERAL);
+    EXPECT_EQ(env.node_id(), "node-test");
+    EXPECT_EQ(env.seq(), 1u);
     EXPECT_EQ(env.schema_version(), 1u);
 }
 
 TEST_F(BinderTest, ConcurrentProducersAllEventsAccountedFor) {
     constexpr int kProducers = 8;
-    constexpr int kPer       = 64;
-    rings_ = std::make_unique<RingSet>(
-        kProducers * kPer + 16,  // never overflow tier 1
-        256, 256);
+    constexpr int kPer = 64;
+    rings_ = std::make_unique<RingSet>(kProducers * kPer + 16,  // never overflow tier 1
+                                       256,
+                                       256);
     binder_ = std::make_unique<Binder>(
-        rings_.get(), classifier_.get(),
-        MakeDefaultEnvelopeConfig(), "n", health_.get());
+        rings_.get(), classifier_.get(), MakeDefaultEnvelopeConfig(), "n", health_.get());
 
     SetHeader(kEv, "Event-Name", "CHANNEL_HANGUP_COMPLETE");  // Tier 1
 
@@ -258,11 +246,12 @@ TEST_F(BinderTest, ConcurrentProducersAllEventsAccountedFor) {
             }
         });
     }
-    for (auto& t : ts) t.join();
+    for (auto& t : ts)
+        t.join();
 
     const std::uint64_t total = kProducers * kPer;
-    EXPECT_EQ(binder_->EventsEmitted(),                total);
-    EXPECT_EQ(rings_->Get(Tier::k1Critical)->Size(),   total);
+    EXPECT_EQ(binder_->EventsEmitted(), total);
+    EXPECT_EQ(rings_->Get(Tier::k1Critical)->Size(), total);
     EXPECT_EQ(binder_->DropsForTier(Tier::k1Critical), 0u);
 }
 

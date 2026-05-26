@@ -78,22 +78,22 @@ using switch_xml_t = switch_xml*;  // FS typedefs switch_xml_t to a pointer
 
 using switch_status_t = int;
 constexpr switch_status_t SWITCH_STATUS_SUCCESS = 0;
-constexpr switch_status_t SWITCH_STATUS_FALSE   = 1;
-constexpr switch_status_t SWITCH_STATUS_GENERR  = 8;
+constexpr switch_status_t SWITCH_STATUS_FALSE = 1;
+constexpr switch_status_t SWITCH_STATUS_GENERR = 8;
 
 // switch_types.h:2179 in v1.10.12 — SWITCH_EVENT_CUSTOM is enum value 78
 // at the time of v1.10.12; the exact value doesn't matter for mock tests,
 // but we keep it distinguishable from 0.
 using switch_event_types_t = int;
 constexpr switch_event_types_t SWITCH_EVENT_CUSTOM = 78;
-constexpr switch_event_types_t SWITCH_EVENT_ALL    = 100;
+constexpr switch_event_types_t SWITCH_EVENT_ALL = 100;
 
 // switch_types.h:1031 — switch_stack_t. Only the two values our helpers
 // pass through (BOTTOM, TOP) need to be distinguishable; SWITCH_STACK_BOTTOM
 // is the FS-canonical "append to tail of header list".
 using switch_stack_t = int;
 constexpr switch_stack_t SWITCH_STACK_BOTTOM = 0;
-constexpr switch_stack_t SWITCH_STACK_TOP    = 1;
+constexpr switch_stack_t SWITCH_STACK_TOP = 1;
 
 // FF-018 callback typedef. The mock never invokes one — tests that exercise
 // the bind path simply assert on captured registrations.
@@ -101,12 +101,13 @@ using switch_event_callback_t = void (*)(switch_event_t*);
 
 // Bug callback signature (matches src/include/switch_module_interfaces.h:54
 // at v1.10.12). The mock never actually invokes a bug callback.
-using switch_abc_type_t        = int;
-using switch_bool_t            = int;
+using switch_abc_type_t = int;
+using switch_bool_t = int;
 constexpr switch_bool_t SWITCH_FALSE = 0;
-constexpr switch_bool_t SWITCH_TRUE  = 1;
-using switch_media_bug_callback_t =
-    switch_bool_t (*)(switch_media_bug_t*, void*, switch_abc_type_t);
+constexpr switch_bool_t SWITCH_TRUE = 1;
+using switch_media_bug_callback_t = switch_bool_t (*)(switch_media_bug_t*,
+                                                      void*,
+                                                      switch_abc_type_t);
 
 // --- Mock state + hook pointers --------------------------------------
 
@@ -130,17 +131,17 @@ struct MockState {
 
     // Programmable return values for the next call. Set to non-default
     // to drive failure paths.
-    switch_core_session_t* next_session       = nullptr;
-    switch_channel_t*      next_channel       = nullptr;
-    switch_event_t*        next_event         = nullptr;
-    switch_status_t        next_event_create_status = SWITCH_STATUS_SUCCESS;
-    switch_status_t        next_event_create_subclass_status = SWITCH_STATUS_SUCCESS;
-    switch_status_t        next_event_fire_status   = SWITCH_STATUS_SUCCESS;
-    switch_status_t        next_event_bind_status   = SWITCH_STATUS_SUCCESS;
-    switch_media_bug_t*    next_bug           = nullptr;
-    switch_status_t        next_bug_add_status      = SWITCH_STATUS_SUCCESS;
-    switch_status_t        next_bug_remove_status   = SWITCH_STATUS_SUCCESS;
-    switch_xml_t           next_xml_root      = nullptr;
+    switch_core_session_t* next_session = nullptr;
+    switch_channel_t* next_channel = nullptr;
+    switch_event_t* next_event = nullptr;
+    switch_status_t next_event_create_status = SWITCH_STATUS_SUCCESS;
+    switch_status_t next_event_create_subclass_status = SWITCH_STATUS_SUCCESS;
+    switch_status_t next_event_fire_status = SWITCH_STATUS_SUCCESS;
+    switch_status_t next_event_bind_status = SWITCH_STATUS_SUCCESS;
+    switch_media_bug_t* next_bug = nullptr;
+    switch_status_t next_bug_add_status = SWITCH_STATUS_SUCCESS;
+    switch_status_t next_bug_remove_status = SWITCH_STATUS_SUCCESS;
+    switch_xml_t next_xml_root = nullptr;
 
     // Captured artefacts for verification. Tests read these under
     // capture_mu (which is locked by the shim layer when writing).
@@ -148,22 +149,22 @@ struct MockState {
     // Per-event-pointer state, keyed on switch_event_t*. Populated by
     // EventCreateSubclass + EventAddHeaderString.
     struct CapturedEvent {
-        switch_event_types_t                      type = 0;
-        std::string                               subclass_name;
+        switch_event_types_t type = 0;
+        std::string subclass_name;
         std::vector<std::pair<std::string, std::string>> headers;
-        bool                                      fired = false;
+        bool fired = false;
     };
     std::unordered_map<switch_event_t*, CapturedEvent> events_by_ptr;
 
     // Captured bind/unbind registrations. The bind shim stores callback
     // + user_data; unbind matches on callback equality.
     struct CapturedBinding {
-        std::string                   id;
-        switch_event_types_t          event = 0;
-        std::string                   subclass_name;
-        switch_event_callback_t       callback = nullptr;
-        void*                         user_data = nullptr;
-        bool                          active = true;
+        std::string id;
+        switch_event_types_t event = 0;
+        std::string subclass_name;
+        switch_event_callback_t callback = nullptr;
+        void* user_data = nullptr;
+        bool active = true;
     };
     std::vector<CapturedBinding> bindings;
 };
@@ -177,30 +178,30 @@ inline MockState& Mock() {
 
 inline void MockReset() {
     auto& m = Mock();
-    m.session_locate_calls            = 0;
-    m.session_rwunlock_calls          = 0;
-    m.event_create_calls              = 0;
-    m.event_create_subclass_calls     = 0;
-    m.event_add_header_calls          = 0;
-    m.event_destroy_calls             = 0;
-    m.event_fire_calls                = 0;
-    m.event_bind_calls                = 0;
-    m.event_unbind_calls              = 0;
-    m.media_bug_add_calls             = 0;
-    m.media_bug_remove_calls          = 0;
-    m.xml_open_cfg_calls              = 0;
-    m.xml_free_calls                  = 0;
-    m.next_session                    = nullptr;
-    m.next_channel                    = nullptr;
-    m.next_event                      = nullptr;
-    m.next_event_create_status        = SWITCH_STATUS_SUCCESS;
+    m.session_locate_calls = 0;
+    m.session_rwunlock_calls = 0;
+    m.event_create_calls = 0;
+    m.event_create_subclass_calls = 0;
+    m.event_add_header_calls = 0;
+    m.event_destroy_calls = 0;
+    m.event_fire_calls = 0;
+    m.event_bind_calls = 0;
+    m.event_unbind_calls = 0;
+    m.media_bug_add_calls = 0;
+    m.media_bug_remove_calls = 0;
+    m.xml_open_cfg_calls = 0;
+    m.xml_free_calls = 0;
+    m.next_session = nullptr;
+    m.next_channel = nullptr;
+    m.next_event = nullptr;
+    m.next_event_create_status = SWITCH_STATUS_SUCCESS;
     m.next_event_create_subclass_status = SWITCH_STATUS_SUCCESS;
-    m.next_event_fire_status          = SWITCH_STATUS_SUCCESS;
-    m.next_event_bind_status          = SWITCH_STATUS_SUCCESS;
-    m.next_bug                        = nullptr;
-    m.next_bug_add_status             = SWITCH_STATUS_SUCCESS;
-    m.next_bug_remove_status          = SWITCH_STATUS_SUCCESS;
-    m.next_xml_root                   = nullptr;
+    m.next_event_fire_status = SWITCH_STATUS_SUCCESS;
+    m.next_event_bind_status = SWITCH_STATUS_SUCCESS;
+    m.next_bug = nullptr;
+    m.next_bug_add_status = SWITCH_STATUS_SUCCESS;
+    m.next_bug_remove_status = SWITCH_STATUS_SUCCESS;
+    m.next_xml_root = nullptr;
     {
         std::lock_guard<std::mutex> g(m.capture_mu);
         m.events_by_ptr.clear();
@@ -228,8 +229,7 @@ inline switch_channel_t* SessionGetChannel(switch_core_session_t* session) noexc
     return session ? Mock().next_channel : nullptr;
 }
 
-inline switch_status_t EventCreate(switch_event_t** out,
-                                   switch_event_types_t type) noexcept {
+inline switch_status_t EventCreate(switch_event_t** out, switch_event_types_t type) noexcept {
     auto& m = Mock();
     m.event_create_calls.fetch_add(1, std::memory_order_relaxed);
     if (m.next_event_create_status == SWITCH_STATUS_SUCCESS) {
@@ -331,12 +331,12 @@ inline switch_status_t EventBind(const char* id,
     }
     std::lock_guard<std::mutex> g(m.capture_mu);
     MockState::CapturedBinding b;
-    b.id            = id ? id : "";
-    b.event         = event;
+    b.id = id ? id : "";
+    b.event = event;
     b.subclass_name = subclass_name ? subclass_name : "";
-    b.callback      = callback;
-    b.user_data     = user_data;
-    b.active        = true;
+    b.callback = callback;
+    b.user_data = user_data;
+    b.active = true;
     m.bindings.push_back(std::move(b));
     return SWITCH_STATUS_SUCCESS;
 }
@@ -349,7 +349,7 @@ inline switch_status_t EventUnbindCallback(switch_event_callback_t callback) noe
     for (auto& b : m.bindings) {
         if (b.active && b.callback == callback) {
             b.active = false;
-            any      = true;
+            any = true;
         }
     }
     return any ? SWITCH_STATUS_SUCCESS : SWITCH_STATUS_FALSE;

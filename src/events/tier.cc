@@ -17,11 +17,15 @@ namespace osw::events {
 
 std::string_view ToString(Tier t) noexcept {
     switch (t) {
-        case Tier::k1Critical:  return "tier1";
-        case Tier::k2State:     return "tier2";
-        case Tier::k3Ephemeral: return "tier3";
+        case Tier::k1Critical:
+            return "tier1";
+        case Tier::k2State:
+            return "tier2";
+        case Tier::k3Ephemeral:
+            return "tier3";
         case Tier::kUnspecified:
-        default:                return "unspecified";
+        default:
+            return "unspecified";
     }
 }
 
@@ -75,8 +79,8 @@ TierRules MakeDefaultRules() {
     // Subclass globs:
     //   osw.audit.*   → Tier 1 (module's own audit channel)
     //   sofia::register, sofia::unregister → Tier 2 (state events)
-    r.subclass_globs.emplace_back("osw.audit.*",      Tier::k1Critical);
-    r.subclass_globs.emplace_back("sofia::register",  Tier::k2State);
+    r.subclass_globs.emplace_back("osw.audit.*", Tier::k1Critical);
+    r.subclass_globs.emplace_back("sofia::register", Tier::k2State);
     r.subclass_globs.emplace_back("sofia::unregister", Tier::k2State);
     r.default_tier = Tier::k3Ephemeral;
     return r;
@@ -88,10 +92,10 @@ TierClassifier::TierClassifier(TierRules rules) : rules_(std::move(rules)) {
         CompiledGlob g;
         g.tier = tier;
         if (!src.empty() && src.back() == '*') {
-            g.prefix       = src.substr(0, src.size() - 1);
+            g.prefix = src.substr(0, src.size() - 1);
             g.has_wildcard = true;
         } else {
-            g.prefix       = src;
+            g.prefix = src;
             g.has_wildcard = false;
         }
         compiled_globs_.push_back(std::move(g));

@@ -36,6 +36,7 @@
 #include <google/protobuf/arena.h>
 
 #include "open_switch/events/v1/events.pb.h"
+
 #include "osw/observability/log.h"
 #include "osw/raii/fs_api.h"
 
@@ -48,29 +49,33 @@ constexpr const char* kSubsystem = "events.envelope";
 // Header keys we consult directly. These are populated by FreeSWITCH
 // at event-create time for channel-related events
 // (switch_channel_event_set_data writes Unique-ID, Caller-*, etc.).
-constexpr const char* kHdrEventName        = "Event-Name";
-constexpr const char* kHdrEventSubclass    = "Event-Subclass";
-constexpr const char* kHdrEventTimestamp   = "Event-Date-Timestamp";
-constexpr const char* kHdrUniqueId         = "Unique-ID";
+constexpr const char* kHdrEventName = "Event-Name";
+constexpr const char* kHdrEventSubclass = "Event-Subclass";
+constexpr const char* kHdrEventTimestamp = "Event-Date-Timestamp";
+constexpr const char* kHdrUniqueId = "Unique-ID";
 
 // Channel-variable header convention: FS prefixes channel variables on
 // the event with "variable_<name>" when switch_channel_event_set_data
 // runs (see FS src/switch_channel.c — switch_channel_get_variables /
 // callbacks). The audit subclass family doesn't have these because
 // audit events are CUSTOM, not channel-bound.
-constexpr const char* kVariablePrefix      = "variable_";
+constexpr const char* kVariablePrefix = "variable_";
 
 // Convention'd osw_* channel variables we promote to top-level fields.
-constexpr const char* kVarTenantId         = "variable_osw_tenant_id";
-constexpr const char* kVarTraceparent      = "variable_osw_traceparent";
+constexpr const char* kVarTenantId = "variable_osw_tenant_id";
+constexpr const char* kVarTraceparent = "variable_osw_traceparent";
 
 open_switch::events::v1::Tier MapTierToProto(Tier t) noexcept {
     switch (t) {
-        case Tier::k1Critical:  return open_switch::events::v1::TIER_1_CRITICAL;
-        case Tier::k2State:     return open_switch::events::v1::TIER_2_STATE;
-        case Tier::k3Ephemeral: return open_switch::events::v1::TIER_3_EPHEMERAL;
+        case Tier::k1Critical:
+            return open_switch::events::v1::TIER_1_CRITICAL;
+        case Tier::k2State:
+            return open_switch::events::v1::TIER_2_STATE;
+        case Tier::k3Ephemeral:
+            return open_switch::events::v1::TIER_3_EPHEMERAL;
         case Tier::kUnspecified:
-        default:                return open_switch::events::v1::TIER_UNSPECIFIED;
+        default:
+            return open_switch::events::v1::TIER_UNSPECIFIED;
     }
 }
 
@@ -151,9 +156,12 @@ std::string GenerateUuidV7() noexcept {
         Rng() {
             std::random_device rd;
             std::seed_seq seq{
-                rd(), rd(), rd(), rd(),
-                static_cast<std::uint32_t>(std::chrono::steady_clock::now()
-                    .time_since_epoch().count()),
+                rd(),
+                rd(),
+                rd(),
+                rd(),
+                static_cast<std::uint32_t>(
+                    std::chrono::steady_clock::now().time_since_epoch().count()),
             };
             gen.seed(seq);
         }
@@ -161,9 +169,8 @@ std::string GenerateUuidV7() noexcept {
     thread_local Rng rng;
 
     // Unix milliseconds since epoch — 48 bits.
-    const auto now    = std::chrono::system_clock::now().time_since_epoch();
-    const auto ms     = std::chrono::duration_cast<std::chrono::milliseconds>(now)
-                            .count();
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
     const std::uint64_t ts_ms = static_cast<std::uint64_t>(ms) & 0x0000FFFFFFFFFFFFULL;
 
     // 64 bits of randomness split into rand_a (12) + variant_top (2) +
@@ -182,8 +189,8 @@ std::string GenerateUuidV7() noexcept {
     b[1] = static_cast<std::uint8_t>((ts_ms >> 32) & 0xFF);
     b[2] = static_cast<std::uint8_t>((ts_ms >> 24) & 0xFF);
     b[3] = static_cast<std::uint8_t>((ts_ms >> 16) & 0xFF);
-    b[4] = static_cast<std::uint8_t>((ts_ms >>  8) & 0xFF);
-    b[5] = static_cast<std::uint8_t>((ts_ms >>  0) & 0xFF);
+    b[4] = static_cast<std::uint8_t>((ts_ms >> 8) & 0xFF);
+    b[5] = static_cast<std::uint8_t>((ts_ms >> 0) & 0xFF);
 
     const std::uint16_t rand_a = static_cast<std::uint16_t>(r1 & 0x0FFF);
     b[6] = static_cast<std::uint8_t>(0x70 | ((rand_a >> 8) & 0x0F));
@@ -191,41 +198,51 @@ std::string GenerateUuidV7() noexcept {
 
     // Variant 10xxxxxx in the top 2 bits of byte 8.
     b[8] = static_cast<std::uint8_t>(0x80 | ((r2 >> 56) & 0x3F));
-    b[9]  = static_cast<std::uint8_t>((r2 >> 48) & 0xFF);
+    b[9] = static_cast<std::uint8_t>((r2 >> 48) & 0xFF);
     b[10] = static_cast<std::uint8_t>((r2 >> 40) & 0xFF);
     b[11] = static_cast<std::uint8_t>((r2 >> 32) & 0xFF);
     b[12] = static_cast<std::uint8_t>((r2 >> 24) & 0xFF);
     b[13] = static_cast<std::uint8_t>((r2 >> 16) & 0xFF);
-    b[14] = static_cast<std::uint8_t>((r2 >>  8) & 0xFF);
-    b[15] = static_cast<std::uint8_t>((r2 >>  0) & 0xFF);
+    b[14] = static_cast<std::uint8_t>((r2 >> 8) & 0xFF);
+    b[15] = static_cast<std::uint8_t>((r2 >> 0) & 0xFF);
 
     // Format as 8-4-4-4-12 lowercase hex. 36 chars + null.
     char out[37];
-    std::snprintf(out, sizeof(out),
+    std::snprintf(out,
+                  sizeof(out),
                   "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-"
                   "%02x%02x%02x%02x%02x%02x",
-                  b[0],  b[1],  b[2],  b[3],
-                  b[4],  b[5],
-                  b[6],  b[7],
-                  b[8],  b[9],
-                  b[10], b[11], b[12], b[13], b[14], b[15]);
+                  b[0],
+                  b[1],
+                  b[2],
+                  b[3],
+                  b[4],
+                  b[5],
+                  b[6],
+                  b[7],
+                  b[8],
+                  b[9],
+                  b[10],
+                  b[11],
+                  b[12],
+                  b[13],
+                  b[14],
+                  b[15]);
     return std::string(out, 36);
 }
 
-open_switch::events::v1::EventEnvelope* BuildEnvelope(
-    switch_event_t*                       ev,
-    Tier                                  tier,
-    std::uint64_t                         seq,
-    std::string_view                      node_id,
-    const EnvelopeBuildConfig&            cfg,
-    google::protobuf::Arena*              arena) noexcept {
+open_switch::events::v1::EventEnvelope* BuildEnvelope(switch_event_t* ev,
+                                                      Tier tier,
+                                                      std::uint64_t seq,
+                                                      std::string_view node_id,
+                                                      const EnvelopeBuildConfig& cfg,
+                                                      google::protobuf::Arena* arena) noexcept {
     if (ev == nullptr || arena == nullptr) {
         return nullptr;
     }
 
     try {
-        auto* env = google::protobuf::Arena::Create<
-            open_switch::events::v1::EventEnvelope>(arena);
+        auto* env = google::protobuf::Arena::Create<open_switch::events::v1::EventEnvelope>(arena);
         if (env == nullptr) {
             return nullptr;
         }
@@ -249,9 +266,9 @@ open_switch::events::v1::EventEnvelope* BuildEnvelope(
         // emitted_at: parse Event-Date-Timestamp (microseconds since epoch).
         // Fallback to "now" if missing/malformed.
         const std::int64_t micros = [&]() noexcept -> std::int64_t {
-            const std::int64_t parsed =
-                ParseEventTimestampMicros(HeaderOr(ev, kHdrEventTimestamp));
-            if (parsed > 0) return parsed;
+            const std::int64_t parsed = ParseEventTimestampMicros(HeaderOr(ev, kHdrEventTimestamp));
+            if (parsed > 0)
+                return parsed;
             return std::chrono::duration_cast<std::chrono::microseconds>(
                        std::chrono::system_clock::now().time_since_epoch())
                 .count();
@@ -277,8 +294,7 @@ open_switch::events::v1::EventEnvelope* BuildEnvelope(
         // small (operator-curated).
         for (const auto& var : cfg.variables_include) {
             const std::string header_name = std::string(kVariablePrefix) + var;
-            const char* val =
-                ::osw::raii::fs::EventGetHeader(ev, header_name.c_str());
+            const char* val = ::osw::raii::fs::EventGetHeader(ev, header_name.c_str());
             if (val != nullptr) {
                 (*env->mutable_variables())[var] = val;
             }
