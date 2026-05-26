@@ -23,6 +23,8 @@ metrics, mTLS-CN extraction).
 
 ---
 
+## Scope
+
 ### In scope
 
 - **Track A (TLS / mTLS)**: replace the W1 stub in `src/control/tls.cc`
