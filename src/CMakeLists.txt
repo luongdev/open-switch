@@ -22,6 +22,7 @@
 add_subdirectory(observability)
 add_subdirectory(control)
 add_subdirectory(core)
+add_subdirectory(events)
 
 # --- The module .so ---------------------------------------------------
 
@@ -67,6 +68,8 @@ target_link_libraries(mod_open_switch
     PRIVATE
         osw_core_fs
         osw_core
+        osw_events_fs
+        osw_events
         osw_control
         osw_observability_fs
         osw_observability
