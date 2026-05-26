@@ -17,6 +17,7 @@
  * Wire-format coverage (proto3):
  *   - field 2 (tier, enum)            — varint
  *   - field 3 (event_name, string)    — length-delimited
+ *   - field 4 (subclass_name, string) — length-delimited
  *   - field 5 (node_id, string)       — length-delimited
  *
  * Any other field is skipped via the standard wire-type rules
@@ -49,6 +50,7 @@ namespace osw::events {
 struct RoutingFields {
     Tier tier = Tier::kUnspecified;
     std::string_view event_name;
+    std::string_view subclass_name;  // empty for non-CUSTOM events
     std::string_view node_id;
 };
 

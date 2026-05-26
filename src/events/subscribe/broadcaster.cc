@@ -253,7 +253,7 @@ void Broadcaster::Dispatch(Tier tier,
             continue;
         if (sub->IsClosed())
             continue;
-        if (!sub->MatchesFilter(effective_tier, rf.event_name, rf.node_id)) {
+        if (!sub->MatchesFilter(effective_tier, rf.event_name, rf.subclass_name, rf.node_id)) {
             continue;
         }
         if (!sub->Queue().TryPush(entry.envelope_bytes)) {

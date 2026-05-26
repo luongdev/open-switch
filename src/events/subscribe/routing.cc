@@ -113,6 +113,18 @@ RoutingFields ExtractRoutingFields(const std::string& bytes) noexcept {
             rf.event_name =
                 std::string_view(reinterpret_cast<const char*>(p), static_cast<std::size_t>(len));
             p += len;
+        } else if (field_num == 4 && wire_type == 2) {
+            // subclass_name (string) — populated for CUSTOM events.
+            // Gemini W2.5 C-2: extracted so MatchesFilter can apply
+            // subclass_globs symmetrically across live-tail + replay.
+            std::uint64_t len = 0;
+            if (!ReadVarint(p, end, len))
+                break;
+            if (static_cast<std::uint64_t>(end - p) < len)
+                break;
+            rf.subclass_name =
+                std::string_view(reinterpret_cast<const char*>(p), static_cast<std::size_t>(len));
+            p += len;
         } else if (field_num == 5 && wire_type == 2) {
             // node_id (string)
             std::uint64_t len = 0;

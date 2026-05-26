@@ -194,6 +194,13 @@ struct FilterResult {
     for (const auto& g : req.event_names()) {
         out.filter.event_name_globs.push_back(g);
     }
+    // Gemini W2.5 C-2: plumb the subclass_globs from the proto through
+    // to the runtime filter. Same prefix-wildcard semantics as
+    // event_names (a trailing `*` is a prefix glob). Empty list = match
+    // all subclasses (the most common case).
+    for (const auto& g : req.subclass_globs()) {
+        out.filter.subclass_globs.push_back(g);
+    }
     out.filter.node_id = req.node_id();
     return out;
 }
@@ -260,7 +267,7 @@ struct FilterResult {
             const auto rf = osw::events::ExtractRoutingFields(*entry.envelope_bytes);
             const osw::events::Tier effective_tier =
                 (t == osw::events::Tier::kUnspecified) ? rf.tier : t;
-            if (!sub.MatchesFilter(effective_tier, rf.event_name, rf.node_id)) {
+            if (!sub.MatchesFilter(effective_tier, rf.event_name, rf.subclass_name, rf.node_id)) {
                 continue;
             }
             if (!sub.Queue().TryPush(entry.envelope_bytes)) {

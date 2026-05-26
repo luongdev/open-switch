@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace osw::events {
 
@@ -54,8 +55,34 @@ KickReason Subscriber::GetKickReason() const noexcept {
     return static_cast<KickReason>(kick_reason_.load(std::memory_order_acquire));
 }
 
+namespace {
+
+// Prefix-wildcard match: `pat` ending in `*` matches any string with
+// that prefix; otherwise an exact-equality match. Shared by the
+// event_name and subclass_name predicates so behaviour stays
+// symmetric.
+[[nodiscard]] bool MatchPrefixGlob(std::string_view pat, std::string_view s) noexcept {
+    if (!pat.empty() && pat.back() == '*') {
+        const std::string_view prefix = pat.substr(0, pat.size() - 1);
+        return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
+    }
+    return s == pat;
+}
+
+[[nodiscard]] bool MatchAnyPattern(const std::vector<std::string>& patterns,
+                                   std::string_view s) noexcept {
+    for (const auto& g : patterns) {
+        if (MatchPrefixGlob(g, s))
+            return true;
+    }
+    return false;
+}
+
+}  // namespace
+
 bool Subscriber::MatchesFilter(Tier tier,
                                std::string_view event_name,
+                               std::string_view subclass_name,
                                std::string_view node_id) const noexcept {
     // Tier filter.
     if (!filter_.tiers.empty() && filter_.tiers.count(tier) == 0) {
@@ -65,22 +92,20 @@ bool Subscriber::MatchesFilter(Tier tier,
     if (!filter_.node_id.empty() && node_id != filter_.node_id) {
         return false;
     }
-    // Event-name filter (prefix-glob).
-    if (filter_.event_name_globs.empty()) {
-        return true;  // unfiltered = match all
+    // Event-name filter (prefix-glob). Empty = match all event names.
+    if (!filter_.event_name_globs.empty() &&
+        !MatchAnyPattern(filter_.event_name_globs, event_name)) {
+        return false;
     }
-    for (const auto& g : filter_.event_name_globs) {
-        if (!g.empty() && g.back() == '*') {
-            const std::string_view prefix(g.data(), g.size() - 1);
-            if (event_name.size() >= prefix.size() &&
-                event_name.compare(0, prefix.size(), prefix) == 0) {
-                return true;
-            }
-        } else if (event_name == g) {
-            return true;
-        }
+    // Subclass filter (Gemini W2.5 C-2). Empty = match all subclasses.
+    // For non-CUSTOM events `subclass_name` is empty; the same
+    // MatchPrefixGlob handles that uniformly (empty-string equality or
+    // any `*`-suffix glob with empty prefix matches).
+    if (!filter_.subclass_globs.empty() &&
+        !MatchAnyPattern(filter_.subclass_globs, subclass_name)) {
+        return false;
     }
-    return false;
+    return true;
 }
 
 }  // namespace osw::events

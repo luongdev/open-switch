@@ -238,7 +238,7 @@ TEST(SubscribeReplayTest, ReplayHonoursEventNameFilter) {
     ASSERT_TRUE(snap.found_in_window);
     for (const auto& entry : snap.entries) {
         const auto rf = osw::events::ExtractRoutingFields(*entry.envelope_bytes);
-        if (!sub->MatchesFilter(Tier::k1Critical, rf.event_name, rf.node_id))
+        if (!sub->MatchesFilter(Tier::k1Critical, rf.event_name, rf.subclass_name, rf.node_id))
             continue;
         ASSERT_TRUE(sub->Queue().TryPush(entry.envelope_bytes));
     }
@@ -263,7 +263,7 @@ TEST(SubscribeReplayTest, ReplayHonoursNodeIdFilter) {
     ASSERT_TRUE(snap.found_in_window);
     for (const auto& entry : snap.entries) {
         const auto rf = osw::events::ExtractRoutingFields(*entry.envelope_bytes);
-        if (!sub->MatchesFilter(Tier::k1Critical, rf.event_name, rf.node_id))
+        if (!sub->MatchesFilter(Tier::k1Critical, rf.event_name, rf.subclass_name, rf.node_id))
             continue;
         ASSERT_TRUE(sub->Queue().TryPush(entry.envelope_bytes));
     }

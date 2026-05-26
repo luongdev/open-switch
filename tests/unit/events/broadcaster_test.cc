@@ -58,11 +58,13 @@ using osw::events::Tier;
 
 // Build a serialised EventEnvelope with the routing fields populated.
 // We don't depend on the full envelope builder (which calls into FS) —
-// the broadcaster needs only tier/event_name/node_id in the wire bytes.
+// the broadcaster needs only tier/event_name/node_id (and optionally
+// subclass_name) in the wire bytes.
 std::shared_ptr<const std::string> SerializeEnvelope(Tier tier,
                                                      const std::string& event_name,
                                                      const std::string& node_id,
-                                                     std::uint64_t seq = 1) {
+                                                     std::uint64_t seq = 1,
+                                                     const std::string& subclass_name = "") {
     open_switch::events::v1::EventEnvelope env;
     env.set_event_id("ev-" + std::to_string(seq));
     switch (tier) {
@@ -80,6 +82,9 @@ std::shared_ptr<const std::string> SerializeEnvelope(Tier tier,
             break;
     }
     env.set_event_name(event_name);
+    if (!subclass_name.empty()) {
+        env.set_subclass_name(subclass_name);
+    }
     env.set_node_id(node_id);
     env.set_seq(seq);
     env.set_schema_version(1);
@@ -93,6 +98,13 @@ RingEntry MakeEntry(std::uint64_t seq,
                     const std::string& name,
                     const std::string& node_id = "n1") {
     return RingEntry{seq, SerializeEnvelope(tier, name, node_id, seq)};
+}
+
+RingEntry MakeCustomEntry(std::uint64_t seq,
+                          Tier tier,
+                          const std::string& subclass_name,
+                          const std::string& node_id = "n1") {
+    return RingEntry{seq, SerializeEnvelope(tier, "CUSTOM", node_id, seq, subclass_name)};
 }
 
 class BroadcasterTest : public ::testing::Test {
@@ -166,6 +178,29 @@ TEST_F(BroadcasterTest, RouteByNodeIdFilter) {
 
     bcast_->ProcessOneForTesting(Tier::k1Critical, MakeEntry(1, Tier::k1Critical, "EV", "node-a"));
     bcast_->ProcessOneForTesting(Tier::k1Critical, MakeEntry(2, Tier::k1Critical, "EV", "node-b"));
+
+    EXPECT_EQ(sub->Queue().Size(), 1u);
+}
+
+// Gemini W2.5 C-2: end-to-end live-tail check that the routing.cc
+// scanner correctly extracts subclass_name (proto tag 4) and that
+// Subscriber::MatchesFilter rejects/accepts CUSTOM events by subclass.
+TEST_F(BroadcasterTest, RouteByCustomSubclassGlob) {
+    SubscriberFilter f;
+    f.subclass_globs = {"osw.audit.*"};
+    auto sub = MakeSub("s-audit", f);
+    bcast_->AddSubscriber(sub);
+
+    // Matching subclass — should be dispatched.
+    bcast_->ProcessOneForTesting(Tier::k1Critical,
+                                 MakeCustomEntry(1, Tier::k1Critical, "osw.audit.module_loaded"));
+    // Non-matching subclass — should NOT be dispatched.
+    bcast_->ProcessOneForTesting(Tier::k1Critical,
+                                 MakeCustomEntry(2, Tier::k1Critical, "other.subclass.thing"));
+    // Non-CUSTOM event (empty subclass) — should NOT be dispatched
+    // because the subscriber has an active subclass filter.
+    bcast_->ProcessOneForTesting(Tier::k1Critical,
+                                 MakeEntry(3, Tier::k1Critical, "CHANNEL_ANSWER"));
 
     EXPECT_EQ(sub->Queue().Size(), 1u);
 }
@@ -373,16 +408,55 @@ TEST(SubscriberTest, KickReasonFirstWriterWins) {
 
 TEST(SubscriberTest, MatchesFilterEmptyAcceptsAll) {
     Subscriber s("id-1", SubscriberFilter{}, 4);
-    EXPECT_TRUE(s.MatchesFilter(Tier::k1Critical, "ANY", "n"));
-    EXPECT_TRUE(s.MatchesFilter(Tier::k3Ephemeral, "OTHER", "x"));
+    EXPECT_TRUE(s.MatchesFilter(Tier::k1Critical, "ANY", "", "n"));
+    EXPECT_TRUE(s.MatchesFilter(Tier::k3Ephemeral, "OTHER", "osw.audit.x", "x"));
 }
 
 TEST(SubscriberTest, MatchesFilterRejectsOnTierMismatch) {
     SubscriberFilter f;
     f.tiers.insert(Tier::k1Critical);
     Subscriber s("id-1", f, 4);
-    EXPECT_TRUE(s.MatchesFilter(Tier::k1Critical, "X", "n"));
-    EXPECT_FALSE(s.MatchesFilter(Tier::k3Ephemeral, "X", "n"));
+    EXPECT_TRUE(s.MatchesFilter(Tier::k1Critical, "X", "", "n"));
+    EXPECT_FALSE(s.MatchesFilter(Tier::k3Ephemeral, "X", "", "n"));
+}
+
+// Gemini W2.5 C-2: subclass_globs filter is the prefix-wildcard glob
+// matched against `Event-Subclass`. Empty list = match all subclasses.
+TEST(SubscriberTest, MatchesFilterSubclassPrefixGlob) {
+    SubscriberFilter f;
+    f.subclass_globs = {"osw.audit.*"};
+    Subscriber s("id-audit", f, 4);
+
+    // Matching subclasses (prefix glob accepts).
+    EXPECT_TRUE(s.MatchesFilter(Tier::k1Critical, "CUSTOM", "osw.audit.module_loaded", "n"));
+    EXPECT_TRUE(
+        s.MatchesFilter(Tier::k3Ephemeral, "CUSTOM", "osw.audit.subscriber_connected", "n"));
+
+    // Non-matching subclass.
+    EXPECT_FALSE(s.MatchesFilter(Tier::k1Critical, "CUSTOM", "other.subclass", "n"));
+
+    // Non-CUSTOM event (empty subclass) is excluded when a subclass
+    // filter is active — the empty string does NOT match `osw.audit.*`
+    // because the prefix `osw.audit.` requires a 10-char match.
+    EXPECT_FALSE(s.MatchesFilter(Tier::k1Critical, "CHANNEL_ANSWER", "", "n"));
+}
+
+TEST(SubscriberTest, MatchesFilterSubclassExactMatch) {
+    SubscriberFilter f;
+    f.subclass_globs = {"osw.audit.module_loaded"};
+    Subscriber s("id-exact", f, 4);
+
+    EXPECT_TRUE(s.MatchesFilter(Tier::k1Critical, "CUSTOM", "osw.audit.module_loaded", "n"));
+    EXPECT_FALSE(s.MatchesFilter(Tier::k1Critical, "CUSTOM", "osw.audit.module_loaded2", "n"));
+    EXPECT_FALSE(s.MatchesFilter(Tier::k1Critical, "CUSTOM", "", "n"));
+}
+
+TEST(SubscriberTest, MatchesFilterSubclassEmptyMatchesAll) {
+    // No subclass_globs → subclass axis is unfiltered.
+    SubscriberFilter f;
+    Subscriber s("id-any", f, 4);
+    EXPECT_TRUE(s.MatchesFilter(Tier::k1Critical, "CUSTOM", "anything", "n"));
+    EXPECT_TRUE(s.MatchesFilter(Tier::k1Critical, "CUSTOM", "", "n"));
 }
 
 TEST(SubscriberTest, KickReasonToStringStable) {

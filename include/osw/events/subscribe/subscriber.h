@@ -79,6 +79,20 @@ struct SubscriberFilter {
     /// `[abc]`) is NOT supported.
     std::vector<std::string> event_name_globs;
 
+    /// Event-subclass globs matched against the `Event-Subclass` header
+    /// carried on `CUSTOM` events. Empty = match all subclasses (the
+    /// subscription is unfiltered on the subclass axis). Same
+    /// prefix-wildcard semantics as `event_name_globs`: a trailing `*`
+    /// is a prefix match (`osw.audit.*`), anything else is an exact
+    /// match. Closes Gemini W2.5 review item C-2 — the W2.5 sprint
+    /// only updated docs and never implemented the actual filter.
+    ///
+    /// Non-CUSTOM events have an empty subclass; if `subclass_globs`
+    /// is set, an envelope with an empty subclass matches only when
+    /// the empty string `""` (or an exact-empty pattern) appears in
+    /// the list.
+    std::vector<std::string> subclass_globs;
+
     /// Node filter. Empty = any node. When non-empty, the envelope's
     /// node_id must equal this string to match.
     std::string node_id;
@@ -114,10 +128,11 @@ class Subscriber {
     [[nodiscard]] KickReason GetKickReason() const noexcept;
 
     /// Returns true if `envelope` matches the subscriber's filter.
-    /// Both `event_name` and `node_id` are FS-borrowed strings; pass
-    /// non-borrowed strings or copies — the function only reads them.
+    /// All string views are borrowed by the caller; the function only
+    /// reads them. `subclass_name` is empty for non-CUSTOM events.
     [[nodiscard]] bool MatchesFilter(Tier tier,
                                      std::string_view event_name,
+                                     std::string_view subclass_name,
                                      std::string_view node_id) const noexcept;
 
   private:
