@@ -27,11 +27,10 @@ osw_add_unit_test(
 # /usr/local/lib/libfreeswitch.so via the FS install. The audit code
 # isn't EXERCISED by server_test (the test only drives Health), but
 # the linker still needs to resolve the symbols.
-find_library(FREESWITCH_LIBRARY
-    NAMES freeswitch
-    HINTS /usr/local/lib
-    NO_CMAKE_FIND_ROOT_PATH
-)
-if(FREESWITCH_LIBRARY)
-    target_link_libraries(server_test PRIVATE ${FREESWITCH_LIBRARY})
-endif()
+#
+# Link both -L hint + -lfreeswitch directly so the link works under
+# OSW_ENABLE_ASAN=OFF too (the previous find_library indirection silently
+# no-op'd for the static-analysis job because find_library's cache
+# decided FREESWITCH_LIBRARY-NOTFOUND).
+target_link_directories(server_test PRIVATE /usr/local/lib)
+target_link_libraries(server_test PRIVATE freeswitch)
