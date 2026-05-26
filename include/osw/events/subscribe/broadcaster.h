@@ -58,6 +58,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -100,6 +101,32 @@ class Broadcaster {
     /// holds one for the RPC's duration.
     void AddSubscriber(std::shared_ptr<Subscriber> sub);
 
+    /// Atomic-against-broadcaster registration (Codex W2 B-1).
+    ///
+    /// Acquires `roster_mu_`, runs `replay_fn(sub)` (which typically
+    /// snapshots a ring + pushes the replay slice into the subscriber's
+    /// SendQueue), then appends `sub` to the roster, then releases
+    /// `roster_mu_`. The entire sequence is atomic against the
+    /// broadcaster's per-tier worker threads, which block at
+    /// `RosterSnapshot()` until the roster lock is released. Any
+    /// events the workers have already popped from their rings (but
+    /// not yet dispatched) are delivered to the new subscriber as
+    /// soon as the workers proceed — so no live-tail event in the
+    /// window between snapshot and add is lost.
+    ///
+    /// Lock order: `roster_mu_` is acquired first; per-tier ring mus
+    /// are acquired transiently inside `replay_fn` via
+    /// `Ring::SnapshotFromSeq`. Workers acquire ring mu → release →
+    /// roster mu (never both at once), so the reversed-acquisition
+    /// path (roster → ring) in `replay_fn` cannot deadlock with them.
+    ///
+    /// The replay closure SHOULD complete promptly — workers stall
+    /// while the lock is held. For typical replay-from-ring sizes
+    /// (≤ ring capacity entries × O(µs) TryPush per entry) the stall
+    /// is sub-millisecond.
+    void AddSubscriberAtomic(std::shared_ptr<Subscriber> sub,
+                             const std::function<void(Subscriber&)>& replay_fn);
+
     /// Unregister. Called by the gRPC handler on RPC exit.
     void RemoveSubscriber(const std::string& id);
 
@@ -112,6 +139,18 @@ class Broadcaster {
     /// broadcaster_test to assert routing + kick semantics
     /// deterministically.
     void ProcessOneForTesting(Tier tier, RingEntry entry);
+
+    /// Test seam: install a function the per-tier worker invokes
+    /// AFTER popping a non-empty batch from its ring but BEFORE it
+    /// acquires `roster_mu_` for RosterSnapshot. Used by
+    /// subscribe_replay_test's race fixture to deterministically
+    /// expose the replay→live-tail gap window (Codex W2 B-1). The
+    /// hook is called with the tier; passing an empty function (or
+    /// nullptr-equivalent default-constructed std::function) disables
+    /// it. The store/load uses acquire/release on a shared_ptr load
+    /// (atomic with respect to other workers) so reconfiguration
+    /// during a test run is safe.
+    void SetPostPopHookForTesting(std::function<void(Tier)> hook);
 
   private:
     void WorkerLoop(Tier tier) noexcept;
@@ -143,6 +182,13 @@ class Broadcaster {
 
     // Health bridge — see broadcaster.cc.
     std::atomic<std::uint64_t> total_dispatched_{0};
+
+    // Test-only seam (default-constructed → disabled). Guarded by
+    // `post_pop_hook_mu_` for installation; the worker loads a copy
+    // under that mu (only on batches that aren't empty; the empty-
+    // batch fast path is unaffected).
+    mutable std::mutex post_pop_hook_mu_;
+    std::function<void(Tier)> post_pop_hook_;
 };
 
 }  // namespace events

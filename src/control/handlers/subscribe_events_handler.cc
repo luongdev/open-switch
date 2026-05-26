@@ -32,7 +32,12 @@
  *            ascending seq within tier (each ring is monotonic). The
  *            client sees the replay in (tier, seq) groups; documented
  *            in the proto.
- *   6. AddSubscriber to the broadcaster (now live-tail flows in too).
+ *   6. AddSubscriberAtomic to the broadcaster (Codex W2 B-1). The
+ *      broadcaster holds its roster lock across the replay closure;
+ *      per-tier workers block at RosterSnapshot for the duration, so
+ *      no live event with seq > snapshot.max_seq is dispatched without
+ *      the new subscriber visible in the roster. After
+ *      AddSubscriberAtomic returns, live tail flows to the new sub.
  *      Audit-emit osw.audit.subscriber_connected.
  *   7. Writer loop:
  *      - WaitAndPop one envelope-bytes shared_ptr.
@@ -334,17 +339,35 @@ grpc::Status ControlServiceSkeleton::SubscribeEvents(
             subscriber_send_queue_capacity_ == 0 ? 4096 : subscriber_send_queue_capacity_;
         auto sub = std::make_shared<osw::events::Subscriber>(sub_id, fr.filter, cap);
 
-        // Replay (must run BEFORE AddSubscriber to avoid the live-tail
-        // racing past the replay window).
-        if (req->since_seq() > 0) {
-            if (!ReplaySinceSeq(rings_, fr.replay_tiers, req->since_seq(), *sub)) {
-                // sub.RequestClose already invoked inside ReplaySinceSeq.
-                return KickReasonToStatus(sub->GetKickReason(), "during since_seq replay");
+        // Atomic snapshot+add (Codex W2 B-1). The broadcaster holds
+        // its roster lock across the replay closure, so per-tier
+        // worker threads block at RosterSnapshot() and any events
+        // they have already popped from the ring sit in their batch
+        // vector until we release. When workers proceed, the new
+        // subscriber is in the roster and receives those popped
+        // events — closing the replay→live-tail seq gap.
+        //
+        // Worst case: the worker dispatches an entry that was ALSO
+        // in our snapshot (and which we already pushed) — clients
+        // dedup on `seq` per (node, tier), as documented in
+        // SubscribeEventsRequest.since_seq.
+        bool replay_ok = true;
+        broadcaster_->AddSubscriberAtomic(sub, [&](osw::events::Subscriber& s) {
+            if (req->since_seq() > 0) {
+                if (!ReplaySinceSeq(rings_, fr.replay_tiers, req->since_seq(), s)) {
+                    replay_ok = false;
+                }
             }
+        });
+        if (!replay_ok) {
+            // ReplaySinceSeq already called sub.RequestClose() and set
+            // a kick reason. The subscriber is now in the roster but
+            // closed; we Remove + return the matching status. The
+            // broadcaster's IsClosed gate prevents any further push to
+            // its SendQueue.
+            broadcaster_->RemoveSubscriber(sub_id);
+            return KickReasonToStatus(sub->GetKickReason(), "during since_seq replay");
         }
-
-        // Add to roster (live-tail flow now reaches the subscriber).
-        broadcaster_->AddSubscriber(sub);
         osw::audit::Emit(
             "subscriber_connected",
             {{"subscriber_id", sub_id}, {"since_seq", std::to_string(req->since_seq())}});

@@ -38,6 +38,7 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -150,6 +151,43 @@ void Broadcaster::AddSubscriber(std::shared_ptr<Subscriber> sub) {
     }
 }
 
+void Broadcaster::AddSubscriberAtomic(std::shared_ptr<Subscriber> sub,
+                                      const std::function<void(Subscriber&)>& replay_fn) {
+    if (!sub)
+        return;
+    std::size_t new_count = 0;
+    {
+        // Hold roster_mu_ across the entire replay+add sequence. This
+        // forces every per-tier worker thread to block at
+        // RosterSnapshot() (their next dispatch step) — any events
+        // they have already popped from a ring sit in their local
+        // batch vector until we release. When workers proceed, the
+        // new subscriber is in the roster and receives every
+        // already-popped event. There is no event-loss window between
+        // the replay snapshot the caller takes inside `replay_fn` and
+        // the subscriber's appearance on the live-tail path.
+        //
+        // Codex W2 B-1 — the previous AddSubscriber()-after-snapshot
+        // sequence allowed live events with seq in (snap_max,
+        // post_snap_max] to be dispatched to existing subscribers only,
+        // silently dropping them from the new subscriber's stream.
+        //
+        // Lock order: roster_mu_ → (inside replay_fn) ring mu →
+        // SendQueue mu. Workers acquire ring mu and roster mu strictly
+        // sequentially (never both), so the reversed (roster→ring)
+        // order here cannot deadlock with them.
+        std::lock_guard<std::mutex> lk(roster_mu_);
+        if (replay_fn) {
+            replay_fn(*sub);
+        }
+        roster_.push_back(std::move(sub));
+        new_count = roster_.size();
+    }
+    if (health_ != nullptr) {
+        health_->SetSubscriberCount(static_cast<std::uint32_t>(new_count));
+    }
+}
+
 void Broadcaster::RemoveSubscriber(const std::string& id) {
     std::size_t new_count = 0;
     {
@@ -186,6 +224,11 @@ std::vector<std::shared_ptr<Subscriber>> Broadcaster::RosterSnapshot() const {
 void Broadcaster::ProcessOneForTesting(Tier tier, RingEntry entry) {
     auto snapshot = RosterSnapshot();
     Dispatch(tier, entry, snapshot);
+}
+
+void Broadcaster::SetPostPopHookForTesting(std::function<void(Tier)> hook) {
+    std::lock_guard<std::mutex> lk(post_pop_hook_mu_);
+    post_pop_hook_ = std::move(hook);
 }
 
 void Broadcaster::Dispatch(Tier tier,
@@ -251,6 +294,18 @@ void Broadcaster::WorkerLoop(Tier tier) noexcept {
                     return;
                 }
                 continue;  // timeout-empty; loop back
+            }
+            // Test seam (Codex W2 B-1 race test): a hook fired AFTER
+            // popping a non-empty batch but BEFORE we acquire roster_mu_
+            // for RosterSnapshot. Production builds leave this empty;
+            // no overhead beyond a copy of the function object.
+            std::function<void(Tier)> hook;
+            {
+                std::lock_guard<std::mutex> lk(post_pop_hook_mu_);
+                hook = post_pop_hook_;
+            }
+            if (hook) {
+                hook(tier);
             }
             // Brief roster_mu_ hold to snapshot the live subscriber list.
             // We do NOT hold this across the per-subscriber TryPush loop.

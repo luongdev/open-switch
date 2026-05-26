@@ -30,8 +30,11 @@
  */
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -265,6 +268,195 @@ TEST(SubscribeReplayTest, ReplayHonoursNodeIdFilter) {
         ASSERT_TRUE(sub->Queue().TryPush(entry.envelope_bytes));
     }
     EXPECT_EQ(sub->Queue().Size(), 2u);  // only node-a entries
+}
+
+TEST(SubscribeReplayTest, AtomicAddSubscriberClosesReplayLiveTailGap) {
+    // Codex W2 B-1 deterministic race fixture.
+    //
+    // Without the fix, an event with seq in (snap.max_seq, post-snap
+    // max] could be popped from the ring by the broadcaster worker
+    // and dispatched to existing subscribers BEFORE AddSubscriber for
+    // the new subscriber. The new subscriber starts at the next live
+    // event and silently misses the gap entries — violating the proto's
+    // "replay then continue with live tail" contract and the Tier-1
+    // must-persist guarantee.
+    //
+    // The fix: Broadcaster::AddSubscriberAtomic holds roster_mu_ across
+    // the replay closure. The per-tier worker blocks at
+    // RosterSnapshot() after popping its batch from the ring; on
+    // release the new subscriber is in the roster and receives every
+    // popped-but-undispatched event.
+    //
+    // To make the race deterministic we install a post-pop hook on
+    // the broadcaster — fired right after a non-empty batch comes
+    // back from WaitAndPopBatch and BEFORE RosterSnapshot. The hook
+    // blocks the worker until the test signals it; the test uses
+    // that signal to call AddSubscriberAtomic in a controlled
+    // sequence.
+
+    auto rings = std::make_unique<RingSet>(256, 64, 64);
+    osw::Health health;
+    auto bcast = std::make_unique<Broadcaster>(rings.get(), &health);
+    Ring* t1 = rings->Get(Tier::k1Critical);
+    ASSERT_NE(t1, nullptr);
+
+    // Pre-populate 1..50 (the history the new subscriber would replay).
+    std::uint64_t dropped = 0;
+    for (std::uint64_t i = 1; i <= 50; ++i) {
+        t1->Push(MakeEntry(i), &dropped);
+    }
+
+    // An existing subscriber so the broadcaster has someone to dispatch
+    // to during the race window. Sized large enough to never kick.
+    auto existing = std::make_shared<Subscriber>("ex", SubscriberFilter{}, /*cap=*/512);
+    bcast->AddSubscriber(existing);
+
+    // The hook: block on the first batch the worker pops for tier-1
+    // AFTER we've explicitly armed it. We start in "disarmed" state so
+    // the broadcaster can freely drain the initial 1..50 entries to
+    // `existing` (otherwise the worker would hang on Start()).
+    std::mutex hook_mu;
+    std::condition_variable hook_cv;
+    bool hook_armed = false;    // test sets to true after initial drain
+    bool hook_inside = false;   // worker sets when it enters the hook
+    bool hook_release = false;  // test sets to true to let the worker proceed
+
+    bcast->SetPostPopHookForTesting([&](Tier t) {
+        if (t != Tier::k1Critical)
+            return;
+        std::unique_lock<std::mutex> lk(hook_mu);
+        if (!hook_armed)
+            return;
+        hook_inside = true;
+        hook_cv.notify_all();
+        hook_cv.wait(lk, [&]() { return hook_release; });
+        // One-shot: disarm so subsequent batches drain freely.
+        hook_armed = false;
+        hook_inside = false;
+    });
+
+    bcast->Start();
+
+    // Drain the initial 50 entries to `existing`.
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (existing->Queue().Size() < 50 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        ASSERT_EQ(existing->Queue().Size(), 50u);
+    }
+
+    // Arm the hook for the next batch.
+    {
+        std::lock_guard<std::mutex> lk(hook_mu);
+        hook_armed = true;
+    }
+
+    // Push 51..70 — the worker will pop them and then block in the
+    // hook before dispatching. THIS is the race window: in the broken
+    // code, the worker would dispatch to existing-only (no new sub yet)
+    // and the new sub would miss 51..70.
+    for (std::uint64_t i = 51; i <= 70; ++i) {
+        t1->Push(MakeEntry(i), &dropped);
+    }
+
+    // Wait for the worker to reach the hook (it has popped 51..70 and
+    // is waiting before RosterSnapshot).
+    {
+        std::unique_lock<std::mutex> lk(hook_mu);
+        hook_cv.wait_for(lk, std::chrono::seconds(2), [&]() { return hook_inside; });
+        ASSERT_TRUE(hook_inside) << "worker did not reach the post-pop hook";
+    }
+
+    // Now call AddSubscriberAtomic. The handler's replay closure runs
+    // under roster_mu_; the worker is parked in the hook and has not
+    // yet taken roster_mu_. The closure snapshots the ring at
+    // since_seq=50 — at this point the worker has already popped 51..70
+    // so they are NOT in the ring (snapshot returns empty for that
+    // window). The new sub gets nothing from the replay step. But when
+    // we signal the hook to release, the worker will acquire roster_mu_
+    // and dispatch 51..70 — the new sub is now in the roster and
+    // receives them.
+    auto new_sub = std::make_shared<Subscriber>("new", SubscriberFilter{}, /*cap=*/512);
+    bcast->AddSubscriberAtomic(new_sub, [&](Subscriber& s) {
+        // The worker has popped at least some of 51..70 (it's blocked
+        // in the post-pop hook); any items still in the ring at this
+        // point are also dispatched after we release the hook. Push
+        // the ring-resident slice into the new subscriber via the
+        // standard replay path. Items the worker already popped land
+        // on the new sub via the worker's post-hook dispatch (with
+        // possible duplicates that the client dedups by seq, per
+        // SubscribeEventsRequest.since_seq contract).
+        auto snap = t1->SnapshotFromSeq(50);
+        for (const auto& e : snap.entries) {
+            (void)s.Queue().TryPush(e.envelope_bytes);
+        }
+    });
+
+    // Release the worker. It dispatches 51..70 to BOTH existing AND
+    // new_sub.
+    {
+        std::lock_guard<std::mutex> lk(hook_mu);
+        hook_release = true;
+    }
+    hook_cv.notify_all();
+
+    // Push 71..100 — these flow normally to both subs.
+    for (std::uint64_t i = 71; i <= 100; ++i) {
+        t1->Push(MakeEntry(i), &dropped);
+    }
+
+    // Wait for delivery to new_sub. It should receive 51..100 = 50
+    // events.
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (new_sub->Queue().Size() < 50 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+
+    // Drain new_sub and verify seq contiguity 51..100 with no gap.
+    std::set<std::uint64_t> seen;
+    while (auto v = new_sub->Queue().WaitAndPop(std::chrono::milliseconds(20))) {
+        if (!*v)
+            continue;
+        open_switch::events::v1::EventEnvelope env;
+        ASSERT_TRUE(env.ParseFromString(**v));
+        seen.insert(env.seq());
+    }
+    for (std::uint64_t i = 51; i <= 100; ++i) {
+        EXPECT_TRUE(seen.count(i) > 0) << "missing seq=" << i;
+    }
+
+    bcast->Stop();
+}
+
+TEST(SubscribeReplayTest, AtomicAddSubscriberReplayClosureRunsBeforeAdd) {
+    // Sanity test: AddSubscriberAtomic appends the subscriber to the
+    // roster AFTER the closure returns. While the closure runs, the
+    // new sub MUST NOT be visible to RosterSnapshot (because the closure
+    // is running under roster_mu_).
+    auto rings = std::make_unique<RingSet>(64, 64, 64);
+    osw::Health health;
+    auto bcast = std::make_unique<Broadcaster>(rings.get(), &health);
+
+    EXPECT_EQ(bcast->SubscriberCount(), 0u);
+
+    auto sub = std::make_shared<Subscriber>("a", SubscriberFilter{}, /*cap=*/16);
+
+    bool closure_ran = false;
+    bcast->AddSubscriberAtomic(sub, [&](Subscriber&) {
+        // The lock is held — anyone calling SubscriberCount() concurrently
+        // would block. Here we just verify the closure runs to completion.
+        closure_ran = true;
+    });
+    EXPECT_TRUE(closure_ran);
+    EXPECT_EQ(bcast->SubscriberCount(), 1u);
+
+    // Calling with a null replay_fn is also accepted.
+    auto sub2 = std::make_shared<Subscriber>("b", SubscriberFilter{}, /*cap=*/16);
+    bcast->AddSubscriberAtomic(sub2, std::function<void(Subscriber&)>{});
+    EXPECT_EQ(bcast->SubscriberCount(), 2u);
 }
 
 TEST(SubscribeReplayTest, EvictedSinceSeqClosesSubscriber) {
