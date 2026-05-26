@@ -63,6 +63,11 @@ switch_status_t StringCallback(switch_xml_config_item_t* item,
 //   <param name="pii_redaction_patterns" value="\+\d{8,15}|\bAC[A-Z]{3}\d{6}\b"/>
 // (Pipes are escaped at the XML layer by buf-driven escaping; in
 // practice operators use a wrapper string the W4.5 docs explain.)
+//
+// Contract: always-skip-empty for ALL positions (leading, intermediate,
+// trailing). An empty regex would compile to "match empty string" —
+// which redacts every log line to [REDACTED] — and is never what the
+// operator wanted. Reviewed in codex-W1.md I-2.
 void SplitPipeList(const std::string& src, std::vector<std::string>& out) {
     out.clear();
     if (src.empty()) {
@@ -74,7 +79,9 @@ void SplitPipeList(const std::string& src, std::vector<std::string>& out) {
         std::string chunk;
         if (end == std::string::npos) {
             chunk = src.substr(start);
-            out.emplace_back(std::move(chunk));
+            if (!chunk.empty()) {
+                out.emplace_back(std::move(chunk));
+            }
             return;
         }
         chunk = src.substr(start, end - start);
