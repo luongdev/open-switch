@@ -192,6 +192,85 @@ inline void XmlFree(switch_xml_t xml) noexcept {
     switch_xml_free(xml);
 }
 
+// --- Session UUID (helper for post-originate UUID retrieval) ---------
+//
+// switch_core_session_get_uuid returns the UUID string for a session.
+// The returned pointer is owned by the session (never freed by caller).
+// Lifetime: valid as long as the session object exists and the caller
+// holds the read-lock (FF-016).
+
+inline const char* SessionGetUuid(switch_core_session_t* session) noexcept {
+    return session ? switch_core_session_get_uuid(session) : nullptr;
+}
+
+// --- switch_ivr_originate (FF-021) -----------------------------------
+//
+// FF-021: thin inline wrapper for the unattended (V1) originate path.
+//
+//   switch_ivr_originate(
+//       NULL,       // session — NULL for unattended originate
+//       &bleg,      // output: new session ptr (caller rwlock owner)
+//       &cause,     // output: Q.850 cause
+//       bridgeto,   // dial string
+//       timelimit_sec,
+//       NULL,       // state handler table — NULL OK
+//       cid_name,   // cid name override
+//       cid_num,    // cid number override
+//       NULL,       // caller_profile_override — NULL OK
+//       ovars,      // channel variable event (ownership transferred)
+//       SOF_NONE,   // originate flags
+//       NULL,       // cancel_cause — NULL OK
+//       NULL);      // dial handle — NULL OK
+//
+// On SUCCESS: *bleg is set to the new session; the caller owns the
+// rwlock and MUST call switch_core_session_rwunlock(*bleg) once done.
+// *cause is set to SWITCH_CAUSE_SUCCESS (142) or the actual cause if
+// answered with a non-success code.
+// On FAILURE: *bleg is NULL (no rwlock acquired); *cause carries the
+// Q.850 reason (e.g. SWITCH_CAUSE_USER_BUSY, SWITCH_CAUSE_NO_ANSWER).
+// The ovars event is CONSUMED regardless of result — FS destroys it
+// internally. Callers MUST NOT call switch_event_destroy on ovars
+// after this call.
+
+inline switch_status_t OriginateSession(switch_core_session_t* /*session*/,
+                                        switch_core_session_t** bleg,
+                                        switch_call_cause_t* cause,
+                                        const char* bridgeto,
+                                        uint32_t timelimit_sec,
+                                        const char* cid_name_override,
+                                        const char* cid_num_override,
+                                        switch_event_t* ovars) noexcept {
+    return switch_ivr_originate(nullptr,
+                                bleg,
+                                cause,
+                                bridgeto,
+                                timelimit_sec,
+                                nullptr,
+                                cid_name_override,
+                                cid_num_override,
+                                nullptr,
+                                ovars,
+                                SOF_NONE,
+                                nullptr,
+                                nullptr);
+}
+
+// --- switch_channel_hangup (FF-022) ----------------------------------
+//
+// FF-022: switch_channel_hangup is a macro that expands to
+// switch_channel_perform_hangup (src/include/switch_channel.h:589).
+// Idempotent: a second call on an already-hung-up channel (state >=
+// CS_HANGUP) returns CS_HANGUP without further state transitions
+// because the OCF_HANGUP flag is already set (verified in
+// src/switch_channel.c:3380-3394).
+// Caller MUST hold the session read-lock (FF-016, FF-022).
+// Returns the resulting channel state.
+
+inline switch_channel_state_t ChannelHangup(switch_channel_t* channel,
+                                            switch_call_cause_t cause) noexcept {
+    return switch_channel_hangup(channel, cause);
+}
+
 }  // namespace osw::raii::fs
 
 #endif  // !OSW_TEST_FS_MOCK
