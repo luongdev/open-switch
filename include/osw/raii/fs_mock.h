@@ -44,6 +44,10 @@
 #include <cstdint>
 #include <ctime>
 #include <functional>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 // --- FreeSWITCH types (opaque forward decls) -------------------------
 //
@@ -82,13 +86,18 @@ constexpr switch_status_t SWITCH_STATUS_GENERR = 8;
 // but we keep it distinguishable from 0.
 using switch_event_types_t = int;
 constexpr switch_event_types_t SWITCH_EVENT_CUSTOM = 78;
+constexpr switch_event_types_t SWITCH_EVENT_ALL = 100;
 
-// switch_event_add_header_string stack arg — FS uses enum
-// switch_stack_t { SWITCH_STACK_BOTTOM = 0, SWITCH_STACK_TOP = 1, ... }.
-// Mock only needs the bottom value the audit emitter uses.
+// switch_types.h:1031 — switch_stack_t. Only the two values our helpers
+// pass through (BOTTOM, TOP) need to be distinguishable; SWITCH_STACK_BOTTOM
+// is the FS-canonical "append to tail of header list".
 using switch_stack_t = int;
 constexpr switch_stack_t SWITCH_STACK_BOTTOM = 0;
 constexpr switch_stack_t SWITCH_STACK_TOP = 1;
+
+// FF-018 callback typedef. The mock never invokes one — tests that exercise
+// the bind path simply assert on captured registrations.
+using switch_event_callback_t = void (*)(switch_event_t*);
 
 // Bug callback signature (matches src/include/switch_module_interfaces.h:54
 // at v1.10.12). The mock never actually invokes a bug callback.
@@ -109,8 +118,12 @@ struct MockState {
     std::atomic<int> session_locate_calls{0};
     std::atomic<int> session_rwunlock_calls{0};
     std::atomic<int> event_create_calls{0};
+    std::atomic<int> event_create_subclass_calls{0};
+    std::atomic<int> event_add_header_calls{0};
     std::atomic<int> event_destroy_calls{0};
     std::atomic<int> event_fire_calls{0};
+    std::atomic<int> event_bind_calls{0};
+    std::atomic<int> event_unbind_calls{0};
     std::atomic<int> media_bug_add_calls{0};
     std::atomic<int> media_bug_remove_calls{0};
     std::atomic<int> xml_open_cfg_calls{0};
@@ -122,11 +135,38 @@ struct MockState {
     switch_channel_t* next_channel = nullptr;
     switch_event_t* next_event = nullptr;
     switch_status_t next_event_create_status = SWITCH_STATUS_SUCCESS;
+    switch_status_t next_event_create_subclass_status = SWITCH_STATUS_SUCCESS;
     switch_status_t next_event_fire_status = SWITCH_STATUS_SUCCESS;
+    switch_status_t next_event_bind_status = SWITCH_STATUS_SUCCESS;
     switch_media_bug_t* next_bug = nullptr;
     switch_status_t next_bug_add_status = SWITCH_STATUS_SUCCESS;
     switch_status_t next_bug_remove_status = SWITCH_STATUS_SUCCESS;
     switch_xml_t next_xml_root = nullptr;
+
+    // Captured artefacts for verification. Tests read these under
+    // capture_mu (which is locked by the shim layer when writing).
+    std::mutex capture_mu;
+    // Per-event-pointer state, keyed on switch_event_t*. Populated by
+    // EventCreateSubclass + EventAddHeaderString.
+    struct CapturedEvent {
+        switch_event_types_t type = 0;
+        std::string subclass_name;
+        std::vector<std::pair<std::string, std::string>> headers;
+        bool fired = false;
+    };
+    std::unordered_map<switch_event_t*, CapturedEvent> events_by_ptr;
+
+    // Captured bind/unbind registrations. The bind shim stores callback
+    // + user_data; unbind matches on callback equality.
+    struct CapturedBinding {
+        std::string id;
+        switch_event_types_t event = 0;
+        std::string subclass_name;
+        switch_event_callback_t callback = nullptr;
+        void* user_data = nullptr;
+        bool active = true;
+    };
+    std::vector<CapturedBinding> bindings;
 };
 
 // Single mutable instance accessed by both the (mock) shim functions and
@@ -141,8 +181,12 @@ inline void MockReset() {
     m.session_locate_calls = 0;
     m.session_rwunlock_calls = 0;
     m.event_create_calls = 0;
+    m.event_create_subclass_calls = 0;
+    m.event_add_header_calls = 0;
     m.event_destroy_calls = 0;
     m.event_fire_calls = 0;
+    m.event_bind_calls = 0;
+    m.event_unbind_calls = 0;
     m.media_bug_add_calls = 0;
     m.media_bug_remove_calls = 0;
     m.xml_open_cfg_calls = 0;
@@ -151,11 +195,18 @@ inline void MockReset() {
     m.next_channel = nullptr;
     m.next_event = nullptr;
     m.next_event_create_status = SWITCH_STATUS_SUCCESS;
+    m.next_event_create_subclass_status = SWITCH_STATUS_SUCCESS;
     m.next_event_fire_status = SWITCH_STATUS_SUCCESS;
+    m.next_event_bind_status = SWITCH_STATUS_SUCCESS;
     m.next_bug = nullptr;
     m.next_bug_add_status = SWITCH_STATUS_SUCCESS;
     m.next_bug_remove_status = SWITCH_STATUS_SUCCESS;
     m.next_xml_root = nullptr;
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        m.events_by_ptr.clear();
+        m.bindings.clear();
+    }
 }
 
 // --- Shim functions: SAME signatures as the production fs_api.h ------
@@ -178,19 +229,73 @@ inline switch_channel_t* SessionGetChannel(switch_core_session_t* session) noexc
     return session ? Mock().next_channel : nullptr;
 }
 
-inline switch_status_t EventCreate(switch_event_t** out, switch_event_types_t /*type*/) noexcept {
-    Mock().event_create_calls.fetch_add(1, std::memory_order_relaxed);
-    if (Mock().next_event_create_status == SWITCH_STATUS_SUCCESS) {
-        *out = Mock().next_event;
+inline switch_status_t EventCreate(switch_event_t** out, switch_event_types_t type) noexcept {
+    auto& m = Mock();
+    m.event_create_calls.fetch_add(1, std::memory_order_relaxed);
+    if (m.next_event_create_status == SWITCH_STATUS_SUCCESS) {
+        *out = m.next_event;
+        if (m.next_event) {
+            std::lock_guard<std::mutex> g(m.capture_mu);
+            auto& cap = m.events_by_ptr[m.next_event];
+            cap.type = type;
+        }
     } else {
         *out = nullptr;
     }
-    return Mock().next_event_create_status;
+    return m.next_event_create_status;
+}
+
+inline switch_status_t EventCreateSubclass(switch_event_t** out,
+                                           switch_event_types_t type,
+                                           const char* subclass_name) noexcept {
+    auto& m = Mock();
+    m.event_create_subclass_calls.fetch_add(1, std::memory_order_relaxed);
+    // FF-020: subclass_name with event_id != CUSTOM/CLONE returns GENERR.
+    // We don't bother emulating the GENERR path here; tests set
+    // next_event_create_subclass_status to drive failure.
+    if (m.next_event_create_subclass_status == SWITCH_STATUS_SUCCESS) {
+        *out = m.next_event;
+        if (m.next_event) {
+            std::lock_guard<std::mutex> g(m.capture_mu);
+            auto& cap = m.events_by_ptr[m.next_event];
+            cap.type = type;
+            if (subclass_name) {
+                cap.subclass_name = subclass_name;
+                // FF-020: the FS call also adds "Event-Subclass" itself.
+                cap.headers.emplace_back("Event-Subclass", subclass_name);
+            }
+        }
+    } else {
+        *out = nullptr;
+    }
+    return m.next_event_create_subclass_status;
+}
+
+inline switch_status_t EventAddHeaderString(switch_event_t* ev,
+                                            switch_stack_t /*stack*/,
+                                            const char* name,
+                                            const char* value) noexcept {
+    auto& m = Mock();
+    m.event_add_header_calls.fetch_add(1, std::memory_order_relaxed);
+    if (!ev || !name) {
+        return SWITCH_STATUS_FALSE;
+    }
+    std::lock_guard<std::mutex> g(m.capture_mu);
+    auto it = m.events_by_ptr.find(ev);
+    if (it == m.events_by_ptr.end()) {
+        return SWITCH_STATUS_FALSE;
+    }
+    it->second.headers.emplace_back(name, value ? value : "");
+    return SWITCH_STATUS_SUCCESS;
 }
 
 inline void EventDestroy(switch_event_t** ev) noexcept {
     if (ev && *ev) {
-        Mock().event_destroy_calls.fetch_add(1, std::memory_order_relaxed);
+        auto& m = Mock();
+        m.event_destroy_calls.fetch_add(1, std::memory_order_relaxed);
+        // Per FS semantics: destroy frees headers + body. We keep the
+        // capture for post-mortem assertions; tests can look at
+        // events_by_ptr[ptr] after destruction.
         *ev = nullptr;
     }
 }
@@ -199,33 +304,80 @@ inline switch_status_t EventFire(switch_event_t** ev) noexcept {
     if (!ev || !*ev) {
         return SWITCH_STATUS_FALSE;
     }
-    Mock().event_fire_calls.fetch_add(1, std::memory_order_relaxed);
-    if (Mock().next_event_fire_status == SWITCH_STATUS_SUCCESS) {
+    auto& m = Mock();
+    m.event_fire_calls.fetch_add(1, std::memory_order_relaxed);
+    if (m.next_event_fire_status == SWITCH_STATUS_SUCCESS) {
+        {
+            std::lock_guard<std::mutex> g(m.capture_mu);
+            auto it = m.events_by_ptr.find(*ev);
+            if (it != m.events_by_ptr.end()) {
+                it->second.fired = true;
+            }
+        }
         *ev = nullptr;  // mirrors v1.10.12 src/switch_event.c:391
     }
-    return Mock().next_event_fire_status;
+    return m.next_event_fire_status;
 }
 
-// FF-020 mock — switch_event_create_subclass + switch_event_add_header_string.
-// Audit tests drive these; the mock records the call count and stores the
-// subclass + header (name, value) pairs on the singleton.
-inline switch_status_t EventCreateSubclass(switch_event_t** out,
-                                           switch_event_types_t /*type*/,
-                                           const char* /*subclass_name*/) noexcept {
-    Mock().event_create_calls.fetch_add(1, std::memory_order_relaxed);
-    if (Mock().next_event_create_status == SWITCH_STATUS_SUCCESS) {
-        *out = Mock().next_event;
-    } else {
-        *out = nullptr;
+inline switch_status_t EventBind(const char* id,
+                                 switch_event_types_t event,
+                                 const char* subclass_name,
+                                 switch_event_callback_t callback,
+                                 void* user_data) noexcept {
+    auto& m = Mock();
+    m.event_bind_calls.fetch_add(1, std::memory_order_relaxed);
+    if (m.next_event_bind_status != SWITCH_STATUS_SUCCESS) {
+        return m.next_event_bind_status;
     }
-    return Mock().next_event_create_status;
+    std::lock_guard<std::mutex> g(m.capture_mu);
+    MockState::CapturedBinding b;
+    b.id = id ? id : "";
+    b.event = event;
+    b.subclass_name = subclass_name ? subclass_name : "";
+    b.callback = callback;
+    b.user_data = user_data;
+    b.active = true;
+    m.bindings.push_back(std::move(b));
+    return SWITCH_STATUS_SUCCESS;
 }
 
-inline switch_status_t EventAddHeaderString(switch_event_t* /*ev*/,
-                                            switch_stack_t /*stack*/,
-                                            const char* /*name*/,
-                                            const char* /*value*/) noexcept {
-    return SWITCH_STATUS_SUCCESS;
+inline switch_status_t EventUnbindCallback(switch_event_callback_t callback) noexcept {
+    auto& m = Mock();
+    m.event_unbind_calls.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> g(m.capture_mu);
+    bool any = false;
+    for (auto& b : m.bindings) {
+        if (b.active && b.callback == callback) {
+            b.active = false;
+            any = true;
+        }
+    }
+    return any ? SWITCH_STATUS_SUCCESS : SWITCH_STATUS_FALSE;
+}
+
+inline const char* EventGetHeader(switch_event_t* ev, const char* name) noexcept {
+    if (!ev || !name) {
+        return nullptr;
+    }
+    auto& m = Mock();
+    std::lock_guard<std::mutex> g(m.capture_mu);
+    auto it = m.events_by_ptr.find(ev);
+    if (it == m.events_by_ptr.end()) {
+        return nullptr;
+    }
+    for (const auto& [k, v] : it->second.headers) {
+        if (k == name) {
+            return v.c_str();
+        }
+    }
+    return nullptr;
+}
+
+inline const char* EventGetBody(switch_event_t* ev) noexcept {
+    // Bodies are not modelled in the mock; tests that need bodies set
+    // the body via a custom header convention.
+    return nullptr;
+    (void)ev;
 }
 
 inline switch_status_t MediaBugAdd(switch_core_session_t* /*session*/,
