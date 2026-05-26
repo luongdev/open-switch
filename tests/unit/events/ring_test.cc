@@ -29,6 +29,9 @@
 
 #include <gtest/gtest.h>
 
+#include "osw/events/binder.h"  // RingSet
+#include "osw/events/tier.h"
+
 namespace {
 
 using osw::events::Ring;
@@ -327,6 +330,151 @@ TEST_F(RingTest, FourProducersOverflowAccountsAllEntries) {
     const std::size_t kept = r.Size();
     EXPECT_LE(kept, static_cast<std::size_t>(kCapacity));
     EXPECT_EQ(produced - kept, drops_total.load());
+}
+
+// Gemini W2.5 I-4: drain-notifier should fire when a Pop transitions
+// the ring to empty (used by RingSet::WaitUntilAllEmpty so
+// Module::Shutdown doesn't busy-poll).
+TEST_F(RingTest, DrainNotifierFiresOnTryPopWhenRingBecomesEmpty) {
+    Ring r(8);
+    std::atomic<int> notify_count{0};
+    r.SetDrainNotifier([&]() noexcept { notify_count.fetch_add(1); });
+
+    std::uint64_t dropped = 0;
+    r.Push(Entry(1), &dropped);
+    r.Push(Entry(2), &dropped);
+
+    // Pop one — ring goes from 2 → 1 (still non-empty). No notify.
+    auto e1 = r.TryPop();
+    ASSERT_TRUE(e1);
+    EXPECT_EQ(notify_count.load(), 0);
+
+    // Pop again — ring goes from 1 → 0. Notify fires.
+    auto e2 = r.TryPop();
+    ASSERT_TRUE(e2);
+    EXPECT_EQ(notify_count.load(), 1);
+
+    // TryPop on an empty ring — no transition, no notify.
+    auto e3 = r.TryPop();
+    EXPECT_FALSE(e3);
+    EXPECT_EQ(notify_count.load(), 1);
+}
+
+TEST_F(RingTest, DrainNotifierFiresOnWaitAndPopBatchWhenRingBecomesEmpty) {
+    Ring r(8);
+    std::atomic<int> notify_count{0};
+    r.SetDrainNotifier([&]() noexcept { notify_count.fetch_add(1); });
+
+    std::uint64_t dropped = 0;
+    for (std::uint64_t i = 1; i <= 4; ++i) {
+        r.Push(Entry(i), &dropped);
+    }
+
+    // Pull a single batch that consumes everything — one drain notify.
+    auto batch = r.WaitAndPopBatch(/*max_batch=*/16, std::chrono::milliseconds(10));
+    EXPECT_EQ(batch.size(), 4u);
+    EXPECT_EQ(notify_count.load(), 1);
+
+    // Empty-timeout returns no batch and does NOT re-notify (no
+    // transition; ring was already empty).
+    auto empty_batch = r.WaitAndPopBatch(/*max_batch=*/16, std::chrono::milliseconds(5));
+    EXPECT_TRUE(empty_batch.empty());
+    EXPECT_EQ(notify_count.load(), 1);
+}
+
+TEST_F(RingTest, SetDrainNotifierNullClearsCallback) {
+    Ring r(4);
+    std::atomic<int> notify_count{0};
+    r.SetDrainNotifier([&]() noexcept { notify_count.fetch_add(1); });
+
+    std::uint64_t dropped = 0;
+    r.Push(Entry(1), &dropped);
+    auto e = r.TryPop();
+    ASSERT_TRUE(e);
+    EXPECT_EQ(notify_count.load(), 1);
+
+    // Clear the notifier; subsequent drains must not fire it.
+    r.SetDrainNotifier(nullptr);
+    r.Push(Entry(2), &dropped);
+    auto e2 = r.TryPop();
+    ASSERT_TRUE(e2);
+    EXPECT_EQ(notify_count.load(), 1);
+}
+
+// Gemini W2.5 I-4: RingSet::WaitUntilAllEmpty blocks on condvar and
+// returns true when every tier ring has drained, false on deadline.
+// Module::Shutdown calls this after Binder::Stop instead of busy-polling.
+TEST(RingSetTest, WaitUntilAllEmptyReturnsTrueWhenAlreadyEmpty) {
+    osw::events::RingSet rs(8, 8, 8);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+    EXPECT_TRUE(rs.WaitUntilAllEmpty(deadline));
+}
+
+TEST(RingSetTest, WaitUntilAllEmptyTimesOutWhenNotDrained) {
+    osw::events::RingSet rs(8, 8, 8);
+    std::uint64_t dropped = 0;
+    rs.Get(osw::events::Tier::k2State)->Push(Entry(1), &dropped);
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto deadline = t0 + std::chrono::milliseconds(50);
+    EXPECT_FALSE(rs.WaitUntilAllEmpty(deadline));
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+    // Loose lower bound: real wait happened (≥ 30ms; the cv timer is
+    // not microsecond-precise).
+    EXPECT_GE(elapsed, std::chrono::milliseconds(30));
+}
+
+TEST(RingSetTest, WaitUntilAllEmptyWakesOnDrainTransition) {
+    osw::events::RingSet rs(8, 8, 8);
+    std::uint64_t dropped = 0;
+    auto* ring = rs.Get(osw::events::Tier::k1Critical);
+    ASSERT_NE(ring, nullptr);
+    ring->Push(Entry(1), &dropped);
+    ring->Push(Entry(2), &dropped);
+
+    // Spawn a draining consumer that empties the ring after a short
+    // pause. The shutdown-side WaitUntilAllEmpty MUST wake within a
+    // fraction of the deadline.
+    std::thread consumer([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        while (auto e = ring->TryPop()) {
+            (void)e;
+        }
+    });
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto deadline = t0 + std::chrono::seconds(2);
+    const bool drained = rs.WaitUntilAllEmpty(deadline);
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+
+    consumer.join();
+    EXPECT_TRUE(drained);
+    // Wakeup is via condvar, not the 10ms busy-poll the W2.5 code had.
+    // Allow generous slack for slow CI (200ms) — the previous
+    // implementation would also have observed the drain within 10ms +
+    // sleep granularity, so this bound mostly catches "deadline-based"
+    // regressions where the wait sleeps until the deadline expires.
+    EXPECT_LT(elapsed, std::chrono::milliseconds(500));
+}
+
+TEST(RingSetTest, WaitUntilAllEmptyOnlyTripsWhenAllTiersDrained) {
+    osw::events::RingSet rs(8, 8, 8);
+    std::uint64_t dropped = 0;
+    rs.Get(osw::events::Tier::k1Critical)->Push(Entry(1), &dropped);
+    rs.Get(osw::events::Tier::k2State)->Push(Entry(2), &dropped);
+    rs.Get(osw::events::Tier::k3Ephemeral)->Push(Entry(3), &dropped);
+
+    // Drain tier 1 + 2 but leave tier 3 non-empty — the wait should
+    // still time out.
+    std::thread drainer([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        rs.Get(osw::events::Tier::k1Critical)->TryPop();
+        rs.Get(osw::events::Tier::k2State)->TryPop();
+        // intentionally leave tier 3
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
+    EXPECT_FALSE(rs.WaitUntilAllEmpty(deadline));
+    drainer.join();
 }
 
 }  // namespace

@@ -58,6 +58,11 @@ std::optional<RingEntry> Ring::TryPop() noexcept {
     }
     RingEntry e = std::move(q_.front());
     q_.pop_front();
+    // I-4: notify the parent RingSet when the ring transitions to empty
+    // so Module::Shutdown's drain wait wakes without a 10ms busy-poll.
+    if (q_.empty() && drain_notifier_) {
+        drain_notifier_();
+    }
     return e;
 }
 
@@ -81,6 +86,13 @@ std::vector<RingEntry> Ring::WaitAndPopBatch(std::size_t max_batch,
     while (!q_.empty() && out.size() < max_batch) {
         out.push_back(std::move(q_.front()));
         q_.pop_front();
+    }
+    // I-4: notify the parent RingSet when the batch leaves the ring
+    // empty. Single notification per drain transition — cheaper than
+    // notify-on-every-pop and matches what Module::Shutdown actually
+    // wants to wake on (the "is everything drained?" condition).
+    if (q_.empty() && drain_notifier_) {
+        drain_notifier_();
     }
     return out;
 }
@@ -157,6 +169,11 @@ std::size_t Ring::Size() const noexcept {
 void Ring::Close() noexcept {
     closed_.store(true, std::memory_order_release);
     cv_.notify_all();
+}
+
+void Ring::SetDrainNotifier(std::function<void()> notifier) noexcept {
+    std::lock_guard<std::mutex> lk(mu_);
+    drain_notifier_ = std::move(notifier);
 }
 
 }  // namespace osw::events

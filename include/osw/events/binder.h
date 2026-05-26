@@ -69,6 +69,8 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -107,10 +109,53 @@ class RingSet {
     /// Module's drain-wait loop.
     [[nodiscard]] bool AllEmpty() const noexcept;
 
+    /// Block until either AllEmpty() is true or `deadline` is reached.
+    /// Returns true on full drain, false on timeout. Gemini W2.5 I-4:
+    /// replaces the 10ms `std::this_thread::sleep_for` busy-poll that
+    /// was in Module::Shutdown. The wait is driven by a condvar that
+    /// each ring's drain-notifier signals when it transitions to empty.
+    ///
+    /// Thread-safety:
+    ///   - Multiple callers may wait simultaneously (all are notified
+    ///     when AllEmpty becomes true).
+    ///   - May be called from any thread; the notification side runs
+    ///     inside the broadcaster's per-tier worker WaitAndPopBatch
+    ///     callsite, so the wakeup is observed promptly.
+    [[nodiscard]] bool WaitUntilAllEmpty(std::chrono::steady_clock::time_point deadline) noexcept;
+
   private:
     Ring tier1_;
     Ring tier2_;
     Ring tier3_;
+
+    // I-4 drain notification. Lock-order safety:
+    //
+    //   - The drain-notifier callbacks each Ring runs are invoked WITH
+    //     that ring's mu_ held. The callback acquires `drain_mu_` and
+    //     bumps `drain_generation_`. New lock order: ring_mu → drain_mu.
+    //
+    //   - The waiter (`WaitUntilAllEmpty`) holds drain_mu_ inside
+    //     condition_variable::wait_until's predicate. It must NEVER
+    //     call back into any Ring under drain_mu_ — that would reverse
+    //     the order (drain_mu → ring_mu) and deadlock with the
+    //     notifier path.
+    //
+    // The predicate therefore checks only a snapshot of
+    // `drain_generation_` (an integer comparison). `AllEmpty()` is
+    // called OUT of the drain_mu_ critical section, in the loop body
+    // that wraps the wait. The generation counter guarantees we never
+    // miss a drain-empty transition: if the rings are empty *after*
+    // the loop's last AllEmpty() check, either generation incremented
+    // (we'll re-enter wait_until → wake immediately) or we never
+    // entered wait_until (we'll return true on the next iteration).
+    mutable std::mutex drain_mu_;
+    std::condition_variable drain_cv_;
+    std::uint64_t drain_generation_ = 0;  // guarded by drain_mu_
+
+    // Helper that all three Rings' drain-notifier callbacks share.
+    // Bumps drain_generation_ + notify_all so every shutdown waiter
+    // wakes and re-checks AllEmpty() out-of-lock.
+    void NotifyDrainTransition() noexcept;
 };
 
 class Binder {

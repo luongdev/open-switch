@@ -315,12 +315,17 @@ bool Module::Shutdown() noexcept {
         //    empty (the broadcaster's worker threads are still running;
         //    they should drain the tail of in-flight events to
         //    subscribers).
+        //
+        // Gemini W2.5 I-4: condvar-based wait (RingSet::WaitUntilAllEmpty)
+        // replaces the previous `sleep_for(10ms)` busy-poll. The
+        // broadcaster's per-tier WaitAndPopBatch fires a drain-notifier
+        // when a ring transitions to empty; the condvar wakes the
+        // shutdown wait promptly and the deadline still bounds the
+        // wait absolutely.
         if (rings_) {
             const auto deadline = std::chrono::steady_clock::now() +
                                   std::chrono::seconds(config_.event_drain_timeout_seconds);
-            while (!rings_->AllEmpty() && std::chrono::steady_clock::now() < deadline) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
+            rings_->WaitUntilAllEmpty(deadline);
             const bool pending = !rings_->AllEmpty();
             if (pending) {
                 // FS-log-only audit (Codex W2 B-2). Previously this

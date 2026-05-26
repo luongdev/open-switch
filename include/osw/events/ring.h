@@ -63,6 +63,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -156,12 +157,29 @@ class Ring {
 
     [[nodiscard]] bool IsClosed() const noexcept { return closed_.load(std::memory_order_acquire); }
 
+    /// Install a callback invoked whenever a Pop/Batch leaves the ring
+    /// empty. Gemini W2.5 I-4: lets the parent `RingSet` signal a
+    /// condvar so `Module::Shutdown` can wait for full drain without
+    /// the 10ms busy-poll. The callback runs WITH `mu_` held — keep it
+    /// trivial (notify_one/notify_all only); never acquire another lock
+    /// from inside (would risk reversing the lock-order
+    /// `ring mu → roster mu → SendQueue mu`).
+    ///
+    /// `notifier == nullptr` clears the callback. Idempotent installs
+    /// replace the previous callback.
+    void SetDrainNotifier(std::function<void()> notifier) noexcept;
+
   private:
     const std::size_t capacity_;
     mutable std::mutex mu_;
     std::condition_variable cv_;
     std::deque<RingEntry> q_;  // guarded by mu_
     std::atomic<bool> closed_{false};
+
+    // I-4 drain-notifier. Set under mu_; called under mu_ when a pop
+    // drains the queue. Default null = no notification (zero overhead
+    // when the parent RingSet doesn't care, e.g. unit tests).
+    std::function<void()> drain_notifier_;
 
     // Codex W2 I-6: highest seq ever pushed into the ring (across the
     // ring's lifetime, NOT just what's currently resident). Used by
