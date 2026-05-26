@@ -65,8 +65,3 @@ Current state: stubs only. See `specs/` (incoming) for the design.
 Build instructions will follow the spec drop in `specs/91-build-deploy.md`.
 Target: Debian trixie + FreeSWITCH v1.10.12 + gRPC v1.74.0 (built from
 source in the builder image — see `deploy/docker/Dockerfile.builder`).
-
-## Acknowledgements
-
-Architectural patterns informed by [webitel/freeswitch-mod-grpc](https://github.com/webitel/freeswitch-mod-grpc)
-(audio-bridge + media-bug-via-gRPC pattern) and the FreeSWITCH module API.
