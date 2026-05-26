@@ -95,6 +95,9 @@ FS-in-a-thread harness (W5 territory) or a dedicated callback
 test-shim. Keep `fs_mock.h` to a single responsibility: counting
 acquires + releases on FS C API entry points.
 
+W5 will introduce the FS-in-a-thread harness; until then, helpers
+needing callback delivery are deferred to W5.
+
 ## See also
 
 - `openspec/changes/core-module-v1/designs/memory-management.md`
