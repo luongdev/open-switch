@@ -50,7 +50,7 @@ namespace osw {
 /// Cited FACTs:
 /// - FF-007 — bug insertion order.
 class MediaBugLease {
- public:
+  public:
     /// Attaches a media bug. `function` is the FS-internal name used
     /// for switch_core_media_bug_count() filtering (FF-008) and for
     /// the Media-Bug-Function header on SWITCH_EVENT_MEDIA_BUG_START
@@ -65,8 +65,7 @@ class MediaBugLease {
         : session_(session), bug_(nullptr) {
         if (session) {
             const switch_status_t s = ::osw::raii::fs::MediaBugAdd(
-                session, name, function, callback, user_data,
-                stop_time, flags, &bug_);
+                session, name, function, callback, user_data, stop_time, flags, &bug_);
             if (s != SWITCH_STATUS_SUCCESS) {
                 bug_ = nullptr;
             }
@@ -75,22 +74,21 @@ class MediaBugLease {
 
     ~MediaBugLease() noexcept { remove(); }
 
-    MediaBugLease(const MediaBugLease&)            = delete;
+    MediaBugLease(const MediaBugLease&) = delete;
     MediaBugLease& operator=(const MediaBugLease&) = delete;
 
-    MediaBugLease(MediaBugLease&& other) noexcept
-        : session_(other.session_), bug_(other.bug_) {
+    MediaBugLease(MediaBugLease&& other) noexcept : session_(other.session_), bug_(other.bug_) {
         other.session_ = nullptr;
-        other.bug_     = nullptr;
+        other.bug_ = nullptr;
     }
 
     MediaBugLease& operator=(MediaBugLease&& other) noexcept {
         if (this != &other) {
             remove();
-            session_       = other.session_;
-            bug_           = other.bug_;
+            session_ = other.session_;
+            bug_ = other.bug_;
             other.session_ = nullptr;
-            other.bug_     = nullptr;
+            other.bug_ = nullptr;
         }
         return *this;
     }
@@ -109,9 +107,9 @@ class MediaBugLease {
         }
     }
 
- private:
+  private:
     switch_core_session_t* session_;
-    switch_media_bug_t*    bug_;
+    switch_media_bug_t* bug_;
 };
 
 }  // namespace osw

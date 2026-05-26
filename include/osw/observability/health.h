@@ -34,30 +34,30 @@
 namespace osw {
 
 class Health {
- public:
+  public:
     enum class Status : int {
         kUnspecified = 0,
-        kServing     = 1,
-        kNotServing  = 2,
-        kDraining    = 3,
+        kServing = 1,
+        kNotServing = 2,
+        kDraining = 3,
     };
 
     /// A wait-free point-in-time snapshot. Field semantics mirror
     /// open_switch.control.v1.HealthResponse.
     struct Snapshot {
-        Status      status                 = Status::kServing;
+        Status status = Status::kServing;
         std::string module_version;
         std::string freeswitch_version;
-        std::uint64_t active_channels      = 0;
-        std::uint64_t active_media_bugs    = 0;
+        std::uint64_t active_channels = 0;
+        std::uint64_t active_media_bugs = 0;
         std::uint64_t events_emitted_total = 0;
-        std::uint32_t subscriber_count     = 0;
-        std::uint32_t tier1_ring_fill_pct  = 0;
-        std::uint32_t tier2_ring_fill_pct  = 0;
-        std::uint32_t tier3_ring_fill_pct  = 0;
-        std::uint64_t tier1_dropped_total  = 0;
-        std::uint64_t tier2_dropped_total  = 0;
-        std::uint64_t tier3_dropped_total  = 0;
+        std::uint32_t subscriber_count = 0;
+        std::uint32_t tier1_ring_fill_pct = 0;
+        std::uint32_t tier2_ring_fill_pct = 0;
+        std::uint32_t tier3_ring_fill_pct = 0;
+        std::uint64_t tier1_dropped_total = 0;
+        std::uint64_t tier2_dropped_total = 0;
+        std::uint64_t tier3_dropped_total = 0;
     };
 
     Health() = default;
@@ -71,32 +71,50 @@ class Health {
     }
 
     /// Flips status to the new value. Idempotent.
-    void SetStatus(Status s) noexcept {
-        status_.store(s, std::memory_order_release);
-    }
+    void SetStatus(Status s) noexcept { status_.store(s, std::memory_order_release); }
 
     // --- Counter setters (owning subsystems call these) ---------------
     //
     // W1 ships no callers; the slots are exposed so W2/W3/W4 wire their
     // owning subsystems without touching the Health header.
 
-    void SetActiveChannels(std::uint64_t v) noexcept       { active_channels_.store(v, std::memory_order_relaxed); }
-    void SetActiveMediaBugs(std::uint64_t v) noexcept      { active_media_bugs_.store(v, std::memory_order_relaxed); }
-    void SetEventsEmittedTotal(std::uint64_t v) noexcept   { events_emitted_total_.store(v, std::memory_order_relaxed); }
-    void SetSubscriberCount(std::uint32_t v) noexcept      { subscriber_count_.store(v, std::memory_order_relaxed); }
-    void SetTier1RingFillPct(std::uint32_t v) noexcept     { tier1_ring_fill_pct_.store(v, std::memory_order_relaxed); }
-    void SetTier2RingFillPct(std::uint32_t v) noexcept     { tier2_ring_fill_pct_.store(v, std::memory_order_relaxed); }
-    void SetTier3RingFillPct(std::uint32_t v) noexcept     { tier3_ring_fill_pct_.store(v, std::memory_order_relaxed); }
-    void SetTier1DroppedTotal(std::uint64_t v) noexcept    { tier1_dropped_total_.store(v, std::memory_order_relaxed); }
-    void SetTier2DroppedTotal(std::uint64_t v) noexcept    { tier2_dropped_total_.store(v, std::memory_order_relaxed); }
-    void SetTier3DroppedTotal(std::uint64_t v) noexcept    { tier3_dropped_total_.store(v, std::memory_order_relaxed); }
+    void SetActiveChannels(std::uint64_t v) noexcept {
+        active_channels_.store(v, std::memory_order_relaxed);
+    }
+    void SetActiveMediaBugs(std::uint64_t v) noexcept {
+        active_media_bugs_.store(v, std::memory_order_relaxed);
+    }
+    void SetEventsEmittedTotal(std::uint64_t v) noexcept {
+        events_emitted_total_.store(v, std::memory_order_relaxed);
+    }
+    void SetSubscriberCount(std::uint32_t v) noexcept {
+        subscriber_count_.store(v, std::memory_order_relaxed);
+    }
+    void SetTier1RingFillPct(std::uint32_t v) noexcept {
+        tier1_ring_fill_pct_.store(v, std::memory_order_relaxed);
+    }
+    void SetTier2RingFillPct(std::uint32_t v) noexcept {
+        tier2_ring_fill_pct_.store(v, std::memory_order_relaxed);
+    }
+    void SetTier3RingFillPct(std::uint32_t v) noexcept {
+        tier3_ring_fill_pct_.store(v, std::memory_order_relaxed);
+    }
+    void SetTier1DroppedTotal(std::uint64_t v) noexcept {
+        tier1_dropped_total_.store(v, std::memory_order_relaxed);
+    }
+    void SetTier2DroppedTotal(std::uint64_t v) noexcept {
+        tier2_dropped_total_.store(v, std::memory_order_relaxed);
+    }
+    void SetTier3DroppedTotal(std::uint64_t v) noexcept {
+        tier3_dropped_total_.store(v, std::memory_order_relaxed);
+    }
 
     /// Wait-free point-in-time snapshot. The fields are loaded under
     /// std::memory_order_acquire individually — callers tolerate a
     /// tiny window of skew (acceptable for a health endpoint).
     [[nodiscard]] Snapshot GetSnapshot() const;
 
- private:
+  private:
     // Load-time only contract: SetVersions must be called exactly once
     // during Module::Load before any reader observes this instance.
     // The happens-before from the worker-thread spawn establishes the

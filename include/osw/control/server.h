@@ -47,16 +47,16 @@ namespace control {
 class ControlServiceSkeleton;
 
 class GrpcServer {
- public:
+  public:
     /// `health` is the module-wide Health aggregator. The server holds
     /// a non-owning view; the Module owns the Health.
     explicit GrpcServer(Health* health) noexcept;
     ~GrpcServer() noexcept;
 
-    GrpcServer(const GrpcServer&)            = delete;
+    GrpcServer(const GrpcServer&) = delete;
     GrpcServer& operator=(const GrpcServer&) = delete;
-    GrpcServer(GrpcServer&&)                 = delete;
-    GrpcServer& operator=(GrpcServer&&)      = delete;
+    GrpcServer(GrpcServer&&) = delete;
+    GrpcServer& operator=(GrpcServer&&) = delete;
 
     /// Builds + starts the gRPC server bound at `address`. The address
     /// format is "host:port" (matches grpc::ServerBuilder::AddListeningPort).
@@ -82,21 +82,20 @@ class GrpcServer {
     /// Set the module + freeswitch version strings the Health RPC
     /// should report. Called by Module::Load before Start so that
     /// Snapshot includes the right values.
-    void SetVersions(std::string module_version,
-                     std::string freeswitch_version);
+    void SetVersions(std::string module_version, std::string freeswitch_version);
 
- private:
-    Health*                                 health_;
+  private:
+    Health* health_;
     std::shared_ptr<grpc::ServerCredentials> creds_;
-    std::unique_ptr<ControlServiceSkeleton>  service_;
-    std::unique_ptr<grpc::Server>            server_;
-    std::thread                              worker_;
-    std::mutex                               drain_mu_;
-    bool                                     drained_   = false;
-    std::string                              bound_address_;
-    int                                      bound_port_   = -1;
-    std::string                              module_version_;
-    std::string                              freeswitch_version_;
+    std::unique_ptr<ControlServiceSkeleton> service_;
+    std::unique_ptr<grpc::Server> server_;
+    std::thread worker_;
+    std::mutex drain_mu_;
+    bool drained_ = false;
+    std::string bound_address_;
+    int bound_port_ = -1;
+    std::string module_version_;
+    std::string freeswitch_version_;
 };
 
 }  // namespace control

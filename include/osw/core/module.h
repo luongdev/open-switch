@@ -47,21 +47,20 @@ class GrpcServer;  // forward; defined in osw/control/server.h
 }
 
 class Module {
- public:
+  public:
     /// Returns the singleton instance (lazy-initialised on first call).
     static Module& Instance() noexcept;
 
-    Module(const Module&)            = delete;
+    Module(const Module&) = delete;
     Module& operator=(const Module&) = delete;
-    Module(Module&&)                 = delete;
-    Module& operator=(Module&&)      = delete;
+    Module(Module&&) = delete;
+    Module& operator=(Module&&) = delete;
 
     /// Initialises everything. Called exactly once from
     /// mod_open_switch_load. Returns true on success; false otherwise.
     /// On failure the caller returns SWITCH_STATUS_GENERR to FS and
     /// the module is unloaded.
-    bool Load(switch_memory_pool_t* pool,
-              switch_loadable_module_interface_t* iface) noexcept;
+    bool Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t* iface) noexcept;
 
     /// Initiates drain + tears down everything. Called exactly once
     /// from mod_open_switch_shutdown. Returns true if shutdown was
@@ -69,24 +68,24 @@ class Module {
     bool Shutdown() noexcept;
 
     // --- Accessors (used by handlers + tests) ---------------------------
-    [[nodiscard]] const Config&     GetConfig()    const noexcept { return config_; }
-    [[nodiscard]] Health&           GetHealth()    noexcept       { return health_; }
-    [[nodiscard]] const Health&     GetHealth()    const noexcept { return health_; }
-    [[nodiscard]] Lifecycle&        GetLifecycle() noexcept       { return lifecycle_; }
-    [[nodiscard]] const Lifecycle&  GetLifecycle() const noexcept { return lifecycle_; }
+    [[nodiscard]] const Config& GetConfig() const noexcept { return config_; }
+    [[nodiscard]] Health& GetHealth() noexcept { return health_; }
+    [[nodiscard]] const Health& GetHealth() const noexcept { return health_; }
+    [[nodiscard]] Lifecycle& GetLifecycle() noexcept { return lifecycle_; }
+    [[nodiscard]] const Lifecycle& GetLifecycle() const noexcept { return lifecycle_; }
 
- private:
+  private:
     Module() noexcept;
     ~Module() noexcept;
 
-    std::mutex                                 mu_;  // serialises Load/Shutdown
-    bool                                       loaded_   = false;
-    switch_memory_pool_t*                      pool_     = nullptr;
-    switch_loadable_module_interface_t*        iface_    = nullptr;
-    Config                                     config_;
-    Health                                     health_;
-    Lifecycle                                  lifecycle_;
-    std::unique_ptr<control::GrpcServer>       grpc_server_;
+    std::mutex mu_;  // serialises Load/Shutdown
+    bool loaded_ = false;
+    switch_memory_pool_t* pool_ = nullptr;
+    switch_loadable_module_interface_t* iface_ = nullptr;
+    Config config_;
+    Health health_;
+    Lifecycle lifecycle_;
+    std::unique_ptr<control::GrpcServer> grpc_server_;
 };
 
 }  // namespace osw

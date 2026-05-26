@@ -44,8 +44,10 @@ namespace {
 // installed by InstallDefaultSink() at module load (called from
 // log_default_sink.cc's module-init helper).
 
-void NullSink(Level /*level*/, std::string_view /*subsystem*/,
-              std::string_view /*traceparent*/, std::string_view /*message*/) noexcept {
+void NullSink(Level /*level*/,
+              std::string_view /*subsystem*/,
+              std::string_view /*traceparent*/,
+              std::string_view /*message*/) noexcept {
     // Intentional no-op. Production code overrides via
     // InstallDefaultSinkForModule() (log_default_sink.cc) early in
     // mod_open_switch_load.
@@ -105,8 +107,7 @@ thread_local std::string tls_traceparent;
 // --- Public API implementations --------------------------------------
 
 SinkFn SetSinkForTesting(SinkFn new_sink) noexcept {
-    SinkFn previous = g_sink.exchange(new_sink ? new_sink : &NullSink,
-                                      std::memory_order_acq_rel);
+    SinkFn previous = g_sink.exchange(new_sink ? new_sink : &NullSink, std::memory_order_acq_rel);
     return previous;
 }
 
@@ -138,8 +139,7 @@ TraceScope::~TraceScope() noexcept {
 
 // --- Emit functions --------------------------------------------------
 
-void Logv(Level level, std::string_view subsystem,
-          const char* fmt, std::va_list ap) noexcept {
+void Logv(Level level, std::string_view subsystem, const char* fmt, std::va_list ap) noexcept {
     // Format into a stack buffer first; on overflow, heap retry.
     char stack_buf[1024];
     std::va_list ap_copy;
@@ -158,8 +158,7 @@ void Logv(Level level, std::string_view subsystem,
         formatted.resize(static_cast<std::size_t>(n));
         std::va_list ap_retry;
         va_copy(ap_retry, ap);
-        const int n2 = std::vsnprintf(formatted.data(),
-                                      formatted.size() + 1, fmt, ap_retry);
+        const int n2 = std::vsnprintf(formatted.data(), formatted.size() + 1, fmt, ap_retry);
         va_end(ap_retry);
         if (n2 < 0) {
             return;
@@ -174,8 +173,7 @@ void Logv(Level level, std::string_view subsystem,
     }
 }
 
-void Logf(Level level, std::string_view subsystem,
-          const char* fmt, ...) noexcept {
+void Logf(Level level, std::string_view subsystem, const char* fmt, ...) noexcept {
     std::va_list ap;
     va_start(ap, fmt);
     Logv(level, subsystem, fmt, ap);

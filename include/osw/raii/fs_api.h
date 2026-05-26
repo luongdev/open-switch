@@ -41,9 +41,9 @@
 #include "osw/raii/fs_mock.h"
 #else
 
-#include <switch.h>  // FreeSWITCH public API (header-only at module compile time)
+#include <ctime>  // for time_t in MediaBugLease signature
 
-#include <ctime>     // for time_t in MediaBugLease signature
+#include <switch.h>  // FreeSWITCH public API (header-only at module compile time)
 
 namespace osw::raii::fs {
 
@@ -107,8 +107,8 @@ inline switch_status_t MediaBugAdd(switch_core_session_t* session,
                                    time_t stop_time,
                                    uint32_t flags,
                                    switch_media_bug_t** bug_out) noexcept {
-    return switch_core_media_bug_add(session, name, function, callback, user_data,
-                                     stop_time, flags, bug_out);
+    return switch_core_media_bug_add(
+        session, name, function, callback, user_data, stop_time, flags, bug_out);
 }
 
 inline switch_status_t MediaBugRemove(switch_core_session_t* session,

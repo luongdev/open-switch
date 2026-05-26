@@ -28,7 +28,7 @@ switch_xml_t const kRootA = reinterpret_cast<switch_xml_t>(0x60A);
 switch_xml_t const kRootB = reinterpret_cast<switch_xml_t>(0x60B);
 
 class XmlNodeTest : public ::testing::Test {
- protected:
+  protected:
     void SetUp() override { osw::raii::fs::MockReset(); }
 };
 
@@ -111,7 +111,7 @@ TEST_F(XmlNodeTest, MoveConstructionTransfersOwnership) {
     m.next_xml_root = kRootA;
     osw::XmlNode a("f.conf", nullptr);
     osw::XmlNode b(std::move(a));
-    EXPECT_FALSE(static_cast<bool>(a));   // NOLINT(*-use-after-move)
+    EXPECT_FALSE(static_cast<bool>(a));  // NOLINT(*-use-after-move)
     EXPECT_TRUE(static_cast<bool>(b));
     EXPECT_EQ(b.root(), kRootA);
     EXPECT_EQ(m.xml_free_calls.load(), 0);
@@ -128,7 +128,7 @@ TEST_F(XmlNodeTest, MoveAssignmentFreesDestinationsPrior) {
     EXPECT_EQ(m.xml_free_calls.load(), 0);
     b = std::move(a);
     EXPECT_EQ(m.xml_free_calls.load(), 1);
-    EXPECT_FALSE(static_cast<bool>(a));   // NOLINT(*-use-after-move)
+    EXPECT_FALSE(static_cast<bool>(a));  // NOLINT(*-use-after-move)
     EXPECT_TRUE(static_cast<bool>(b));
     EXPECT_EQ(b.root(), kRootA);
 }

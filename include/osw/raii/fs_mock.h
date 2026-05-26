@@ -74,8 +74,8 @@ using switch_xml_t = switch_xml*;  // FS typedefs switch_xml_t to a pointer
 
 using switch_status_t = int;
 constexpr switch_status_t SWITCH_STATUS_SUCCESS = 0;
-constexpr switch_status_t SWITCH_STATUS_FALSE   = 1;
-constexpr switch_status_t SWITCH_STATUS_GENERR  = 8;
+constexpr switch_status_t SWITCH_STATUS_FALSE = 1;
+constexpr switch_status_t SWITCH_STATUS_GENERR = 8;
 
 // switch_types.h:2179 in v1.10.12 — SWITCH_EVENT_CUSTOM is enum value 78
 // at the time of v1.10.12; the exact value doesn't matter for mock tests,
@@ -85,12 +85,13 @@ constexpr switch_event_types_t SWITCH_EVENT_CUSTOM = 78;
 
 // Bug callback signature (matches src/include/switch_module_interfaces.h:54
 // at v1.10.12). The mock never actually invokes a bug callback.
-using switch_abc_type_t        = int;
-using switch_bool_t            = int;
+using switch_abc_type_t = int;
+using switch_bool_t = int;
 constexpr switch_bool_t SWITCH_FALSE = 0;
-constexpr switch_bool_t SWITCH_TRUE  = 1;
-using switch_media_bug_callback_t =
-    switch_bool_t (*)(switch_media_bug_t*, void*, switch_abc_type_t);
+constexpr switch_bool_t SWITCH_TRUE = 1;
+using switch_media_bug_callback_t = switch_bool_t (*)(switch_media_bug_t*,
+                                                      void*,
+                                                      switch_abc_type_t);
 
 // --- Mock state + hook pointers --------------------------------------
 
@@ -110,15 +111,15 @@ struct MockState {
 
     // Programmable return values for the next call. Set to non-default
     // to drive failure paths.
-    switch_core_session_t* next_session       = nullptr;
-    switch_channel_t*      next_channel       = nullptr;
-    switch_event_t*        next_event         = nullptr;
-    switch_status_t        next_event_create_status = SWITCH_STATUS_SUCCESS;
-    switch_status_t        next_event_fire_status   = SWITCH_STATUS_SUCCESS;
-    switch_media_bug_t*    next_bug           = nullptr;
-    switch_status_t        next_bug_add_status      = SWITCH_STATUS_SUCCESS;
-    switch_status_t        next_bug_remove_status   = SWITCH_STATUS_SUCCESS;
-    switch_xml_t           next_xml_root      = nullptr;
+    switch_core_session_t* next_session = nullptr;
+    switch_channel_t* next_channel = nullptr;
+    switch_event_t* next_event = nullptr;
+    switch_status_t next_event_create_status = SWITCH_STATUS_SUCCESS;
+    switch_status_t next_event_fire_status = SWITCH_STATUS_SUCCESS;
+    switch_media_bug_t* next_bug = nullptr;
+    switch_status_t next_bug_add_status = SWITCH_STATUS_SUCCESS;
+    switch_status_t next_bug_remove_status = SWITCH_STATUS_SUCCESS;
+    switch_xml_t next_xml_root = nullptr;
 };
 
 // Single mutable instance accessed by both the (mock) shim functions and
@@ -130,24 +131,24 @@ inline MockState& Mock() {
 
 inline void MockReset() {
     auto& m = Mock();
-    m.session_locate_calls    = 0;
-    m.session_rwunlock_calls  = 0;
-    m.event_create_calls      = 0;
-    m.event_destroy_calls     = 0;
-    m.event_fire_calls        = 0;
-    m.media_bug_add_calls     = 0;
-    m.media_bug_remove_calls  = 0;
-    m.xml_open_cfg_calls      = 0;
-    m.xml_free_calls          = 0;
-    m.next_session   = nullptr;
-    m.next_channel   = nullptr;
-    m.next_event     = nullptr;
+    m.session_locate_calls = 0;
+    m.session_rwunlock_calls = 0;
+    m.event_create_calls = 0;
+    m.event_destroy_calls = 0;
+    m.event_fire_calls = 0;
+    m.media_bug_add_calls = 0;
+    m.media_bug_remove_calls = 0;
+    m.xml_open_cfg_calls = 0;
+    m.xml_free_calls = 0;
+    m.next_session = nullptr;
+    m.next_channel = nullptr;
+    m.next_event = nullptr;
     m.next_event_create_status = SWITCH_STATUS_SUCCESS;
-    m.next_event_fire_status   = SWITCH_STATUS_SUCCESS;
-    m.next_bug       = nullptr;
-    m.next_bug_add_status      = SWITCH_STATUS_SUCCESS;
-    m.next_bug_remove_status   = SWITCH_STATUS_SUCCESS;
-    m.next_xml_root  = nullptr;
+    m.next_event_fire_status = SWITCH_STATUS_SUCCESS;
+    m.next_bug = nullptr;
+    m.next_bug_add_status = SWITCH_STATUS_SUCCESS;
+    m.next_bug_remove_status = SWITCH_STATUS_SUCCESS;
+    m.next_xml_root = nullptr;
 }
 
 // --- Shim functions: SAME signatures as the production fs_api.h ------
@@ -170,8 +171,7 @@ inline switch_channel_t* SessionGetChannel(switch_core_session_t* session) noexc
     return session ? Mock().next_channel : nullptr;
 }
 
-inline switch_status_t EventCreate(switch_event_t** out,
-                                   switch_event_types_t /*type*/) noexcept {
+inline switch_status_t EventCreate(switch_event_t** out, switch_event_types_t /*type*/) noexcept {
     Mock().event_create_calls.fetch_add(1, std::memory_order_relaxed);
     if (Mock().next_event_create_status == SWITCH_STATUS_SUCCESS) {
         *out = Mock().next_event;

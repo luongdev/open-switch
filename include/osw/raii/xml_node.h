@@ -42,7 +42,7 @@ namespace osw {
 /// Cited FACTs:
 /// - FF-015 — switch_xml_open_cfg / switch_xml_free refcount + NULL-safe.
 class XmlNode {
- public:
+  public:
     /// Default-constructed: empty.
     XmlNode() noexcept = default;
 
@@ -60,7 +60,7 @@ class XmlNode {
     static XmlNode adopt(switch_xml_t root) noexcept {
         XmlNode n;
         n.root_ = root;
-        n.cfg_  = nullptr;
+        n.cfg_ = nullptr;
         return n;
     }
 
@@ -70,12 +70,12 @@ class XmlNode {
         }
     }
 
-    XmlNode(const XmlNode&)            = delete;
+    XmlNode(const XmlNode&) = delete;
     XmlNode& operator=(const XmlNode&) = delete;
 
     XmlNode(XmlNode&& other) noexcept : root_(other.root_), cfg_(other.cfg_) {
         other.root_ = nullptr;
-        other.cfg_  = nullptr;
+        other.cfg_ = nullptr;
     }
 
     XmlNode& operator=(XmlNode&& other) noexcept {
@@ -83,10 +83,10 @@ class XmlNode {
             if (root_) {
                 ::osw::raii::fs::XmlFree(root_);
             }
-            root_       = other.root_;
-            cfg_        = other.cfg_;
+            root_ = other.root_;
+            cfg_ = other.cfg_;
             other.root_ = nullptr;
-            other.cfg_  = nullptr;
+            other.cfg_ = nullptr;
         }
         return *this;
     }
@@ -106,7 +106,7 @@ class XmlNode {
         if (root_) {
             ::osw::raii::fs::XmlFree(root_);
             root_ = nullptr;
-            cfg_  = nullptr;
+            cfg_ = nullptr;
         }
     }
 
@@ -114,14 +114,14 @@ class XmlNode {
     /// freeing.
     [[nodiscard]] switch_xml_t release() noexcept {
         switch_xml_t r = root_;
-        root_          = nullptr;
-        cfg_           = nullptr;
+        root_ = nullptr;
+        cfg_ = nullptr;
         return r;
     }
 
- private:
+  private:
     switch_xml_t root_ = nullptr;
-    switch_xml_t cfg_  = nullptr;
+    switch_xml_t cfg_ = nullptr;
 };
 
 }  // namespace osw
