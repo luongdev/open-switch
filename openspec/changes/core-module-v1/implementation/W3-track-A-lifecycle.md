@@ -195,9 +195,14 @@ All unit tests pass under ASAN+LSAN. clang-format + clang-tidy clean.
 No new TSAN violations against the existing race-sensitive filter
 (the new code is single-threaded per RPC).
 
-Commit message convention (matches W1/W2):
+Commit message convention: Conventional Commits (`feat:`, `fix:`,
+`docs:`, `test:`, `chore:`). No `Co-Authored-By` trailer — the
+contributor is always @luongdev. Example:
+
 ```
 feat(control): Originate handler + originate_session RAII
 
-Co-Authored-By: Claude Sonnet <noreply@anthropic.com>
+Lands the Originate RPC against the FS-mock seam. Adds
+osw::control::OriginateOptions builder + RAII wrapper around
+switch_ivr_originate (FF-021).
 ```

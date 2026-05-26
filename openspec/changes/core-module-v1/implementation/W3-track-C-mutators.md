@@ -131,6 +131,5 @@ Standard happy + failure paths per handler. Plus:
 Same matrix as Tracks A + B. No new TSAN considerations (these are
 single-session, single-RPC paths).
 
-```
-Co-Authored-By: Claude Sonnet <noreply@anthropic.com>
-```
+Commit message convention: Conventional Commits, no `Co-Authored-By`
+trailer (contributor is always @luongdev).

@@ -151,6 +151,5 @@ Standard happy-path + every failure mode per handler. Plus:
 Same matrix as Track A. Also: run the concurrent-Bridge regression
 under TSAN to verify the locking-order discipline holds.
 
-```
-co-Authored-By: Claude Sonnet <noreply@anthropic.com>
-```
+Commit message convention: Conventional Commits, no `Co-Authored-By`
+trailer (contributor is always @luongdev).
