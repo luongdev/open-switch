@@ -11,5 +11,23 @@ osw_add_unit_test(
     DEFINES OSW_TEST_FS_MOCK=1
 )
 
-# event_guard_test, media_bug_lease_test, xml_node_test land in
-# subsequent commits.
+osw_add_unit_test(
+    NAME    event_guard_test
+    LABEL   "raii;unit"
+    SOURCES event_guard_test.cc
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+
+osw_add_unit_test(
+    NAME    media_bug_lease_test
+    LABEL   "raii;unit"
+    SOURCES media_bug_lease_test.cc
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+
+osw_add_unit_test(
+    NAME    xml_node_test
+    LABEL   "raii;unit"
+    SOURCES xml_node_test.cc
+    DEFINES OSW_TEST_FS_MOCK=1
+)
