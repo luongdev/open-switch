@@ -15,7 +15,11 @@ of `open_switch.media.v1.MediaBridge`.
 
 The module:
 
-1. Attaches a `SMBF_READ_STREAM` bug at priority 200 on the channel.
+1. Attaches a `SMBF_READ_STREAM` bug at the **`MID_READ`** stage
+   rank (per the stage-rank table in `media-bridge.md`). There is
+   no numeric priority allocator in FreeSWITCH (see FREESWITCH-FACTS
+   FF-007); the MediaBugManager controls ordering by add-order +
+   `SMBF_FIRST` only.
 2. Reads the caller's audio frames (8 kHz typical for telephony).
 3. Resamples to the STT service's preferred rate (16 kHz default).
 4. Encodes to `PCM_S16LE`.
@@ -57,7 +61,11 @@ rpc StopStt(StopSttRequest) returns (StopSttResponse);
 - `interim_results` — bool; if true, the STT service should emit
   interim (partial) transcripts in addition to finals
 - `vocabulary_hints` — optional list of words to bias the recogniser
-- `tenant_id` — for ACL + Redis routing
+- `tenant_id` — for ACL gating and for tagging emitted Tier-2
+  `osw::stt::transcript` events with tenant scope. The module no
+  longer ships events to any in-process transport (post-F0,
+  `transport-adr.md`); subscribers receive the tenant_id-tagged
+  events via gRPC `SubscribeEvents` and route as they choose.
 
 Alternatively, started inline via Originate's `after_answer`:
 
@@ -82,9 +90,15 @@ Caller's mic
     ▼
 FS sofia → media engine → decode → 8 kHz PCM linear
     │
-    │ (other read-side bugs may exist: VAD at priority 100)
+    │ (other read-side bugs may exist: VAD at EARLY stage rank,
+    │  attached with SMBF_FIRST so it sits at the head of the chain)
     ▼
-STT bug (priority 200) — SMBF_READ_STREAM
+STT bug — MID_READ stage rank, SMBF_READ_STREAM
+    │
+    │ Per FF-006 the read side runs READ_REPLACE first as one pass,
+    │ then READ_STREAM as a second pass. The module does not use
+    │ READ_REPLACE in V1, so chain order among READ_STREAM bugs is
+    │ cosmetic for the audio outcome — STT sees the raw caller frame.
     │
     │ copy of frame
     ▼
@@ -132,9 +146,14 @@ stt_start_ms: 1234
 stt_end_ms: 1456
 ```
 
-This goes through the tier router; default rule routes it to the
-Tier-2 sink. Operators may move it to Tier 1 if transcripts are
-compliance-critical (e.g., financial trading floor).
+This goes through the in-module tier router; default rule classifies
+it as Tier 2. Per the post-F0 design (`transport-adr.md`), gRPC
+`SubscribeEvents` is the sole event transport: subscribers receive
+the tagged envelope and persist / forward as they choose. Operators
+may reclassify to Tier 1 in `open_switch.conf.xml` if transcripts
+are compliance-critical (e.g., financial trading floor) — that
+changes the tier ring it lands in and the durability promise the
+operator must make at the subscriber side.
 
 ## Codec considerations
 
@@ -151,26 +170,31 @@ We honour up to 48 kHz; reject sample rates outside [8000, 48000] with
 
 ## Interaction with bot TTS
 
-If the call has BOTH a TTS bug (priority 500, WRITE_REPLACE) AND an
-STT bug (priority 200, READ_STREAM), they coexist independently:
+If the call has BOTH a TTS bug (INJECT stage rank, `WRITE_REPLACE`)
+AND an STT bug (MID_READ stage rank, `READ_STREAM`), they coexist
+independently:
 
 - STT taps read side; bot speech does not enter the STT input by
   default (it's on write side).
 - This is correct for "STT only on caller" — the dominant use case.
 - For "STT on both sides" (e.g., for full transcripts of the
-  conversation), attach an additional bug at priority 750 with
-  `SMBF_WRITE_STREAM` flag and `Purpose=RECORDING_RELAY` (or a
-  dedicated `STT_BOT_VERIFICATION` purpose if you want that as a
-  first-class concept — V1 doesn't add this, the operator can stand
-  up two STT streams).
+  conversation), attach an additional bug at LATE stage rank with
+  `SMBF_WRITE_STREAM` flag and `Purpose=RECORDING_RELAY` (or stand
+  up a second STT stream over the relay's write-tap output). Per
+  FF-001 the write-side bug processing is a single interleaved
+  loop, so this LATE write-tap must be positioned AFTER the INJECT
+  bug in the chain to observe post-injection (bot) audio — which
+  the MediaBugManager's stage-rank coordinator enforces.
 
 ## Barge-in (interaction with VAD)
 
-If a VAD bug at priority 100 detects caller speech during bot
+If a VAD bug at EARLY stage rank detects caller speech during bot
 playback, the VAD bug emits a `BargeIn` Control message on its
 gRPC stream. The orchestrator listens for `osw::vad::barge_in`
 events and decides whether to cancel the TTS turn (typically via
-`StopMediaStream` on the TTS bug).
+`StopMediaStream` on the TTS bug). The VAD bug uses `SMBF_FIRST`
+(per the stage-rank table) so it always sits at the head of the
+chain regardless of attach order.
 
 The STT bug is independent of barge-in — it just keeps tapping
 read-side audio.
@@ -198,7 +222,7 @@ read-side audio.
 | `stt_high_volume_caller` | Loud audio (max amplitude) doesn't clip resampler output. |
 | `stt_silent_caller` | All-silence audio stream → STT returns no events; no errors. |
 | `stt_channel_variable_set` | After final transcript, channel variable `stt_latest_transcript` matches. |
-| `stt_event_tier_default` | Verify event lands on Tier-2 sink with subclass=osw::stt::transcript. |
+| `stt_event_tier_default` | Verify the emitted `osw::stt::transcript` envelope carries `tier=TIER_2_STATE` and is delivered to subscribers via gRPC `SubscribeEvents` (post-F0 there is no in-module sink). |
 
 ## Future work (V1.5+)
 
