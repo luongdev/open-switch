@@ -152,11 +152,16 @@ void GrpcServer::Drain(std::chrono::system_clock::time_point deadline) {
     if (srv) {
         // grpc::Server::Shutdown is thread-safe and idempotent.
         srv->Shutdown(deadline);
-    }
-    if (worker.joinable()) {
+        if (worker.joinable()) {
+            worker.join();
+        }
+        osw::log::Info("control", "gRPC server drained");
+    } else if (worker.joinable()) {
+        // Defensive: shouldn't happen (server_ and worker_ are
+        // populated together by Start), but if Start was partially
+        // initialised, still join.
         worker.join();
     }
-    osw::log::Info("control", "gRPC server drained");
 }
 
 std::string GrpcServer::BoundAddress() const noexcept {
