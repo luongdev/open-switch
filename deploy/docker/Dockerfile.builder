@@ -67,6 +67,8 @@ COPY CMakeLists.txt ./
 COPY proto/ ./proto/
 COPY src/ ./src/
 COPY cmake/ ./cmake/
+COPY include/ ./include/
+COPY tests/ ./tests/
 
 ARG OSW_ENABLE_ASAN=OFF
 ARG OSW_STRICT_WARNINGS=ON

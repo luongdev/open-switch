@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  open_switch.conf.xml — mod_open_switch W1 Foundation default config.
+
+  Operators copy this file into their FreeSWITCH conf tree at
+  ${conf_dir}/autoload_configs/open_switch.conf.xml. Each <param> is
+  consumed by src/core/config_fs.cc via
+  switch_xml_config_parse_module_settings (FREESWITCH-FACTS FF-013).
+
+  Every value below is the compiled-in default; <settings> with no
+  <param> entries gives the same behaviour as deleting this file
+  entirely (Module::Load logs "config file not found; using
+  compiled-in defaults").
+
+  ⚠ Schema notes (W1):
+    - String params taking a "list" (pii_redaction_patterns,
+      tenant_allowed_contexts) use a delimiter-separated convention
+      inside ONE <param value=".."/> attribute. Operators escape pipes
+      inside XML attributes via &amp;#x7c; if their data contains the
+      delimiter character — uncommon for the patterns we ship.
+    - Boolean params accept "true" or "false" (lower or mixed case).
+    - All int params are non-negative; the loader enforces minimums
+      per src/core/config.cc::Validate.
+
+  See:
+    openspec/changes/core-module-v1/implementation/W1-foundation.md
+      §"Default config file" — operator-facing schema.
+    openspec/changes/core-module-v1/designs/architecture.md
+      §"Cross-cutting infrastructure" — runtime semantics.
+-->
+<configuration name="open_switch.conf" description="mod_open_switch settings">
+  <settings>
+
+    <!-- ============================================================
+         gRPC server
+         ============================================================ -->
+
+    <!-- Bind address in host:port form. The module logs the actually-
+         bound port on startup, which differs only when port=0 was
+         used to ask the kernel for one. -->
+    <param name="grpc_listen_address" value="0.0.0.0:50061"/>
+
+    <!-- Hard cap on concurrent gRPC streams (across SubscribeEvents,
+         Media, and control). 0 = unlimited (not recommended). -->
+    <param name="grpc_max_concurrent_streams" value="256"/>
+
+    <!-- grpc::Server::Shutdown deadline (seconds). On shutdown the
+         module calls Shutdown(now + grpc_drain_deadline_seconds); any
+         streams still in-flight after the deadline are forcibly
+         closed. Keep small (<5s) to avoid blocking FS shutdown. -->
+    <param name="grpc_drain_deadline_seconds" value="2"/>
+
+    <!-- ============================================================
+         TLS (optional)
+         If grpc_tls_cert_path is non-empty the module loads PEM
+         creds; otherwise gRPC starts with insecure credentials.
+         mTLS (client-cert verification) is on iff grpc_tls_ca_path
+         is also set.
+         ============================================================ -->
+    <param name="grpc_tls_cert_path" value=""/>
+    <param name="grpc_tls_key_path"  value=""/>
+    <param name="grpc_tls_ca_path"   value=""/>
+
+    <!-- ============================================================
+         Event plane (W2-W4 owns; schema lives here)
+         Per-tier in-memory ring capacities (events).
+         Larger = longer since_seq replay window, more memory.
+         Minimum enforced by Validate(): 256.
+         ============================================================ -->
+    <param name="event_ring_capacity_tier1" value="16384"/>
+    <param name="event_ring_capacity_tier2" value="8192"/>
+    <param name="event_ring_capacity_tier3" value="4096"/>
+
+    <!-- Per-subscriber send queue. Full queue → kick the subscriber
+         with RESOURCE_EXHAUSTED. Fast subscribers unaffected. -->
+    <param name="subscriber_send_queue_capacity" value="4096"/>
+
+    <!-- Max active SubscribeEvents streams. New connections beyond
+         this return RESOURCE_EXHAUSTED. -->
+    <param name="max_subscribers" value="16"/>
+
+    <!-- ============================================================
+         Idempotency cache (W3 owns)
+         ============================================================ -->
+    <param name="idempotency_ttl_seconds"                  value="300"/>
+    <param name="idempotency_cache_capacity"               value="1500"/>
+    <param name="idempotency_in_flight_max_wait_seconds"   value="30"/>
+
+    <!-- ============================================================
+         Drain
+         drain_timeout_seconds — max wait for active channels to drop
+         to zero on SIGTERM before forcing shutdown.
+         event_drain_timeout_seconds — max wait to flush per-tier
+         event rings to subscribers during drain.
+         ============================================================ -->
+    <param name="drain_timeout_seconds"        value="30"/>
+    <param name="event_drain_timeout_seconds"  value="5"/>
+
+    <!-- ============================================================
+         Terminate handler (Codex round-3 finding N5)
+         The terminate handler slot is process-wide; only enable if
+         you know no other C++ module on the FS host needs it. See
+         designs/architecture.md §"Terminate handler chaining".
+         ============================================================ -->
+    <param name="osw_panic_on_unhandled"        value="false"/>
+    <param name="osw_install_signal_handlers"   value="false"/>
+
+    <!-- ============================================================
+         Observability
+         log_level — one of trace|debug|info|warn|error|crit
+         pii_redaction_patterns — pipe-separated regex list applied
+         to formatted log lines before emission. Matches replaced
+         with [REDACTED]. Empty = no redaction.
+         Example value to enable E.164 + US-10-digit redaction:
+           <param name="pii_redaction_patterns"
+                  value="\+\d{8,15}|\b\d{3}-\d{3}-\d{4}\b"/>
+         ============================================================ -->
+    <param name="log_level"                value="info"/>
+    <param name="pii_redaction_patterns"   value=""/>
+
+    <!-- ============================================================
+         Tenant ACL (W3 consumes)
+         Format: "tenant:ctx1,ctx2;tenant2:ctx3"
+         Empty = no per-tenant context restrictions configured;
+         control RPCs that require ACL will deny by default.
+         ============================================================ -->
+    <param name="tenant_allowed_contexts"  value=""/>
+
+  </settings>
+</configuration>
