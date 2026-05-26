@@ -212,8 +212,47 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
             return false;
         }
 
+        // Codex W2 I-5: RAII guard for the partial-init window. If
+        // anything between here and the `commit()` call below throws
+        // (e.g. broadcaster_->Start() failing with std::system_error
+        // on thread-creation under resource exhaustion), the guard
+        // calls Binder::Stop() (and Broadcaster::Stop() if it got
+        // constructed) on unwind. Without this, the binder stays
+        // bound: FS keeps delivering events to our handler, which
+        // pushes into rings whose Broadcaster is half-constructed.
+        // Events would leak into the ring and rot until process
+        // shutdown (the Module destructor's defensive cleanup runs
+        // only at process exit — could be hours later).
+        struct PartialLoadCleanup {
+            events::Binder* binder = nullptr;
+            events::Broadcaster* broadcaster = nullptr;
+            bool committed = false;
+            void commit() noexcept { committed = true; }
+            ~PartialLoadCleanup() noexcept {
+                if (committed)
+                    return;
+                if (broadcaster) {
+                    try {
+                        broadcaster->Stop();
+                    } catch (...) {
+                        // best-effort
+                    }
+                }
+                if (binder) {
+                    try {
+                        binder->Stop();
+                    } catch (...) {
+                        // best-effort
+                    }
+                }
+            }
+        };
+        PartialLoadCleanup load_guard;
+        load_guard.binder = binder_.get();
+
         broadcaster_ = std::make_unique<events::Broadcaster>(rings_.get(), &health_);
         broadcaster_->Start();
+        load_guard.broadcaster = broadcaster_.get();
 
         grpc_server_->SetEventPlane(broadcaster_.get(),
                                     rings_.get(),
@@ -223,6 +262,7 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
         // 8. Flip lifecycle to Serving. Health status is set inside.
         lifecycle_.TransitionToServing();
         loaded_ = true;
+        load_guard.commit();
 
         // 9. Audit emit module_loaded — re-enters the binder we just
         //    installed; lands in Tier-1 ring + flows to any subscriber
