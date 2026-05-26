@@ -51,6 +51,8 @@
 #include "osw/events/tier.h"
 #include "osw/observability/health.h"
 
+#include "envelope_decode_for_test.h"
+
 namespace {
 
 using osw::events::Broadcaster;
@@ -406,13 +408,18 @@ TEST(SubscribeReplayTest, AtomicAddSubscriberClosesReplayLiveTailGap) {
     }
 
     // Drain new_sub and verify seq contiguity 51..100 with no gap.
+    // Uses the wire-format scanner instead of EventEnvelope::
+    // ParseFromString — protobuf is uninstrumented under TSAN so
+    // MapFieldBase::Clear at the head of ParseFromString crashes
+    // inside __tsan_memset. The scanner reads only scalar fields,
+    // never touches map fields. See envelope_decode_for_test.h.
     std::set<std::uint64_t> seen;
     while (auto v = new_sub->Queue().WaitAndPop(std::chrono::milliseconds(20))) {
         if (!*v)
             continue;
-        open_switch::events::v1::EventEnvelope env;
-        ASSERT_TRUE(env.ParseFromString(**v));
-        seen.insert(env.seq());
+        const auto d = osw::events::test::DecodeEnvelopeForTest(**v);
+        ASSERT_TRUE(d.ok);
+        seen.insert(d.seq);
     }
     for (std::uint64_t i = 51; i <= 100; ++i) {
         EXPECT_TRUE(seen.count(i) > 0) << "missing seq=" << i;

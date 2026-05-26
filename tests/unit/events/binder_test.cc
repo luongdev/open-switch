@@ -42,6 +42,7 @@
 #include "osw/events/tier.h"
 #include "osw/observability/health.h"
 #include "osw/raii/fs_mock.h"
+#include "envelope_decode_for_test.h"
 
 namespace {
 
@@ -223,13 +224,18 @@ TEST_F(BinderTest, HandleEventSerializedEnvelopeIsParseable) {
     binder_->HandleEvent(kEv);
     auto e = rings_->Get(Tier::k3Ephemeral)->TryPop();
     ASSERT_TRUE(e);
-    open_switch::events::v1::EventEnvelope env;
-    ASSERT_TRUE(env.ParseFromString(*e->envelope_bytes));
-    EXPECT_EQ(env.event_name(), "HEARTBEAT");
-    EXPECT_EQ(env.tier(), open_switch::events::v1::TIER_3_EPHEMERAL);
-    EXPECT_EQ(env.node_id(), "node-test");
-    EXPECT_EQ(env.seq(), 1u);
-    EXPECT_EQ(env.schema_version(), 1u);
+    // Use the manual wire-format scanner instead of
+    // EventEnvelope::ParseFromString — protobuf is uninstrumented under
+    // TSAN so MapFieldBase::Clear at the head of ParseFromString
+    // crashes inside __tsan_memset. The scanner reads only scalar
+    // fields, never touches map fields. See envelope_decode_for_test.h.
+    const auto d = osw::events::test::DecodeEnvelopeForTest(*e->envelope_bytes);
+    ASSERT_TRUE(d.ok);
+    EXPECT_EQ(d.event_name, "HEARTBEAT");
+    EXPECT_EQ(d.tier, static_cast<int>(open_switch::events::v1::TIER_3_EPHEMERAL));
+    EXPECT_EQ(d.node_id, "node-test");
+    EXPECT_EQ(d.seq, 1u);
+    EXPECT_EQ(d.schema_version, 1u);
 }
 
 TEST_F(BinderTest, ConcurrentProducersAllEventsAccountedFor) {
@@ -267,9 +273,11 @@ TEST_F(BinderTest, ConcurrentProducersAllEventsAccountedFor) {
     std::vector<std::uint64_t> seqs;
     seqs.reserve(total);
     while (auto e = rings_->Get(Tier::k1Critical)->TryPop()) {
-        open_switch::events::v1::EventEnvelope env;
-        ASSERT_TRUE(env.ParseFromString(*e->envelope_bytes));
-        seqs.push_back(env.seq());
+        // Wire-format scan instead of ParseFromString — see the note
+        // above HEARTBEAT test for the TSAN+protobuf rationale.
+        const auto d = osw::events::test::DecodeEnvelopeForTest(*e->envelope_bytes);
+        ASSERT_TRUE(d.ok);
+        seqs.push_back(d.seq);
     }
     std::sort(seqs.begin(), seqs.end());
     ASSERT_EQ(seqs.size(), total);
