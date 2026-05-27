@@ -136,14 +136,13 @@ TEST_F(ExecuteHandlerTest, EmptyArgsPassesNullptrToFs) {
 // ---------------------------------------------------------------------------
 
 TEST_F(ExecuteHandlerTest, AllAllowedAppsAreAccepted) {
+    // V1 allow-list: playback, set, hangup, answer.
+    // (bridge, transfer, play_and_get_digits removed — P1-4.)
     const std::vector<std::string> allowed_apps{
         "playback",
-        "bridge",
-        "transfer",
         "set",
         "hangup",
         "answer",
-        "play_and_get_digits",
     };
     for (const auto& app : allowed_apps) {
         osw::raii::fs::MockReset();
@@ -163,6 +162,8 @@ TEST_F(ExecuteHandlerTest, DisallowedAppReturnsInvalidArgument) {
 }
 
 TEST_F(ExecuteHandlerTest, DisallowedAppsIncludeCommonDangerousOnes) {
+    // Includes bridge, transfer, play_and_get_digits (removed from allow-list
+    // in P1-4) plus the classic dangerous apps.
     const std::vector<std::string> denied{
         "system",
         "shell",
@@ -173,6 +174,9 @@ TEST_F(ExecuteHandlerTest, DisallowedAppsIncludeCommonDangerousOnes) {
         "socket",
         "info",
         "log",
+        "bridge",
+        "transfer",
+        "play_and_get_digits",
     };
     for (const auto& app : denied) {
         osw::raii::fs::MockReset();
