@@ -7,14 +7,16 @@
  *      RPC and reusable from any future handler that wants the same
  *      shape.
  *   2. Method-override bodies for every RPC of ControlServiceSkeleton
- *      EXCEPT Health (real impl lives in health_handler.cc). Each
- *      method body forwards to Unimplemented(...) with the wave that
- *      will land the real implementation.
+ *      EXCEPT:
+ *        - Health (real impl lives in health_handler.cc)
+ *        - SubscribeEvents (real impl lives in subscribe_events_handler.cc)
+ *        - Originate (real impl lives in originate_handler.cc)    [W3A]
+ *        - Hangup (real impl lives in hangup_handler.cc)          [W3A]
+ *        - HangupMany (real impl lives in hangup_many_handler.cc) [W3A]
  *
- * Wave mapping (per W1 contract §"OUT"):
- *   Originate, Hangup, HangupMany, Bridge, Execute, SetVariables,
- *   Hold, Unhold, BlindTransfer  → W3 (Control plane)
- *   SubscribeEvents              → W2 (Event plane)
+ * Wave mapping for remaining stubs:
+ *   Bridge, Execute, BlindTransfer → W3 Track B
+ *   SetVariables, Hold, Unhold     → W3 Track C
  *
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
@@ -47,25 +49,7 @@ grpc::Status Unimplemented(std::string_view method, std::string_view wave) {
 
 namespace osw::control {
 
-// --- W3-bound: control RPCs ----------------------------------------------
-
-grpc::Status ControlServiceSkeleton::Originate(grpc::ServerContext*,
-                                               const open_switch::control::v1::OriginateRequest*,
-                                               open_switch::control::v1::OriginateResponse*) {
-    return handlers::Unimplemented("Originate", "W3");
-}
-
-grpc::Status ControlServiceSkeleton::Hangup(grpc::ServerContext*,
-                                            const open_switch::control::v1::HangupRequest*,
-                                            open_switch::control::v1::HangupResponse*) {
-    return handlers::Unimplemented("Hangup", "W3");
-}
-
-grpc::Status ControlServiceSkeleton::HangupMany(grpc::ServerContext*,
-                                                const open_switch::control::v1::HangupManyRequest*,
-                                                open_switch::control::v1::HangupManyResponse*) {
-    return handlers::Unimplemented("HangupMany", "W3");
-}
+// --- W3 Track B + C stubs (not yet implemented) --------------------------
 
 grpc::Status ControlServiceSkeleton::Bridge(grpc::ServerContext*,
                                             const open_switch::control::v1::BridgeRequest*,

@@ -1,9 +1,12 @@
-# tests/unit/control/CMakeLists.txt — gRPC server smoke tests.
+# tests/unit/control/CMakeLists.txt — gRPC control-plane unit tests.
 #
-# These tests need a real gRPC runtime. CI runs them in the builder
-# container; on dev hosts without gRPC the test fails to link, which
-# matches the contract's "if gRPC isn't installed locally, document
-# the gap; CI runs in the builder container".
+# server_test: gRPC server smoke test. Needs a real gRPC runtime. CI
+# runs in the builder container; on dev hosts without gRPC the target
+# fails to link (documented gap — CI is the source of truth).
+#
+# W3A tests (call_cause_test, originate_handler_test, hangup_handler_test,
+# hangup_many_handler_test): run against the FS-mock seam via
+# osw_control_w3a_test_helpers. No real FS library required.
 #
 # libfreeswitch link is contributed via INTERFACE by osw_observability_fs
 # (audit.cc references switch_event_* symbols). See
@@ -21,3 +24,53 @@ osw_add_unit_test(
     # carries the real implementation.
     LIBS    osw_control osw_control_fs
 )
+
+# W3 Track A — shared helpers + handler tests (FS-mock seam).
+#
+# The handler tests include "src/control/control_service_skeleton.h" via
+# its project-relative path. osw_add_unit_test only adds
+# ${CMAKE_SOURCE_DIR}/include; we must add ${CMAKE_SOURCE_DIR} as well so
+# that "src/..." includes resolve from the project root. The generated
+# proto headers live under ${OSW_PROTO_GEN_DIR} and are already in scope
+# via the transitive PUBLIC include of osw_control (which links osw_proto).
+
+osw_add_unit_test(
+    NAME    call_cause_test
+    LABEL   "control;unit"
+    SOURCES call_cause_test.cc
+    LIBS    osw_control_w3a_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+
+osw_add_unit_test(
+    NAME    originate_handler_test
+    LABEL   "control;unit"
+    SOURCES originate_handler_test.cc
+    # osw_control FIRST: the vtable in osw_control's health_handler.cc.o has
+    # forward references to all ControlServiceSkeleton overrides. Listing
+    # osw_control first lets the linker accumulate the unresolved symbols
+    # before scanning osw_control_w3a_test_helpers (which provides the W3A
+    # overrides + SubscribeEvents stub). Same linker-order discipline as
+    # server_test (osw_control osw_control_fs).
+    LIBS    osw_control osw_control_w3a_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(originate_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
+
+osw_add_unit_test(
+    NAME    hangup_handler_test
+    LABEL   "control;unit"
+    SOURCES hangup_handler_test.cc
+    LIBS    osw_control osw_control_w3a_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(hangup_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
+
+osw_add_unit_test(
+    NAME    hangup_many_handler_test
+    LABEL   "control;unit"
+    SOURCES hangup_many_handler_test.cc
+    LIBS    osw_control osw_control_w3a_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(hangup_many_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
