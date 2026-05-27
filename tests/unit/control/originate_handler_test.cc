@@ -308,4 +308,30 @@ TEST_F(OriginateHandlerTest, VariablesCreateOvarsEvent) {
     EXPECT_EQ(m.originate_calls.load(), 1);
 }
 
+TEST_F(OriginateHandlerTest, OvarsEventDestroyedByOptionsOwnerNotLeak) {
+    // P2-6: OriginateOptions owns ovars via dtor (ovars_ptr() borrow, not
+    // ReleaseOvars). After Originate returns the options object is destroyed;
+    // the mock EventDestroy counter must be >= 1 (for the ovars event).
+    auto& m = osw::raii::fs::Mock();
+    m.next_originate_status = SWITCH_STATUS_SUCCESS;
+    m.next_originate_bleg = kBlegSession;
+    m.next_bleg_uuid = kTestUuid;
+    m.next_event = kOvarsEvent;
+    m.next_event_create_status = SWITCH_STATUS_SUCCESS;
+    m.next_event_create_subclass_status = SWITCH_STATUS_SUCCESS;
+
+    open_switch::control::v1::OriginateRequest req;
+    AddEndpoint(req, "sofia/gateway/gw1/+441234567890");
+    // Include a variable so ovars event is allocated.
+    (*req.mutable_variables())["cdr_tag"] = "test";
+    open_switch::control::v1::OriginateResponse resp;
+    grpc::ServerContext ctx;
+
+    const grpc::Status status = svc_->Originate(&ctx, &req, &resp);
+    ASSERT_TRUE(status.ok());
+
+    // The OriginateOptions dtor must have called EventDestroy on the ovars ptr.
+    EXPECT_GE(m.event_destroy_calls.load(), 1);
+}
+
 }  // namespace

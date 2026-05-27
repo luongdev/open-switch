@@ -19,8 +19,9 @@
  *   RPC; no shared state is mutated. No mutex needed.
  *
  * Memory:
- *   - OriginateOptions owns the ovars event; it is transferred to
- *     switch_ivr_originate via ReleaseOvars(), which consumes it.
+ *   - OriginateOptions owns the ovars event via RAII dtor. A borrowed
+ *     pointer is passed to switch_ivr_originate via ovars_ptr(); the dtor
+ *     always destroys it (P2-6 — avoid leak when FS does not consume it).
  *   - If originate succeeds, the bleg session read-lock is acquired and
  *     held while we extract the UUID, then immediately released via
  *     SessionRwunlock — we do NOT hold the bleg lock for the rest of
@@ -87,10 +88,12 @@ grpc::Status ControlServiceSkeleton::Originate(
     switch_core_session_t* bleg = nullptr;
     switch_call_cause_t cause = SWITCH_CAUSE_NORMAL_CLEARING;
 
-    // Transfer ownership of ovars to switch_ivr_originate (FF-021:
-    // FS consumes the event regardless of outcome).
-    switch_event_t* ovars = opts.ReleaseOvars();
-
+    // Pass a borrowed pointer to switch_ivr_originate. OriginateOptions
+    // retains ownership and its dtor calls switch_event_destroy on the event.
+    // This avoids a leak in FS builds where switch_ivr_originate does NOT
+    // unconditionally consume the caller-supplied ovars (behaviour is
+    // version-dependent). Using ovars_ptr() instead of ReleaseOvars()
+    // ensures the event is always destroyed regardless of outcome (P2-6).
     const switch_status_t rc =
         osw::raii::fs::OriginateSession(nullptr,
                                         &bleg,
@@ -99,7 +102,7 @@ grpc::Status ControlServiceSkeleton::Originate(
                                         opts.timeout_sec(),
                                         opts.cid_name().empty() ? nullptr : opts.cid_name().c_str(),
                                         opts.cid_num().empty() ? nullptr : opts.cid_num().c_str(),
-                                        ovars);
+                                        opts.ovars_ptr());
 
     if (rc != SWITCH_STATUS_SUCCESS) {
         osw::log::Warn(
