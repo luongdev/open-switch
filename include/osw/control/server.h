@@ -50,7 +50,6 @@ class RingSet;
 
 namespace control {
 
-class AuthInterceptorFactory;
 class ControlServiceSkeleton;
 class RpcMetrics;
 
@@ -121,7 +120,6 @@ class GrpcServer {
     std::shared_ptr<grpc::ServerCredentials> creds_;
     std::unique_ptr<ControlServiceSkeleton> service_;
     std::unique_ptr<grpc::Server> server_;
-    std::shared_ptr<AuthInterceptorFactory> auth_factory_;  ///< W4B
     std::thread worker_;
     std::mutex drain_mu_;
     bool drained_ = false;

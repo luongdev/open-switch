@@ -18,13 +18,9 @@
 add_library(osw_control STATIC
     server.cc
     tls.cc
-    # W4 Track A — TLS + cert reloader
+    # W4 Track A — TLS + cert reloader (opt-in mTLS; default off)
     config_tls.cc
     tls_reloader.cc
-    # W4 Track B — Auth + RBAC interceptor
-    auth_interceptor.cc
-    rbac.cc
-    jwt_verifier.cc
     # W4 Track C — RPC metrics collector + interceptor
     rpc_metrics.cc
     handlers/health_handler.cc

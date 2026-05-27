@@ -19,9 +19,6 @@
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/server_builder.h>
 
-#include "osw/control/auth_interceptor.h"
-#include "osw/control/jwt_verifier.h"
-#include "osw/control/rbac.h"
 #include "osw/control/rpc_metrics.h"
 #include "osw/control/tls.h"
 #include "osw/core/config.h"
@@ -92,83 +89,23 @@ bool GrpcServer::Start(const Config& config) {
     service_ = std::make_unique<ControlServiceSkeleton>(health_);
     service_->SetVersions(module_version_, freeswitch_version_);
 
-    // --- W4 Track B: Build RBAC registry + auth interceptor --------------
-    //
-    // Parse the auth config from the embedded XML in config.auth_xml (if
-    // present) or fall back to a default-deny empty registry.  The registry
-    // is wrapped in the AuthInterceptorFactory which is registered with the
-    // gRPC ServerBuilder below.
-    //
-    // JWT verifier: loaded from jwt_public_key_path if set.
-    std::shared_ptr<RbacRegistry> rbac_registry;
-    std::unique_ptr<JwtVerifier> jwt_verifier;
-
-    if (!config.auth_xml.empty()) {
-        AuthConfig auth_cfg = ParseAuthConfig(config.auth_xml);
-        if (!auth_cfg.jwt_public_key_path.empty()) {
-            jwt_verifier = JwtVerifier::FromPemFile(auth_cfg.jwt_public_key_path);
-            if (!jwt_verifier) {
-                osw::log::Warn("control",
-                               "Failed to load JWT public key from '%s'; "
-                               "JWT auth disabled",
-                               auth_cfg.jwt_public_key_path.c_str());
-            }
-        }
-        rbac_registry = std::make_shared<RbacRegistry>(std::move(auth_cfg));
-    } else {
-        // No auth XML → default-deny registry (require=true, no roles).
-        rbac_registry = std::make_shared<RbacRegistry>(AuthConfig{});
-        osw::log::Warn("control",
-                       "No <auth> config found; using default-deny RBAC "
-                       "(all RPCs except anonymous Health.Check will be rejected)");
-    }
-
-    auth_factory_ =
-        std::make_shared<AuthInterceptorFactory>(rbac_registry, std::move(jwt_verifier));
-
     grpc::ServerBuilder builder;
     int bound_port = 0;
     builder.AddListeningPort(config.grpc_listen_address, creds_, &bound_port);
     builder.RegisterService(service_.get());
 
-    // Register all server-side interceptors in a single SetInterceptorCreators
-    // call. The gRPC API REPLACES the interceptor vector on each call to this
-    // method — there's no append — so Auth (W4B) and RpcMetrics (W4C) must be
-    // batched here. Per FF-029: SetInterceptorCreators must be called before
-    // BuildAndStart(); the factory pointer lifetime must exceed the server's
-    // lifetime (auth_factory_ + rpc_metrics_ members satisfy this).
-    //
-    // Both factories conform to grpc::experimental::ServerInterceptorFactoryInterface
-    // (gRPC 1.74 puts the server-side interceptor API in the `experimental`
-    // namespace).
-    {
+    // Register the RpcMetrics interceptor (W4C) when a collector was injected
+    // via SetRpcMetrics. mod_open_switch is an internal control plane for the
+    // tts/stt ecosystem — clients are trusted peers on the private network, so
+    // there is no auth/RBAC interceptor here. Network-layer controls (firewall,
+    // VPN, docker network isolation) are the boundary; mTLS is available via
+    // BuildServerCredentials when operators want zero-trust between hosts.
+    if (rpc_metrics_) {
         std::vector<std::unique_ptr<grpc::experimental::ServerInterceptorFactoryInterface>>
             creators;
-
-        // W4B: Auth + RBAC interceptor. We retain auth_factory_ as a
-        // shared_ptr member so UpdateRegistry() (SIGHUP hot-reload) can
-        // swap the RBAC table without restarting the server. Wrap with a
-        // non-owning adapter so the SetInterceptorCreators contract
-        // (unique_ptr ownership) is honoured while we keep our own ref.
-        struct AuthFactoryAdapter : public grpc::experimental::ServerInterceptorFactoryInterface {
-            explicit AuthFactoryAdapter(std::shared_ptr<AuthInterceptorFactory> f)
-                : factory(std::move(f)) {}
-            grpc::experimental::Interceptor* CreateServerInterceptor(
-                grpc::experimental::ServerRpcInfo* info) override {
-                return factory->CreateServerInterceptor(info);
-            }
-            std::shared_ptr<AuthInterceptorFactory> factory;
-        };
-        creators.push_back(std::make_unique<AuthFactoryAdapter>(auth_factory_));
-
-        // W4C: RpcMetrics interceptor (optional — only when a collector
-        // was injected via SetRpcMetrics).
-        if (rpc_metrics_) {
-            creators.push_back(rpc_metrics_->MakeFactory());
-            osw::log::Info("control", "RpcMetrics interceptor registered");
-        }
-
+        creators.push_back(rpc_metrics_->MakeFactory());
         builder.experimental().SetInterceptorCreators(std::move(creators));
+        osw::log::Info("control", "RpcMetrics interceptor registered");
     }
     // Note: bound_port is filled in by BuildAndStart() (the resolver
     // runs there, not at AddListeningPort registration). We capture
