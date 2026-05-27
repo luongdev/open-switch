@@ -102,6 +102,13 @@ class TtsPlayoutBuffer {
 
     mutable std::mutex mu_;
     std::deque<AudioFrame> queue_;
+    /// W6.5 P2-004 fix: offset (in samples) into queue_.front() if the
+    /// previous Pop() consumed only part of it.  Pop() drains from this
+    /// offset; pops the front frame only when the offset reaches
+    /// sample_count().  Previous code dropped the unconsumed tail every
+    /// Pop, which caused audible truncation when the TTS service sent
+    /// frames larger than one FS ptime (20 ms).
+    std::uint32_t front_offset_samples_ = 0;
     /// Cached sum of queue_ frame durations in ms (recomputed on push/pop).
     std::uint32_t depth_ms_ = 0;
 

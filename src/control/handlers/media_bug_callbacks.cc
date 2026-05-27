@@ -54,15 +54,15 @@ struct BugCallbackContextFwd {
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// Seq-number state for read-tap callbacks.  One instance per stream;
-// allocated/freed alongside WriteCallbackCtx / StreamClient* pointer.
-// ---------------------------------------------------------------------------
-struct OswReadTapCtx {
-    osw::media::StreamClient* client;
-    std::atomic<std::uint64_t> seq{0};
-    std::atomic<std::uint64_t> ts_samples{0};
-};
+// W6.5 P4-001 fix: removed dead OswReadTapCtx struct.  The seq + ts
+// counters now live on StreamClient (Gemini-P1 fix replaces the
+// `static thread_local` state below that leaked across pooled FS
+// media threads).
+//
+// W6.5 P2-003 follow-up: a future refactor may upgrade user_data to a
+// proper per-stream context that ALSO carries a Resampler instance
+// (per FF-033), but the seq/ts portion is already fixed by routing
+// through StreamClient::NextSeq + AdvanceTimestamp.
 
 // OswStreamingReadTap --------------------------------------------------------
 
@@ -107,11 +107,14 @@ extern "C" switch_bool_t OswStreamingReadTap(switch_media_bug_t* bug,
 
     std::vector<std::int16_t> samples(src, src + n_samples);
 
-    static thread_local std::uint64_t tl_seq = 0;
-    static thread_local std::uint64_t tl_ts = 0;
-    const std::uint64_t seq = tl_seq++;
-    const std::uint64_t ts = tl_ts;
-    tl_ts += n_samples / ch;
+    // W6.5 Gemini-P1 fix: per-stream seq + ts via StreamClient atomics.
+    // Previously `static thread_local` globals were used; FS pools its
+    // media threads and reuses one thread across many channels, so the
+    // seq/ts values leaked across unrelated calls — sequences would
+    // skip, timestamps from a previous call would bleed into the next.
+    // StreamClient owns one of each per stream, so values are isolated.
+    const std::uint64_t seq = client->NextSeq();
+    const std::uint64_t ts = client->AdvanceTimestamp(n_samples / ch);
 
     osw::media::AudioFrame af(std::move(samples), rate, ch, seq, ts);
     client->SendAudio(std::move(af));

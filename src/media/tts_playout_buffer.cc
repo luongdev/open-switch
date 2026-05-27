@@ -93,17 +93,29 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
     // Case: Buffer has frames — deliver.
     if (!queue_.empty()) {
         AudioFrame& front = queue_.front();
-        const std::uint32_t avail = static_cast<std::uint32_t>(front.sample_count());
+        // W6.5 P2-004 fix: respect front_offset_samples_ so partial-frame
+        // consumption preserves the tail across multiple Pop() calls.
+        const std::uint32_t total = static_cast<std::uint32_t>(front.sample_count());
+        const std::uint32_t avail = (front_offset_samples_ >= total)
+                                        ? 0u
+                                        : (total - front_offset_samples_);
         const std::uint32_t n = std::min(out_cap_samples, avail);
-        std::memcpy(out, front.data(), n * sizeof(std::int16_t));
+        std::memcpy(out, front.data() + front_offset_samples_, n * sizeof(std::int16_t));
 
-        // Keep last frame for kRepeatLast policy.
+        // Keep last frame for kRepeatLast policy (full frame, not slice).
         if (cfg_.underrun == UnderrunPolicy::kRepeatLast) {
             last_frame_ = front;
             has_last_frame_ = true;
         }
 
-        queue_.pop_front();
+        // Pop only when the frame is fully drained; otherwise advance
+        // the offset and leave the frame at queue_.front() for the next
+        // Pop() call.
+        front_offset_samples_ += n;
+        if (front_offset_samples_ >= total) {
+            queue_.pop_front();
+            front_offset_samples_ = 0;
+        }
         RecomputeDepth();
         playback_started_.store(true, std::memory_order_relaxed);
         return n;
@@ -167,10 +179,16 @@ bool TtsPlayoutBuffer::EndOfStream() const noexcept {
 }
 
 void TtsPlayoutBuffer::SetStreamId(std::string stream_id) noexcept {
+    // W6.5 P2-005 fix: serialise label writes under mu_ so the
+    // StreamClient reader thread (which calls Push() → potentially
+    // EmitOverrunEvent under mu_, reading stream_id_) doesn't race
+    // with the handler thread setting the labels after Open() returned.
+    std::lock_guard<std::mutex> lk(mu_);
     stream_id_ = std::move(stream_id);
 }
 
 void TtsPlayoutBuffer::SetTenantId(std::string tenant_id) noexcept {
+    std::lock_guard<std::mutex> lk(mu_);  // W6.5 P2-005 fix
     tenant_id_ = std::move(tenant_id);
 }
 
