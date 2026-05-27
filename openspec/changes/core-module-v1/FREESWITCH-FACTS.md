@@ -2225,6 +2225,159 @@ SWITCH_DECLARE(switch_channel_state_t) switch_channel_perform_hangup(switch_chan
 
 ---
 
+## FF-026 — `switch_channel_set_variable` lifetime and thread safety
+
+**Claim.** `switch_channel_set_variable(channel, name, value)` expands
+to `switch_channel_set_variable_var_check(channel, name, value, SWITCH_TRUE)`.
+The underlying function copies both `name` and `value` into the channel's
+APR memory pool. The caller's buffers can be freed immediately after the
+call returns — the channel holds its own copy.
+
+The function is safe to call from any thread as long as the caller holds
+the session read-lock (FF-016). It acquires `channel->profile_mutex`
+internally before writing to the hash.
+
+**Source.**
+
+- Macro: `src/include/switch_channel.h:299`.
+- Underlying function: `src/include/switch_channel.h:279` (declaration),
+  `src/switch_channel.c` (definition).
+
+**Permalink (macro).**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_channel.h#L299>
+
+**Excerpt — macro (line 299):**
+
+```c
+#define switch_channel_set_variable(_channel, _var, _val) \
+    switch_channel_set_variable_var_check(_channel, _var, _val, SWITCH_TRUE)
+```
+
+**Excerpt — declaration (line 279):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_channel_set_variable_var_check(
+    switch_channel_t *channel, const char *varname, const char *value,
+    switch_bool_t var_check);
+```
+
+**Implications.**
+
+- Setting a variable to NULL or empty string clears it. Calling with
+  `value = NULL` removes the key from the hash.
+- Caller retains no obligation to keep the `varname` or `value` strings
+  alive after the call. This means using a `std::string::c_str()` pointer
+  from a temporary is safe as long as the temporary is alive during the
+  call — which it is when passed inline as a function argument.
+- All-or-nothing semantics (atomic batch set) are not available at the FS
+  level; each call is independent.
+
+**Used by W3 code:**
+
+- `src/control/handlers/set_variables_handler.cc` — iterates the proto
+  variables map and calls `osw::raii::fs::ChannelSetVariable` once per
+  pair.
+
+---
+
+## FF-027 — `switch_ivr_hold_uuid` / `switch_ivr_unhold_uuid` semantics + `message` vs `moh_class` resolution
+
+**Claim.**
+
+```c
+// switch_ivr.h:645
+switch_status_t switch_ivr_hold_uuid(const char *uuid, const char *message,
+                                     switch_bool_t moh);
+
+// switch_ivr.h:661
+switch_status_t switch_ivr_unhold_uuid(const char *uuid);
+```
+
+Both functions return `switch_status_t`. `SWITCH_STATUS_SUCCESS` means the
+FS state machine accepted the request, NOT that the user-perceived hold
+state has completed. The second parameter to `switch_ivr_hold_uuid` is
+`message` (a display string or MoH class name), NOT `moh_class` — this
+differs from naive expectation.
+
+`hold_uuid` is guarded by `CF_ANSWERED`: it will not hold a channel that
+is not answered. `unhold_uuid` requires `CF_HOLD`. Neither function
+performs these checks internally in a way that exposes a distinct error
+code — they silently succeed or return FALSE. Our handlers check the flags
+explicitly before calling to surface FAILED_PRECONDITION.
+
+Idempotency: holding an already-held channel produces a no-op SUCCESS;
+unholding a not-held channel returns FALSE without side effects.
+
+**Source.**
+
+- `src/include/switch_ivr.h:645` (hold_uuid declaration).
+- `src/include/switch_ivr.h:661` (unhold_uuid declaration).
+
+**Permalink.**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_ivr.h#L645>
+
+**Excerpt — hold_uuid (line 645):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_ivr_hold_uuid(const char *uuid,
+                                                     const char *message,
+                                                     switch_bool_t moh);
+```
+
+**Excerpt — unhold_uuid (line 661):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_ivr_unhold_uuid(const char *uuid);
+```
+
+**Contract correction — `message` vs `moh_class`.**
+
+The planning doc (`W3-track-C-mutators.md`) referred to the second
+`switch_ivr_hold_uuid` parameter as `moh_class`. The actual FS signature
+names it `message`. Resolution:
+
+- The proto's `HoldRequest` carries no `moh_class` field. Pass `nullptr`
+  as `message` so FS picks the channel's configured default MoH class.
+- Always pass `moh = SWITCH_TRUE` (play music-on-hold; FS internally
+  selects the class when `message` is NULL).
+- If a future proto version adds a `moh_class` field, it maps to the
+  `message` argument (FS interprets a non-NULL message as a class name in
+  `switch_ivr.c`).
+
+**`switch_channel_test_flag` (guard checks).**
+
+```c
+// switch_channel.h:400
+uint32_t switch_channel_test_flag(switch_channel_t *channel,
+                                  switch_channel_flag_t flag);
+```
+
+- `CF_ANSWERED = 1` — gate for Hold (channel must be answered).
+- `CF_HOLD` — gate for Unhold (channel must currently be on hold).
+
+Returns non-zero if the flag is set.
+
+**Implications.**
+
+- Pre-checking `CF_ANSWERED` before calling `switch_ivr_hold_uuid` is
+  required to surface `FAILED_PRECONDITION` correctly; the function
+  itself does not distinguish "channel not answered" from other errors in
+  its return value.
+- Similarly, pre-checking `CF_HOLD` before `switch_ivr_unhold_uuid`
+  catches "not on hold" as `FAILED_PRECONDITION`.
+- Caller must hold the session read-lock (FF-016) during both the flag
+  check and the IVR call to prevent a race between flag observation and
+  the call.
+
+**Used by W3 code:**
+
+- `src/control/handlers/hold_handler.cc` — checks `CF_ANSWERED`, then
+  calls `osw::raii::fs::HoldUuid(uuid, nullptr, SWITCH_TRUE)`.
+- `src/control/handlers/unhold_handler.cc` — checks `CF_HOLD`, then
+  calls `osw::raii::fs::UnholdUuid(uuid)`.
+
+---
+
 ## How to add a new FF entry
 
 If you find a previously-undocumented FreeSWITCH behaviour that
