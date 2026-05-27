@@ -10,13 +10,15 @@
  *      EXCEPT:
  *        - Health (real impl lives in health_handler.cc)
  *        - SubscribeEvents (real impl lives in subscribe_events_handler.cc)
- *        - Originate (real impl lives in originate_handler.cc)    [W3A]
- *        - Hangup (real impl lives in hangup_handler.cc)          [W3A]
- *        - HangupMany (real impl lives in hangup_many_handler.cc) [W3A]
+ *        - Originate (real impl lives in originate_handler.cc)       [W3A]
+ *        - Hangup (real impl lives in hangup_handler.cc)             [W3A]
+ *        - HangupMany (real impl lives in hangup_many_handler.cc)    [W3A]
+ *        - Bridge (real impl lives in bridge_handler.cc)             [W3B]
+ *        - Execute (real impl lives in execute_handler.cc)           [W3B]
+ *        - BlindTransfer (real impl lives in blind_transfer_handler.cc) [W3B]
  *
  * Wave mapping for remaining stubs:
- *   Bridge, Execute, BlindTransfer → W3 Track B
- *   SetVariables, Hold, Unhold     → W3 Track C
+ *   SetVariables, Hold, Unhold → W3 Track C
  *
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
@@ -49,19 +51,7 @@ grpc::Status Unimplemented(std::string_view method, std::string_view wave) {
 
 namespace osw::control {
 
-// --- W3 Track B + C stubs (not yet implemented) --------------------------
-
-grpc::Status ControlServiceSkeleton::Bridge(grpc::ServerContext*,
-                                            const open_switch::control::v1::BridgeRequest*,
-                                            open_switch::control::v1::BridgeResponse*) {
-    return handlers::Unimplemented("Bridge", "W3");
-}
-
-grpc::Status ControlServiceSkeleton::Execute(grpc::ServerContext*,
-                                             const open_switch::control::v1::ExecuteRequest*,
-                                             open_switch::control::v1::ExecuteResponse*) {
-    return handlers::Unimplemented("Execute", "W3");
-}
+// --- W3 Track C stubs (not yet implemented) ------------------------------
 
 grpc::Status ControlServiceSkeleton::SetVariables(
     grpc::ServerContext*,
@@ -80,13 +70,6 @@ grpc::Status ControlServiceSkeleton::Unhold(grpc::ServerContext*,
                                             const open_switch::control::v1::UnholdRequest*,
                                             open_switch::control::v1::UnholdResponse*) {
     return handlers::Unimplemented("Unhold", "W3");
-}
-
-grpc::Status ControlServiceSkeleton::BlindTransfer(
-    grpc::ServerContext*,
-    const open_switch::control::v1::BlindTransferRequest*,
-    open_switch::control::v1::BlindTransferResponse*) {
-    return handlers::Unimplemented("BlindTransfer", "W3");
 }
 
 // W2-bound `SubscribeEvents` lives in subscribe_events_handler.cc.
