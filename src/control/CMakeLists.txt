@@ -95,7 +95,7 @@ target_link_libraries(osw_control_fs PUBLIC
 )
 set_target_properties(osw_control_fs PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# --- osw_control_w3a_test_helpers (FS-mock seam for W3 Track A tests) --
+# --- osw_control_call_lifecycle_test_helpers (FS-mock seam for W3 Track A tests) --
 #
 # Compiles the W3A helpers and handlers against OSW_TEST_FS_MOCK=1 so
 # unit tests can run without a real FreeSWITCH library. Mirrors the
@@ -108,7 +108,7 @@ if(OSW_BUILD_TESTS)
     # below each compile EVERY W3 handler under OSW_TEST_FS_MOCK=1 (the
     # other-track handlers happen to also exercise the mock seam cleanly).
     # Plus subscribe_events_stub for the W2 SubscribeEvents method.
-    add_library(osw_control_w3a_test_helpers STATIC
+    add_library(osw_control_call_lifecycle_test_helpers STATIC
         call_cause.cc
         session_guard.cc
         originate_options.cc
@@ -117,7 +117,7 @@ if(OSW_BUILD_TESTS)
         handlers/hangup_handler.cc
         handlers/hangup_many_handler.cc
         # W3 Track B handlers — included for vtable completeness so
-        # tests linking only osw_control_w3a_test_helpers still resolve
+        # tests linking only osw_control_call_lifecycle_test_helpers still resolve
         # Bridge/Execute/BlindTransfer overrides.
         handlers/bridge_handler.cc
         handlers/execute_handler.cc
@@ -137,15 +137,15 @@ if(OSW_BUILD_TESTS)
         # without pulling in the real FS-dependent subscribe_events_handler.cc.
         handlers/subscribe_events_stub.cc
     )
-    target_include_directories(osw_control_w3a_test_helpers PUBLIC
+    target_include_directories(osw_control_call_lifecycle_test_helpers PUBLIC
         ${CMAKE_SOURCE_DIR}/include
     )
-    target_include_directories(osw_control_w3a_test_helpers PRIVATE
+    target_include_directories(osw_control_call_lifecycle_test_helpers PRIVATE
         ${CMAKE_SOURCE_DIR}
         ${OSW_PROTO_GEN_DIR}
     )
-    target_compile_features(osw_control_w3a_test_helpers PUBLIC cxx_std_20)
-    target_link_libraries(osw_control_w3a_test_helpers PUBLIC
+    target_compile_features(osw_control_call_lifecycle_test_helpers PUBLIC cxx_std_20)
+    target_link_libraries(osw_control_call_lifecycle_test_helpers PUBLIC
         osw_control
         osw_events_test_helpers
         osw_media
@@ -156,21 +156,21 @@ if(OSW_BUILD_TESTS)
         osw_proto
         Threads::Threads
     )
-    target_compile_definitions(osw_control_w3a_test_helpers PUBLIC
+    target_compile_definitions(osw_control_call_lifecycle_test_helpers PUBLIC
         OSW_TEST_FS_MOCK=1
     )
-    target_compile_options(osw_control_w3a_test_helpers PRIVATE
+    target_compile_options(osw_control_call_lifecycle_test_helpers PRIVATE
         -Wno-error
     )
 
-    # --- osw_control_w3b_test_helpers (FS-mock seam for W3 Track B tests) --
+    # --- osw_control_call_routing_test_helpers (FS-mock seam for W3 Track B tests) --
     #
     # Extends the W3A helpers with the Track B handlers (bridge, execute,
     # blind_transfer). Uses the same OSW_TEST_FS_MOCK seam. Track C
     # handlers (set_variables, hold, unhold) are also included for vtable
     # completeness — without them, tests linking only this lib fail at
     # link time on missing SetVariables/Hold/Unhold overrides.
-    add_library(osw_control_w3b_test_helpers STATIC
+    add_library(osw_control_call_routing_test_helpers STATIC
         call_cause.cc
         session_guard.cc
         originate_options.cc
@@ -195,15 +195,15 @@ if(OSW_BUILD_TESTS)
         # Stub for SubscribeEvents (same rationale as w3a helpers).
         handlers/subscribe_events_stub.cc
     )
-    target_include_directories(osw_control_w3b_test_helpers PUBLIC
+    target_include_directories(osw_control_call_routing_test_helpers PUBLIC
         ${CMAKE_SOURCE_DIR}/include
     )
-    target_include_directories(osw_control_w3b_test_helpers PRIVATE
+    target_include_directories(osw_control_call_routing_test_helpers PRIVATE
         ${CMAKE_SOURCE_DIR}
         ${OSW_PROTO_GEN_DIR}
     )
-    target_compile_features(osw_control_w3b_test_helpers PUBLIC cxx_std_20)
-    target_link_libraries(osw_control_w3b_test_helpers PUBLIC
+    target_compile_features(osw_control_call_routing_test_helpers PUBLIC cxx_std_20)
+    target_link_libraries(osw_control_call_routing_test_helpers PUBLIC
         osw_control
         osw_events_test_helpers
         osw_media
@@ -214,20 +214,20 @@ if(OSW_BUILD_TESTS)
         osw_proto
         Threads::Threads
     )
-    target_compile_definitions(osw_control_w3b_test_helpers PUBLIC
+    target_compile_definitions(osw_control_call_routing_test_helpers PUBLIC
         OSW_TEST_FS_MOCK=1
     )
-    target_compile_options(osw_control_w3b_test_helpers PRIVATE
+    target_compile_options(osw_control_call_routing_test_helpers PRIVATE
         -Wno-error
     )
 
-    # --- osw_control_w6c_test_helpers (FS-mock seam for W6 Track C tests) --
+    # --- osw_control_media_streaming_test_helpers (FS-mock seam for W6 Track C tests) --
     #
     # Compiles all W6C handlers and the ActiveMediaStreams registry against
     # OSW_TEST_FS_MOCK=1 so unit tests run without a real FreeSWITCH library.
     # Includes every ControlServiceSkeleton override so handler test binaries
     # have a complete vtable.
-    add_library(osw_control_w6c_test_helpers STATIC
+    add_library(osw_control_media_streaming_test_helpers STATIC
         call_cause.cc
         session_guard.cc
         originate_options.cc
@@ -249,15 +249,15 @@ if(OSW_BUILD_TESTS)
         handlers/stop_media_stream_handler.cc
         handlers/subscribe_events_stub.cc
     )
-    target_include_directories(osw_control_w6c_test_helpers PUBLIC
+    target_include_directories(osw_control_media_streaming_test_helpers PUBLIC
         ${CMAKE_SOURCE_DIR}/include
     )
-    target_include_directories(osw_control_w6c_test_helpers PRIVATE
+    target_include_directories(osw_control_media_streaming_test_helpers PRIVATE
         ${CMAKE_SOURCE_DIR}
         ${OSW_PROTO_GEN_DIR}
     )
-    target_compile_features(osw_control_w6c_test_helpers PUBLIC cxx_std_20)
-    target_link_libraries(osw_control_w6c_test_helpers PUBLIC
+    target_compile_features(osw_control_media_streaming_test_helpers PUBLIC cxx_std_20)
+    target_link_libraries(osw_control_media_streaming_test_helpers PUBLIC
         osw_control
         osw_events_test_helpers
         osw_media
@@ -268,13 +268,13 @@ if(OSW_BUILD_TESTS)
         osw_proto
         Threads::Threads
     )
-    target_compile_definitions(osw_control_w6c_test_helpers PUBLIC
+    target_compile_definitions(osw_control_media_streaming_test_helpers PUBLIC
         OSW_TEST_FS_MOCK=1
     )
-    target_compile_options(osw_control_w6c_test_helpers PRIVATE
+    target_compile_options(osw_control_media_streaming_test_helpers PRIVATE
         -Wno-error
     )
-    set_target_properties(osw_control_w6c_test_helpers PROPERTIES
+    set_target_properties(osw_control_media_streaming_test_helpers PROPERTIES
         POSITION_INDEPENDENT_CODE ON
     )
 endif()
