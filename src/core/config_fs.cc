@@ -134,6 +134,10 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
     switch_bool_t bool_silence_driver =
         out.silence_driver_enabled ? SWITCH_TRUE : SWITCH_FALSE;
     int int_max_silence_drivers = static_cast<int>(out.max_silence_drivers);
+    int int_bot_max_targets = static_cast<int>(out.bot_max_targets);
+    int int_bot_target_queue_ms = static_cast<int>(out.bot_target_queue_ms);
+    int int_bot_drain_timeout_ms = static_cast<int>(out.bot_drain_timeout_ms);
+    int int_max_bots_per_channel = static_cast<int>(out.max_bots_per_channel);
 
     switch_xml_config_int_options_t opt_ge200{};
     opt_ge200.enforce_min = SWITCH_TRUE;
@@ -434,6 +438,38 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
                            &opt_ge1,
                            "threads",
                            "Max simultaneous silence driver threads"),
+        SWITCH_CONFIG_ITEM("bot_max_targets",
+                           SWITCH_CONFIG_INT,
+                           CONFIG_RELOADABLE,
+                           &int_bot_max_targets,
+                           reinterpret_cast<const void*>(static_cast<std::intptr_t>(2)),
+                           &opt_ge1,
+                           "channels",
+                           "Max target channels per StartBot call"),
+        SWITCH_CONFIG_ITEM("bot_target_queue_ms",
+                           SWITCH_CONFIG_INT,
+                           CONFIG_RELOADABLE,
+                           &int_bot_target_queue_ms,
+                           reinterpret_cast<const void*>(static_cast<std::intptr_t>(500)),
+                           &opt_ge50,
+                           "ms",
+                           "Per-target bot fanout queue capacity"),
+        SWITCH_CONFIG_ITEM("bot_drain_timeout_ms",
+                           SWITCH_CONFIG_INT,
+                           CONFIG_RELOADABLE,
+                           &int_bot_drain_timeout_ms,
+                           reinterpret_cast<const void*>(static_cast<std::intptr_t>(2000)),
+                           &opt_ge1,
+                           "ms",
+                           "StopBot drain timeout"),
+        SWITCH_CONFIG_ITEM("max_bots_per_channel",
+                           SWITCH_CONFIG_INT,
+                           CONFIG_RELOADABLE,
+                           &int_max_bots_per_channel,
+                           reinterpret_cast<const void*>(static_cast<std::intptr_t>(1)),
+                           &opt_ge1,
+                           "bots",
+                           "Max simultaneous bots per channel"),
 
         SWITCH_CONFIG_ITEM_END()};
 
@@ -470,6 +506,10 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
         out.tts_max_jitter_buffer_ms = static_cast<std::uint32_t>(int_tts_max_jitter);
         out.silence_driver_enabled = (bool_silence_driver == SWITCH_TRUE);
         out.max_silence_drivers = static_cast<std::uint32_t>(int_max_silence_drivers);
+        out.bot_max_targets = static_cast<std::uint32_t>(int_bot_max_targets);
+        out.bot_target_queue_ms = static_cast<std::uint32_t>(int_bot_target_queue_ms);
+        out.bot_drain_timeout_ms = static_cast<std::uint32_t>(int_bot_drain_timeout_ms);
+        out.max_bots_per_channel = static_cast<std::uint32_t>(int_max_bots_per_channel);
         return true;
     }
 

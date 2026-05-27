@@ -163,6 +163,17 @@ struct Config {
 
     /// Hard cap on simultaneous silence driver threads.
     std::uint32_t max_silence_drivers = 200;
+
+    // --- Bot media facade (W7 Track D) -----------------------------------
+    /// Max number of target channels per StartBot call. V1 demo scope is 2.
+    std::uint32_t bot_max_targets = 2;
+    /// Per-target fanout queue capacity in milliseconds. Used by the W7
+    /// BugFanout path; retained in config while StartBot facade lands.
+    std::uint32_t bot_target_queue_ms = 500;
+    /// StopBot drain timeout in milliseconds.
+    std::uint32_t bot_drain_timeout_ms = 2000;
+    /// Hard cap on simultaneous logical bots per channel.
+    std::uint32_t max_bots_per_channel = 1;
 };
 
 /// Validates the config. Returns Ok() or Fail(detail).

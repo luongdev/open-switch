@@ -220,3 +220,22 @@ osw_add_unit_test(
     DEFINES OSW_TEST_FS_MOCK=1
 )
 target_include_directories(stop_media_stream_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
+
+# W7 Track D — logical bot facade tests.
+osw_add_unit_test(
+    NAME    start_bot_handler_test
+    LABEL   "control;unit;w7d"
+    SOURCES start_bot_handler_test.cc
+    LIBS    osw_control osw_control_media_streaming_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(start_bot_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
+
+osw_add_unit_test(
+    NAME    stop_bot_handler_test
+    LABEL   "control;unit;w7d"
+    SOURCES stop_bot_handler_test.cc
+    LIBS    osw_control osw_control_media_streaming_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(stop_bot_handler_test PRIVATE ${CMAKE_SOURCE_DIR})

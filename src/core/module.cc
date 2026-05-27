@@ -62,6 +62,7 @@
 
 #include <switch.h>  // FF-014 environment, switch_version_*
 
+#include "osw/control/active_bots.h"
 #include "osw/control/active_media_streams.h"
 #include "osw/control/idempotency_cache.h"
 #include "osw/control/rpc_metrics.h"
@@ -180,6 +181,10 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
                 if (mod->bug_manager_) {
                     try { mod->bug_manager_->UnregisterStateHandlers(); } catch (...) {}
                 }
+                if (mod->active_bots_) {
+                    mod->active_bots_->DrainAll(mod->active_media_streams_.get());
+                    mod->active_bots_.reset();
+                }
                 mod->active_media_streams_.reset();
                 if (mod->bug_manager_) {
                     mod->bug_manager_->SetSilenceDriverRegistry(nullptr);
@@ -292,16 +297,24 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
         // function-pointer indirection (avoids a control→media→control
         // header cycle).
         active_media_streams_ = std::make_unique<control::ActiveMediaStreams>();
+        active_bots_ = std::make_unique<control::ActiveBots>();
         silence_driver_registry_ = std::make_unique<media::SilenceDriverRegistry>(config_);
         bug_manager_ = std::make_unique<media::MediaBugManager>();
         bug_manager_->SetSilenceDriverRegistry(silence_driver_registry_.get());
         bug_manager_->RegisterStateHandlers(
-            /*active_streams_opaque=*/static_cast<void*>(active_media_streams_.get()),
+            /*active_streams_opaque=*/static_cast<void*>(this),
             /*cleanup_fn=*/[](void* opaque, std::string_view uuid) {
-                static_cast<osw::control::ActiveMediaStreams*>(opaque)->RemoveForChannel(uuid);
+                auto* mod = static_cast<osw::Module*>(opaque);
+                if (mod->active_bots_) {
+                    mod->active_bots_->StopByChannel(uuid, mod->active_media_streams_.get());
+                }
+                if (mod->active_media_streams_) {
+                    mod->active_media_streams_->RemoveForChannel(uuid);
+                }
             });
         grpc_server_->SetMediaBugManager(bug_manager_.get());
         grpc_server_->SetActiveMediaStreams(active_media_streams_.get());
+        grpc_server_->SetActiveBots(active_bots_.get());
         grpc_server_->SetMediaConfig(&config_);
 
         if (!grpc_server_->Start(config_)) {
@@ -498,6 +511,10 @@ bool Module::Shutdown() noexcept {
         //            MediaBugManager.
         if (bug_manager_) {
             bug_manager_->UnregisterStateHandlers();
+        }
+        if (active_bots_) {
+            active_bots_->DrainAll(active_media_streams_.get());
+            active_bots_.reset();
         }
         active_media_streams_.reset();
         if (bug_manager_) {

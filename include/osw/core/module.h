@@ -47,6 +47,7 @@ typedef struct switch_loadable_module_interface switch_loadable_module_interface
 namespace osw {
 
 namespace control {
+class ActiveBots;          // forward; defined in osw/control/active_bots.h
 class ActiveMediaStreams;  // forward; defined in osw/control/active_media_streams.h
 class GrpcServer;          // forward; defined in osw/control/server.h
 class IdempotencyCache;    // forward; defined in osw/control/idempotency_cache.h
@@ -137,6 +138,7 @@ class Module {
     //   then bug_manager_.
     std::unique_ptr<media::MediaBugManager> bug_manager_;
     std::unique_ptr<media::SilenceDriverRegistry> silence_driver_registry_;
+    std::unique_ptr<control::ActiveBots> active_bots_;
     std::unique_ptr<control::ActiveMediaStreams> active_media_streams_;
 
     // W2 event-plane subsystems. Construction order in Module::Load:

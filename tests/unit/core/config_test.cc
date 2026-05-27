@@ -207,4 +207,32 @@ TEST(ConfigValidateTest, RejectsSilenceDriverCapAboveRange) {
     EXPECT_NE(v.error.find("max_silence_drivers"), std::string::npos);
 }
 
+TEST(ConfigValidateTest, BotDefaultsAreValid) {
+    auto c = Defaults();
+    EXPECT_EQ(2u, c.bot_max_targets);
+    EXPECT_EQ(500u, c.bot_target_queue_ms);
+    EXPECT_EQ(2000u, c.bot_drain_timeout_ms);
+    EXPECT_EQ(1u, c.max_bots_per_channel);
+    const auto v = osw::Validate(c);
+    EXPECT_TRUE(v.ok);
+}
+
+TEST(ConfigValidateTest, RejectsBotLimitsOutOfRange) {
+    auto c = Defaults();
+    c.bot_max_targets = 0;
+    EXPECT_FALSE(osw::Validate(c).ok);
+
+    c = Defaults();
+    c.bot_target_queue_ms = 49;
+    EXPECT_FALSE(osw::Validate(c).ok);
+
+    c = Defaults();
+    c.bot_drain_timeout_ms = 99;
+    EXPECT_FALSE(osw::Validate(c).ok);
+
+    c = Defaults();
+    c.max_bots_per_channel = 0;
+    EXPECT_FALSE(osw::Validate(c).ok);
+}
+
 }  // namespace

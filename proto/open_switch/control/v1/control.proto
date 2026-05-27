@@ -91,6 +91,10 @@ service ControlService {
   rpc StartStt(StartSttRequest) returns (StartSttResponse);
   rpc StartVoicebot(StartVoicebotRequest) returns (StartVoicebotResponse);
   rpc StopMediaStream(StopMediaStreamRequest) returns (StopMediaStreamResponse);
+
+  // W7 Track D: logical bot facade for one or more target channels.
+  rpc StartBot(StartBotRequest) returns (StartBotResponse);
+  rpc StopBot(StopBotRequest) returns (StopBotResponse);
 }
 
 // ─── Common metadata ──────────────────────────────────────────────────
@@ -423,6 +427,44 @@ message StopMediaStreamRequest {
 
 message StopMediaStreamResponse {
   bool was_active = 1; // false if stream_id wasn't found (idempotent OK)
+  ErrorDetail error = 99;
+}
+
+message StartBotRequest {
+  RequestHeader header = 1;
+  repeated string target_channel_uuids = 2;
+  string upstream_endpoint = 3;
+
+  enum Purpose {
+    PURPOSE_UNSPECIFIED = 0;
+    TTS_BROADCAST = 1;
+    STT_LISTEN = 2;
+    VOICEBOT_DUPLEX = 3;
+    WHISPER = 4;
+  }
+  Purpose purpose = 4;
+
+  repeated string write_target_channel_uuids = 5;
+  uint32 sample_rate_hz = 6; // 8000 or 16000; default 16000
+  string start_message = 7;
+  map<string, string> variables = 8;
+  TtsBufferOverride buffer_override = 20;
+  uint32 drain_timeout_ms = 30;
+}
+
+message StartBotResponse {
+  string bot_id = 1;
+  uint32 negotiated_rate_hz = 2;
+  ErrorDetail error = 99;
+}
+
+message StopBotRequest {
+  RequestHeader header = 1;
+  string bot_id = 2;
+}
+
+message StopBotResponse {
+  bool was_active = 1;
   ErrorDetail error = 99;
 }
 

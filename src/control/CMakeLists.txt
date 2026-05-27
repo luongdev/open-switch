@@ -70,11 +70,15 @@ add_library(osw_control_fs STATIC
     handlers/unhold_handler.cc
     # W6 Track C — media streaming RPCs + bug callbacks
     active_media_streams.cc
+    active_bots.cc
     handlers/media_bug_callbacks.cc
     handlers/start_tts_handler.cc
     handlers/start_stt_handler.cc
     handlers/start_voicebot_handler.cc
     handlers/stop_media_stream_handler.cc
+    # W7 Track D — logical bot facade
+    handlers/start_bot_handler.cc
+    handlers/stop_bot_handler.cc
 )
 target_include_directories(osw_control_fs
     PUBLIC
@@ -128,11 +132,14 @@ if(OSW_BUILD_TESTS)
         handlers/unhold_handler.cc
         # W6 Track C — media streaming stubs for vtable completeness
         active_media_streams.cc
+        active_bots.cc
         handlers/media_bug_callbacks.cc
         handlers/start_tts_handler.cc
         handlers/start_stt_handler.cc
         handlers/start_voicebot_handler.cc
         handlers/stop_media_stream_handler.cc
+        handlers/start_bot_handler.cc
+        handlers/stop_bot_handler.cc
         # Stub for SubscribeEvents so the test binary vtable is complete
         # without pulling in the real FS-dependent subscribe_events_handler.cc.
         handlers/subscribe_events_stub.cc
@@ -187,11 +194,14 @@ if(OSW_BUILD_TESTS)
         handlers/unhold_handler.cc
         # W6 Track C handlers — included for vtable completeness.
         active_media_streams.cc
+        active_bots.cc
         handlers/media_bug_callbacks.cc
         handlers/start_tts_handler.cc
         handlers/start_stt_handler.cc
         handlers/start_voicebot_handler.cc
         handlers/stop_media_stream_handler.cc
+        handlers/start_bot_handler.cc
+        handlers/stop_bot_handler.cc
         # Stub for SubscribeEvents (same rationale as w3a helpers).
         handlers/subscribe_events_stub.cc
     )
@@ -242,11 +252,14 @@ if(OSW_BUILD_TESTS)
         handlers/hold_handler.cc
         handlers/unhold_handler.cc
         active_media_streams.cc
+        active_bots.cc
         handlers/media_bug_callbacks.cc
         handlers/start_tts_handler.cc
         handlers/start_stt_handler.cc
         handlers/start_voicebot_handler.cc
         handlers/stop_media_stream_handler.cc
+        handlers/start_bot_handler.cc
+        handlers/stop_bot_handler.cc
         handlers/subscribe_events_stub.cc
     )
     target_include_directories(osw_control_media_streaming_test_helpers PUBLIC
@@ -278,4 +291,3 @@ if(OSW_BUILD_TESTS)
         POSITION_INDEPENDENT_CODE ON
     )
 endif()
-

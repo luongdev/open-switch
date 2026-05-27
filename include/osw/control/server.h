@@ -54,6 +54,7 @@ class MediaBugManager;
 
 namespace control {
 
+class ActiveBots;
 class ActiveMediaStreams;
 class ControlServiceSkeleton;
 class IdempotencyCache;
@@ -136,6 +137,7 @@ class GrpcServer {
     /// gRPC server's RPC threads.
     void SetMediaBugManager(osw::media::MediaBugManager* mgr) noexcept;
     void SetActiveMediaStreams(osw::control::ActiveMediaStreams* streams) noexcept;
+    void SetActiveBots(osw::control::ActiveBots* bots) noexcept;
     void SetMediaConfig(const osw::Config* config) noexcept;
 
   private:
@@ -156,6 +158,7 @@ class GrpcServer {
     // W6C: staged before Start; applied during Start (same pattern as pending_cache_).
     osw::media::MediaBugManager* pending_bug_mgr_ = nullptr;
     osw::control::ActiveMediaStreams* pending_streams_ = nullptr;
+    osw::control::ActiveBots* pending_bots_ = nullptr;
     const osw::Config* pending_media_cfg_ = nullptr;
 };
 

@@ -280,11 +280,15 @@ grpc::Status osw::control::ControlServiceSkeleton::StartVoicebot(
     grpc::ServerContext* ctx,
     const open_switch::control::v1::StartVoicebotRequest* req,
     open_switch::control::v1::StartVoicebotResponse* resp) {
+    const osw::Config* config = config_.load(std::memory_order_acquire);
+    if (!config) {
+        return grpc::Status(grpc::StatusCode::UNAVAILABLE, "media config not initialised");
+    }
     return osw::control::handlers::HandleStartVoicebot(
         ctx,
         req,
         resp,
         bug_mgr_.load(std::memory_order_acquire),
         active_media_streams_.load(std::memory_order_acquire),
-        *config_);
+        *config);
 }
