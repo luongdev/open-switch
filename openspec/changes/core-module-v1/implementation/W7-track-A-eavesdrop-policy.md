@@ -688,6 +688,32 @@ designs/security-and-eavesdrop.md:
 No `Co-Authored-By:` line (project memory: HARDENED). Author / committer
 is `@luongdev`.
 
+## Interaction with W7 Track D (`StartBot` multi-target)
+
+When the W7 Track D `StartBot` RPC attaches its read+write bugs on a
+target channel, the bugs carry `function_name = "mod_open_switch"`
+(via `MediaBugManager::Attach` — see W6 Track A brief §"Bug callback
+trampoline"). The function name is what FS publishes as the
+`Media-Bug-Function` header in the `MEDIA_BUG_START` event (FF-011).
+
+The Layer 2 detector in this Track filters strictly on
+`Media-Bug-Function == "eavesdrop"`. Bot bugs from Track D do NOT
+match this filter and are NEVER flagged as eavesdrop events. This is
+the intended separation: the policy is about supervisor eavesdrop,
+not about module-owned bot infrastructure.
+
+Track D also marks the target channel with `osw_bot_session=true` and
+`osw_eavesdrop_policy=<resolved>` immediately after attach (same
+helper `MarkBotSession()` introduced in this Track). A supervisor
+who later issues `eavesdrop` on the same channel via raw FS dialplan
+WILL trigger Layer 2 — the marker is set, the supervisor's bug
+carries `function_name="eavesdrop"`, and the detector emits the
+Tier-1 `osw.eavesdrop.detected_post_attach` audit as designed.
+
+This means the bot infrastructure and the eavesdrop policy stack
+COEXIST: Track D handles bot lifecycle, Track A handles supervisor
+listen-in. Neither interferes with the other.
+
 ## Out of scope (for Track A explicitly)
 
 - Recording (Track B owns RECORDING_RELAY purpose + StartRecordingRelay).

@@ -1,6 +1,6 @@
 # W7 — Recording relay + eavesdrop policy (wave plan)
 
-Wave 7 closes the two V1 capabilities that W6 explicitly deferred:
+Wave 7 closes the three V1 capabilities that W6 explicitly deferred:
 
 - **Recording with bot audio in the file** — module-owned
   `RECORDING_RELAY` purpose with mono + stereo split, plus the
@@ -11,6 +11,12 @@ Wave 7 closes the two V1 capabilities that W6 explicitly deferred:
   Layer 1 is a custom `osw_eavesdrop` dialplan app (pre-attach
   enforcement); Layer 2 is a `MEDIA_BUG_START` detector that emits a
   Tier-1 audit when raw `eavesdrop` lands on a bot-marked session.
+- **Multi-target bot attachment (`StartBot` / `StopBot`)** — replaces
+  the W6 legacy per-channel single-target RPCs (`StartTts`,
+  `StartStt`, `StartVoicebot`) with one bot logical entity per call
+  that attaches bugs on N target channels (V1 max 2). Multiplexes
+  one upstream gRPC stream + fans-out audio into per-target SPSC
+  queues. See [`W7-track-D-bot-multitarget.md`](W7-track-D-bot-multitarget.md).
 
 Wave-level review will use Codex CLI then fall back to Gemini CLI if
 Codex's output is unusable (W6 pattern). No Claude sub-agents for
@@ -33,9 +39,14 @@ review (project memory).
 | `warn_record_before_inject` Tier-1 event when TTS attaches to a channel that already has FS-native `record_session` | B | ~60 |
 | `osw::recording::relay_started` / `.relay_stopped` Tier-1 audit + `recording_send_overflow` / `recording_lr_desync_count` Tier-2 events | B | ~80 |
 | Recording config (send-ring ms, desync thresholds, default sample rate) | B | ~50 |
+| `StartBot` / `StopBot` RPCs (multi-target) | D | ~250 |
+| `osw::media::BotSession` + `BugFanout` + `ActiveBots` registry | D | ~600 |
+| Per-target bug callbacks (`OswBotReadTap`, `OswBotWriteReplace`) | D | ~150 |
+| 4 bot audit subclasses + Tier-1/2 routing | D | ~60 |
+| 4 module-config fields (bot_max_targets, bot_target_queue_ms, bot_drain_timeout_ms, max_bots_per_channel) | D | ~80 |
 
 Plan-doc LOC budget per track: ~600. Implementation LOC budget total
-~1800 across both tracks (test code excluded).
+~2900 across three tracks (test code excluded).
 
 ## Dependencies
 
@@ -46,20 +57,32 @@ Plan-doc LOC budget per track: ~600. Implementation LOC budget total
 | Track B | W6 Track A — `MediaBugManager` + stage-rank gate (`Attach` already enforces `this_rank >= max_existing_rank`). Track B *extends* the gate with a "kRecordingRelay requires an INJECT bug already present" check. |
 | Track B | W6 Track B — `StreamClient` + resampler. Track B uses the existing bidi gRPC client; the recording sink is the gRPC peer. |
 | Track B | W6 Track C — `ActiveMediaStreams` registry; Track B uses the same registry for recording streams (one entry per channel). |
+| Track D | W6.5 fix-sprint (12 codex+gemini findings, especially P1-001/P1-002/P1-003/P1-004/P1-005/P2-003) MUST be merged. Track D relies on the real `switch_media_bug_t*` pointer, the fixed CS_DESTROY hook, the per-bug-pointer remove, the long-lived context, and the wired resampler. |
+| Track D | W6.6 silence driver SHOULD be merged. Track D integration tests on parked channels need a write-side driver; if missing, tests must add `<action playback="silence_stream://-1"/>` to fixture dialplans manually. |
+| Track D | FF-036 (`write_replace_frame_out` passthrough semantics) — already landed in this plan PR. |
 
-**Track A and Track B are independent at the file-system level** —
+**Track A, Track B, and Track D are independent at the file-system level** —
 Track A touches `src/security/`, `src/control/handlers/start_tts*.cc`,
 `src/control/handlers/start_voicebot*.cc`, `src/mod_open_switch.cc`;
 Track B touches `src/media/recording_relay.cc`,
 `src/media/stereo_pairer.cc`, `src/media/bug_manager.cc`,
 `src/control/handlers/start_recording_relay_handler.cc`,
 `src/control/handlers/stop_recording_relay_handler.cc`,
-`proto/open_switch/control/v1/control.proto`, `src/mod_open_switch.cc`.
+`proto/open_switch/control/v1/control.proto`, `src/mod_open_switch.cc`;
+Track D touches `src/media/bot_session.cc`, `src/media/bug_fanout.cc`,
+`src/control/active_bots.cc`, `src/control/handlers/start_bot_handler.cc`,
+`src/control/handlers/stop_bot_handler.cc`,
+`src/control/handlers/media_bug_callbacks.cc` (PATCH — add bot callbacks
+alongside existing W6 ones), `proto/open_switch/control/v1/control.proto`,
+`src/mod_open_switch.cc`.
 
-The only shared file is `src/mod_open_switch.cc` (module Load /
-Shutdown wiring). Both tracks add one section each; merge conflict
-risk is low (different Load steps; the sub-agent merging second
-rebases). Both tracks land on `redesign/from-specs` via separate PRs.
+The shared files are `src/mod_open_switch.cc` (module Load / Shutdown
+wiring), `proto/open_switch/control/v1/control.proto` (3 tracks add
+new RPCs), and `src/control/handlers/media_bug_callbacks.cc` (Track D
+extends; Track A only reads channel variables). Merge conflict risk
+is moderate; recommended order: **Track A first** (smallest), then
+**Track B** (rebases on top of A), then **Track D** (rebases on top
+of B). Each tracks lands on `redesign/from-specs` via separate PRs.
 
 ## Worktree layout (orchestrator-owned)
 
@@ -67,6 +90,7 @@ rebases). Both tracks land on `redesign/from-specs` via separate PRs.
 /tmp/open-switch              (main, orchestrator clean clone)
 /tmp/open-switch-w7a          (Track A worktree, branch implementation/wave7-track-a-eavesdrop)
 /tmp/open-switch-w7b          (Track B worktree, branch implementation/wave7-track-b-recording)
+/tmp/open-switch-w7d          (Track D worktree, branch implementation/wave7-track-d-bot-multitarget)
 ```
 
 The orchestrator creates the worktrees from `main` after W6 Track C
@@ -77,10 +101,10 @@ its PR merges.
 
 | Day | Activity |
 |---|---|
-| D0 | W6 Track C merges. Orchestrator spawns Track A + Track B Sonnet sub-agents in parallel. |
+| D0 | W6 Track C + W6.5 fix-sprint + W6.6 silence-driver merged. Orchestrator spawns Track A + Track B + Track D Sonnet sub-agents in parallel. |
 | D1–D2 | Sub-agents draft + commit + open PRs. |
-| D2 | CI green on both PRs. Orchestrator merges Track A first (smaller surface). |
-| D3 | Track B rebases on top of Track A merge; CI green; merge. |
+| D2 | CI green on PRs. Orchestrator merges in order: Track A → Track B → Track D (rebases each on top of the previous merge). |
+| D3 | All three tracks merged. |
 | D3–D4 | Codex CLI wave-level review → fix-sprint W7.5 if findings. |
 | D4 | Wave closeout doc + Gemini sanity review post-fix-sprint. |
 | D5 | (Buffer) Real-build smoke from operator side; address any FS-host-only finding. |
@@ -145,3 +169,6 @@ W7 ships when:
 - [`W7-track-B-recording-relay.md`](W7-track-B-recording-relay.md) — RECORDING_RELAY
   purpose + StereoFramePairer + StartRecordingRelay / StopRecordingRelay
   RPC + LATE-stage refinement.
+- [`W7-track-D-bot-multitarget.md`](W7-track-D-bot-multitarget.md) — `StartBot` /
+  `StopBot` multi-target bug attachment + BugFanout + per-target SPSC
+  queues + ActiveBots registry + per-target bug callbacks.
