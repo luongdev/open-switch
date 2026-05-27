@@ -11,6 +11,9 @@
     - mod_loopback    — synthetic endpoint useful for end-to-end demos
                         without external SIP infrastructure.
     - mod_commands    — `api` & `bgapi` (FS-internal); harmless in demos.
+    - mod_event_socket — `fs_cli`/ESL access for demo inspection.
+    - mod_dialplan_xml — XML dialplan routing for loopback/SIP demos.
+    - mod_tone_stream — provides silence_stream:// for the silence driver.
     - mod_dptools     — dialplan apps (`set`, `playback`, ...) — the
                         targets of Execute RPC allow-list.
 
@@ -25,6 +28,9 @@
 
     <!-- Core FS -->
     <load module="mod_commands"/>
+    <load module="mod_event_socket"/>
+    <load module="mod_dialplan_xml"/>
+    <load module="mod_tone_stream"/>
     <load module="mod_dptools"/>
 
     <!-- Endpoints (originate demos) -->

@@ -28,6 +28,8 @@ RUN install -m 0755 /dist/mod/mod_open_switch.so /usr/local/mod/mod_open_switch.
 #    the loggers + sofia for outbound originate demos).
 COPY modules.conf.xml /usr/local/etc/freeswitch/autoload_configs/modules.conf.xml
 COPY open_switch.conf.xml /usr/local/etc/freeswitch/autoload_configs/open_switch.conf.xml
+COPY event_socket.conf.xml /usr/local/etc/freeswitch/autoload_configs/event_socket.conf.xml
+COPY dialplan/default.xml /usr/local/etc/freeswitch/dialplan/default.xml
 
 # 3. gRPC listen port from open_switch.conf.xml.
 EXPOSE 50061
