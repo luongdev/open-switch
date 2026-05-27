@@ -105,33 +105,33 @@ grpc::Status StreamClient::Open(int open_deadline_ms) noexcept {
     std::promise<grpc::Status> handshake_promise;
     auto handshake_future = handshake_promise.get_future();
     open_switch::media::v1::FromService resp;
-    std::thread handshake_thread([this, &start_msg, &resp,
-                                   p = std::move(handshake_promise)]() mutable {
-        if (!stream_->Write(start_msg)) {
-            const grpc::Status s = stream_->Finish();
-            p.set_value(s.ok() ? grpc::Status(grpc::StatusCode::UNAVAILABLE,
-                                              "Write(StreamStart) failed")
-                               : s);
-            return;
-        }
-        if (!stream_->Read(&resp)) {
-            const grpc::Status s = stream_->Finish();
-            p.set_value(s.ok() ? grpc::Status(grpc::StatusCode::UNAVAILABLE,
-                                              "no StreamReady received")
-                               : s);
-            return;
-        }
-        if (!resp.has_ready()) {
-            p.set_value(grpc::Status(grpc::StatusCode::INTERNAL,
-                                     "first server message was not StreamReady"));
-            return;
-        }
-        p.set_value(grpc::Status::OK);
-    });
+    std::thread handshake_thread(
+        [this, &start_msg, &resp, p = std::move(handshake_promise)]() mutable {
+            if (!stream_->Write(start_msg)) {
+                const grpc::Status s = stream_->Finish();
+                p.set_value(s.ok() ? grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                                                  "Write(StreamStart) failed")
+                                   : s);
+                return;
+            }
+            if (!stream_->Read(&resp)) {
+                const grpc::Status s = stream_->Finish();
+                p.set_value(
+                    s.ok() ? grpc::Status(grpc::StatusCode::UNAVAILABLE, "no StreamReady received")
+                           : s);
+                return;
+            }
+            if (!resp.has_ready()) {
+                p.set_value(grpc::Status(grpc::StatusCode::INTERNAL,
+                                         "first server message was not StreamReady"));
+                return;
+            }
+            p.set_value(grpc::Status::OK);
+        });
 
     grpc::Status handshake_status;
-    if (handshake_future.wait_for(std::chrono::milliseconds(open_deadline_ms))
-        == std::future_status::timeout) {
+    if (handshake_future.wait_for(std::chrono::milliseconds(open_deadline_ms)) ==
+        std::future_status::timeout) {
         // Force-cancel the stream so Write/Read return and handshake_thread can join.
         context_->TryCancel();
         handshake_status = handshake_future.get();
@@ -283,9 +283,7 @@ grpc::Status StreamClient::Close() noexcept {
     // intentionally does NOT call Finish() (per gRPC C++ docs, Finish must
     // be called exactly once).
     if (reader_thread_.joinable()) {
-        auto reader_join = std::async(std::launch::async, [this]() {
-            reader_thread_.join();
-        });
+        auto reader_join = std::async(std::launch::async, [this]() { reader_thread_.join(); });
         if (reader_join.wait_for(kDrainTimeout) == std::future_status::timeout) {
             osw::log::Warn("media",
                            "StreamClient::Close: drain timeout (%lldms) — "

@@ -243,8 +243,7 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
         bug_manager_->RegisterStateHandlers(
             /*active_streams_opaque=*/static_cast<void*>(active_media_streams_.get()),
             /*cleanup_fn=*/[](void* opaque, std::string_view uuid) {
-                static_cast<osw::control::ActiveMediaStreams*>(opaque)
-                    ->RemoveForChannel(uuid);
+                static_cast<osw::control::ActiveMediaStreams*>(opaque)->RemoveForChannel(uuid);
             });
         grpc_server_->SetMediaBugManager(bug_manager_.get());
         grpc_server_->SetActiveMediaStreams(active_media_streams_.get());

@@ -96,9 +96,8 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
         // W6.5 P2-004 fix: respect front_offset_samples_ so partial-frame
         // consumption preserves the tail across multiple Pop() calls.
         const std::uint32_t total = static_cast<std::uint32_t>(front.sample_count());
-        const std::uint32_t avail = (front_offset_samples_ >= total)
-                                        ? 0u
-                                        : (total - front_offset_samples_);
+        const std::uint32_t avail =
+            (front_offset_samples_ >= total) ? 0u : (total - front_offset_samples_);
         const std::uint32_t n = std::min(out_cap_samples, avail);
         std::memcpy(out, front.data() + front_offset_samples_, n * sizeof(std::int16_t));
 

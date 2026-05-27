@@ -106,8 +106,7 @@ class MediaBugManager {
     /// opaque data pointer so this header has no dependency on
     /// osw/control/active_media_streams.h (which itself depends on
     /// bug_handle.h — a cycle if we included it here).
-    using ChannelCleanupFn = void(*)(void* active_streams_opaque,
-                                     std::string_view channel_uuid);
+    using ChannelCleanupFn = void (*)(void* active_streams_opaque, std::string_view channel_uuid);
 
     /// Register the CS_DESTROY state handler once at module load.
     /// Called from Module::Load AFTER `active_streams_opaque` is
@@ -125,8 +124,7 @@ class MediaBugManager {
     /// `active_streams_opaque` + `cleanup_fn` may both be nullptr in
     /// legacy unit tests that don't exercise the ActiveMediaStreams
     /// registry; the hook will skip the cleanup call in that case.
-    void RegisterStateHandlers(void* active_streams_opaque,
-                               ChannelCleanupFn cleanup_fn) noexcept;
+    void RegisterStateHandlers(void* active_streams_opaque, ChannelCleanupFn cleanup_fn) noexcept;
 
     /// Tear down the CS_DESTROY state handler at module shutdown.
     /// MUST be called before `~MediaBugManager` runs (otherwise the

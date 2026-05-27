@@ -615,9 +615,8 @@ std::size_t MediaBugManager::TotalActiveBugCount() const noexcept {
 // State handler registration.
 // ---------------------------------------------------------------------------
 
-void MediaBugManager::RegisterStateHandlers(
-    void* active_streams_opaque,
-    MediaBugManager::ChannelCleanupFn cleanup_fn) noexcept {
+void MediaBugManager::RegisterStateHandlers(void* active_streams_opaque,
+                                            MediaBugManager::ChannelCleanupFn cleanup_fn) noexcept {
     // W6.5 P1-003 fix: wire the file-static pointers used by
     // OswMediaChannelDestroy + register the FS state-handler table.
     g_state_hook_bug_manager_ = this;
