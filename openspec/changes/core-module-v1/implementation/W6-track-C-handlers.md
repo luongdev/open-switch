@@ -48,10 +48,23 @@ service) and routes audio between them via per-purpose bug callbacks.
 - `include/osw/control/active_media_streams.h` + `.cc` — per-Module
   registry keyed by `stream_id` → (BugHandle + StreamClient) for
   StopMediaStream lookup
+- `include/osw/media/tts_playout_buffer.h` + `src/media/tts_playout_buffer.cc`
+  — jitter buffer between StreamClient rx queue and the FS
+  `WRITE_REPLACE` callback (see §"TtsPlayoutBuffer" below)
 - `tests/unit/control/start_tts_handler_test.cc`
 - `tests/unit/control/start_stt_handler_test.cc`
 - `tests/unit/control/start_voicebot_handler_test.cc`
 - `tests/unit/control/stop_media_stream_handler_test.cc`
+- `tests/unit/media/tts_playout_buffer_test.cc`
+
+**Modify (config schema).**
+- `include/osw/core/config.h` — add 4 new fields for the TTS playout
+  buffer (see §"Config schema additions" below).
+- `src/core/config.cc` + `src/core/config_fs.cc` — XML param parsing
+  + Validate clamps.
+- `deploy/freeswitch/conf/autoload_configs/open_switch.conf.xml` +
+  `examples/runtime/open_switch.conf.xml` — schema-documented `<param>`
+  entries for operator copy-paste.
 
 ---
 
@@ -80,6 +93,16 @@ message StartTtsRequest {
   uint32 sample_rate_hz = 4;     // 8000 or 16000; default 16000
   string start_message = 5;      // optional opening utterance
   map<string, string> variables = 10;  // passed through to TTS service
+
+  // Per-call jitter-buffer override. Either field set to 0 means
+  // "use the module-level Config defaults"; non-zero values are
+  // clamped to [200, tts_max_jitter_buffer_ms]. See §TtsPlayoutBuffer.
+  TtsBufferOverride buffer_override = 20;
+}
+
+message TtsBufferOverride {
+  uint32 jitter_buffer_ms = 1;   // 0 = use config default (tts_jitter_buffer_ms)
+  uint32 preroll_ms = 2;         // 0 = use config default (tts_preroll_ms)
 }
 
 message StartTtsResponse {
@@ -114,6 +137,11 @@ message StartVoicebotRequest {
   uint32 sample_rate_hz = 4;     // default 16000
   string start_message = 5;
   map<string, string> variables = 10;
+
+  // Applies to the WRITE side (bot→caller); read side has no jitter
+  // buffer (FS callback delivers caller mic at the channel's natural
+  // ptime cadence and SendAudio just forwards).
+  TtsBufferOverride buffer_override = 20;
 }
 
 message StartVoicebotResponse {
@@ -182,6 +210,234 @@ class ActiveMediaStreams {
 Removal order matters: call `client->Close()` BEFORE dropping `bugs`
 (the bug callback may dereference the client; closing first ensures the
 reader thread is joined before the client destructs).
+
+For the TTS / voicebot-write side, the `ActiveMediaStream` also owns a
+`TtsPlayoutBuffer` (see next section). Removal order on those streams:
+`client->Close()` → `buffer->SignalEndOfStream()` (drains) →
+`bugs.clear()` → `buffer.reset()`.
+
+---
+
+## TtsPlayoutBuffer — jitter buffer for server→FS audio
+
+**Why.** Without a jitter buffer between `StreamClient::on_audio` (filled
+by the TTS engine over gRPC) and the FS `WRITE_REPLACE` callback (runs
+at the channel's 20 ms ptime cadence), any network jitter or engine
+batching causes audible gaps in the bot's voice. Standard fix:
+buffer ~1 s, prime to ~500 ms before starting playback, emit silence
+on underrun.
+
+### Class
+
+```cpp
+namespace osw::media {
+
+class TtsPlayoutBuffer {
+  public:
+    enum class UnderrunPolicy {
+        kSilence,     // default — clean for TTS; emits zeroed samples
+        kRepeatLast,  // copies the last 20 ms frame; better for music
+    };
+
+    struct Config {
+        std::chrono::milliseconds target_ms;       // typical 1000
+        std::chrono::milliseconds preroll_ms;      // typical 500 (≤ target_ms)
+        std::chrono::milliseconds high_water_ms;   // typical 1500 (≥ target_ms)
+        UnderrunPolicy underrun;                   // default kSilence
+        std::uint32_t channel_sample_rate_hz;      // 8000 or 16000 (matches channel)
+        std::uint32_t channels;                    // 1 (mono) for V1
+    };
+
+    explicit TtsPlayoutBuffer(Config cfg) noexcept;
+    ~TtsPlayoutBuffer() noexcept = default;
+
+    TtsPlayoutBuffer(const TtsPlayoutBuffer&) = delete;
+    TtsPlayoutBuffer& operator=(const TtsPlayoutBuffer&) = delete;
+    TtsPlayoutBuffer(TtsPlayoutBuffer&&) = delete;
+    TtsPlayoutBuffer& operator=(TtsPlayoutBuffer&&) = delete;
+
+    /// Producer (StreamClient reader thread): pushes a server-sent frame.
+    /// If after Push() depth > high_water_ms, drop the OLDEST queued
+    /// frame(s) until depth == high_water_ms; each dropped frame
+    /// increments overrun counter + emits one osw.media.tts.overrun
+    /// Tier-2 event (rate-limited to 1/s per stream).
+    void Push(AudioFrame frame) noexcept;
+
+    /// Consumer (FS write_replace bug callback, on the FS media thread).
+    /// Writes up to `out_cap_samples` of L16 into `out`; returns the
+    /// number of samples actually written. Behaviour:
+    ///   - Pre-roll not yet reached AND not end-of-stream → write
+    ///     silence (zeros) up to one ptime frame; return that count.
+    ///     Do NOT signal underrun (we're priming).
+    ///   - Buffer has at least one frame → pop oldest, copy samples
+    ///     into out.
+    ///   - Buffer empty AND end-of-stream signalled → return 0
+    ///     (caller leaves write_frame untouched, FS sends silence).
+    ///   - Buffer empty AND playback already started AND not EOS →
+    ///     underrun: write per UnderrunPolicy; increment underrun
+    ///     counter; emit osw.media.tts.underrun (rate-limited 1/s).
+    std::uint32_t Pop(std::int16_t* out, std::uint32_t out_cap_samples) noexcept;
+
+    /// Producer: signals the server side has half-closed. Pop() will
+    /// drain remaining frames, then return 0 cleanly (no underrun
+    /// metric bumped after EOS).
+    void SignalEndOfStream() noexcept;
+
+    /// Snapshot for metrics + tests.
+    [[nodiscard]] std::chrono::milliseconds CurrentDepth() const noexcept;
+    [[nodiscard]] std::uint64_t UnderrunCount() const noexcept;
+    [[nodiscard]] std::uint64_t OverrunCount() const noexcept;
+    [[nodiscard]] bool PrerollReached() const noexcept;
+    [[nodiscard]] bool EndOfStream() const noexcept;
+};
+
+}  // namespace osw::media
+```
+
+### Thread model
+
+- **Producer** = single thread (`StreamClient` reader). Push only.
+- **Consumer** = single thread (FS media thread for that channel).
+  Pop only. FS serialises per-bug callbacks per `WRITE_REPLACE` (FF-001).
+- **Snapshot readers** = arbitrary (Prometheus scrape, Health). Use
+  `std::memory_order_relaxed` atomics for the 4 counters/flags exposed.
+
+Internal queue: `std::deque<AudioFrame>` under a single `std::mutex`.
+The mutex is held briefly inside Push/Pop; no condvar (FS callback
+must never block — it returns silence on miss). Capacity is bounded
+by depth-in-time, not frame count, because frames may have variable
+sample counts after resampling. Compute depth on every Push/Pop:
+`depth_ms = sum(frame.duration_ms() for frame in queue)`.
+
+### Config schema additions
+
+Append to `include/osw/core/config.h::Config`:
+
+```cpp
+// --- Media (W6 Track C) ---------------------------------------------
+/// TTS playout jitter buffer target depth. Range: 200–5000 ms;
+/// Validate() clamps. Default 1000.
+std::uint32_t tts_jitter_buffer_ms = 1000;
+
+/// Pre-roll: the playback waits until the buffer accumulates at
+/// least this many ms before emitting the first non-silence frame.
+/// Validate() clamps to [50, tts_jitter_buffer_ms]. Default 500.
+std::uint32_t tts_preroll_ms = 500;
+
+/// High-water: when buffer depth exceeds this, the producer drops
+/// the OLDEST queued frame on each Push. Validate() clamps to
+/// [tts_jitter_buffer_ms, tts_max_jitter_buffer_ms]. Default 1500.
+std::uint32_t tts_high_water_ms = 1500;
+
+/// Hard cap on per-call jitter buffer override. Validate() clamps
+/// tts_jitter_buffer_ms to ≤ this and rejects per-call overrides
+/// above this. Default 5000.
+std::uint32_t tts_max_jitter_buffer_ms = 5000;
+
+/// Underrun policy: "silence" (default — clean for speech) or
+/// "repeat_last" (copies last 20 ms frame; better for music).
+std::string tts_underrun_policy = "silence";
+```
+
+Append matching `<param>` lines to `open_switch.conf.xml` (both
+`deploy/` and `examples/runtime/`) with the doc-comment block.
+
+`Config::Validate()` enforces the relationships:
+  - `preroll_ms ≤ jitter_buffer_ms`
+  - `high_water_ms ≥ jitter_buffer_ms`
+  - `jitter_buffer_ms ≤ tts_max_jitter_buffer_ms`
+  - `tts_underrun_policy ∈ {"silence","repeat_last"}` (case-insensitive;
+    unknown → coerce to "silence" + WARN)
+
+### Per-call override (already added to proto above)
+
+`StartTtsRequest.buffer_override.jitter_buffer_ms / preroll_ms`:
+- 0 means "use Config default".
+- Non-zero: clamped to `[200, Config::tts_max_jitter_buffer_ms]`.
+- `preroll_ms` clamped to `[50, jitter_buffer_ms]`.
+- Out-of-range → log Debug + clamp; do NOT reject the RPC.
+
+### Metrics
+
+Register on the shared `prometheus::Registry` (already owned by Module):
+
+| Metric | Type | Labels | Why |
+|---|---|---|---|
+| `osw_tts_buffer_depth_ms` | Gauge | `stream_id`, `tenant_id` | live depth — alert if persistently below preroll |
+| `osw_tts_buffer_underrun_total` | Counter | `stream_id`, `tenant_id` | bot voice glitch count |
+| `osw_tts_buffer_overrun_total` | Counter | `stream_id`, `tenant_id` | engine pushed too fast, frames dropped |
+| `osw_tts_buffer_preroll_ms` | Histogram | (no labels) | time from first Push to PrerollReached transition; tunes default |
+
+Per-stream metric vectors are unregistered on `ActiveMediaStreams::Remove`
+(Prometheus client supports counter/gauge `Remove(labels)` — see W4C
+`RpcMetrics` for the pattern).
+
+### Audit events (Tier-2)
+
+| Event | Fields | Rate-limit |
+|---|---|---|
+| `osw.media.tts.underrun` | `stream_id`, `tenant_id`, `depth_ms`, `samples_silenced` | 1/s per stream |
+| `osw.media.tts.overrun` | `stream_id`, `tenant_id`, `depth_ms`, `frames_dropped` | 1/s per stream |
+
+(Rate-limiter is per-stream; on first hit emit immediately, then
+suppress same event for that stream for 1 s; suppression count
+included on the next emitted event.)
+
+### Handler wiring (StartTts / StartVoicebot)
+
+After `Open()` succeeds:
+
+```cpp
+TtsPlayoutBuffer::Config buf_cfg{
+    .target_ms = std::chrono::milliseconds(ResolveBufferMs(req, config_)),
+    .preroll_ms = std::chrono::milliseconds(ResolvePrerollMs(req, config_)),
+    .high_water_ms = std::chrono::milliseconds(config_.tts_high_water_ms),
+    .underrun = ParseUnderrunPolicy(config_.tts_underrun_policy),
+    .channel_sample_rate_hz = rate,
+    .channels = 1,
+};
+auto buffer = std::make_unique<TtsPlayoutBuffer>(buf_cfg);
+
+// StreamClient::OnAudio pushes into the buffer:
+callbacks.on_audio = [buf_raw = buffer.get()](AudioFrame f) {
+    buf_raw->Push(std::move(f));
+};
+
+// FS write_replace bug callback pops from the buffer:
+// (in media_bug_callbacks.cc, ctx->user_data points at the buffer)
+auto* buf = static_cast<TtsPlayoutBuffer*>(ctx->user_data);
+auto* frame = switch_core_media_bug_get_write_replace_frame(bug);
+const auto written = buf->Pop(
+    reinterpret_cast<std::int16_t*>(frame->data),
+    frame->datalen / sizeof(std::int16_t));
+frame->samples = written;
+frame->datalen = written * sizeof(std::int16_t);
+```
+
+Store `buffer` in `ActiveMediaStream`:
+
+```cpp
+struct ActiveMediaStream {
+    ...
+    std::unique_ptr<osw::media::TtsPlayoutBuffer> tts_buffer;  // null for STT
+};
+```
+
+### Tests (`tts_playout_buffer_test.cc`)
+
+| # | Scenario | Expected |
+|---|---|---|
+| B1 | Push 1 frame (20ms) → Pop before preroll | Pop returns 0 / silence; underrun NOT incremented |
+| B2 | Push frames totalling 500ms (== preroll), then Pop | Pop returns real samples; PrerollReached()=true |
+| B3 | Pop with empty buffer AFTER preroll | underrun counter ++; emits Tier-2 (first time) |
+| B4 | Push past high_water (1500ms) | oldest frame dropped; overrun counter ++; depth ≈ high_water |
+| B5 | UnderrunPolicy=kRepeatLast on empty | Pop returns last 20ms samples (not zeros) |
+| B6 | SignalEndOfStream then Pop until empty | Pop returns real samples while drained; then returns 0; underrun NOT bumped |
+| B7 | Concurrent 1-producer / 1-consumer for 1 s | no crash, TSAN-clean, no lost frames |
+| B8 | Counter snapshots after B3+B4 | UnderrunCount() ≥ 1, OverrunCount() ≥ 1 |
+| B9 | Rate-limiting: 100 underruns in 100 ms | exactly 1 Tier-2 event emitted in first window; suppressed_count=99 on next |
+
+Label `LABEL "media;unit;w6c"`. TSAN job covers B7.
 
 ---
 
@@ -356,6 +612,11 @@ pops). Document whichever direction is chosen.
 | C9 | Channel hangup mid-stream | `MediaBugManager::DetachAll` + `ActiveMediaStreams::RemoveForChannel` both run from CS_DESTROY; mock observes cancel; no leak |
 | C10 | StartTts twice with same channel_uuid | second call returns ALREADY_EXISTS (per-purpose uniqueness) |
 | C11 | StartTts then StartStt on same channel | both succeed (different purposes) |
+| C12 | StartTts with buffer_override.jitter_buffer_ms=2000 | TtsPlayoutBuffer uses 2000 ms target (verify via Prometheus gauge after preroll) |
+| C13 | StartTts with buffer_override above tts_max_jitter_buffer_ms | value clamped to cap; Debug log emitted; OK status |
+| C14 | StartTts → server sends 10 frames then pauses 200ms | bug callback consumes from buffer during pause; underrun counter stays 0 (buffer covered the gap); engine resumes — no audible glitch |
+| C15 | StartTts → server slow-pushes (1 frame per 50 ms) for 2 s | buffer drains; underrun counter > 0; `osw.media.tts.underrun` event emitted (rate-limited 1/s) |
+| C16 | StartTts → server fast-pushes 5 s in 200 ms | overrun counter > 0; oldest frames dropped; `osw.media.tts.overrun` event emitted; buffer depth stays ≤ tts_high_water_ms |
 
 Use the existing W3 handler test pattern (`OSW_TEST_FS_MOCK=1` +
 `osw_audit_test_helpers` + mock seam in `include/osw/raii/fs_mock.h`).
