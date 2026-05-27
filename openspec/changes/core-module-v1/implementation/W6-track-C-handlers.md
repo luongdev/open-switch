@@ -343,11 +343,12 @@ Append matching `<param>` lines to `open_switch.conf.xml` (both
 `deploy/` and `examples/runtime/`) with the doc-comment block.
 
 `Config::Validate()` enforces the relationships:
-  - `preroll_ms ≤ jitter_buffer_ms`
-  - `high_water_ms ≥ jitter_buffer_ms`
-  - `jitter_buffer_ms ≤ tts_max_jitter_buffer_ms`
-  - `tts_underrun_policy ∈ {"silence","repeat_last"}` (case-insensitive;
-    unknown → coerce to "silence" + WARN)
+
+- `preroll_ms ≤ jitter_buffer_ms`
+- `high_water_ms ≥ jitter_buffer_ms`
+- `jitter_buffer_ms ≤ tts_max_jitter_buffer_ms`
+- `tts_underrun_policy ∈ {"silence","repeat_last"}` (case-insensitive;
+  unknown → coerce to "silence" + WARN)
 
 ### Per-call override (already added to proto above)
 

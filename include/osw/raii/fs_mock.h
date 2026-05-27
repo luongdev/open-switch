@@ -202,6 +202,9 @@ constexpr switch_originate_flag_t SOF_NONE = 0;
 
 // switch_channel_state_t (switch_types.h:1392). CS_HANGUP is the
 // threshold used to detect a dead channel (channel_down_nosig check).
+// Values below match the real FS v1.10.12 enum (CS_HANGUP=10,
+// CS_DESTROY=12); earlier mock entries used incorrect values but they
+// are only compared internally in test-only code.
 using switch_channel_state_t = int;
 constexpr switch_channel_state_t CS_NEW = 0;
 constexpr switch_channel_state_t CS_INIT = 1;
@@ -209,6 +212,20 @@ constexpr switch_channel_state_t CS_ROUTING = 2;
 constexpr switch_channel_state_t CS_EXECUTE = 4;
 constexpr switch_channel_state_t CS_HANGUP = 8;
 constexpr switch_channel_state_t CS_DONE = 9;
+// W6A — CS_DESTROY is the state at which the CS_DESTROY hook fires
+// (switch_types.h:1404 in v1.10.12, enum value 12).
+constexpr switch_channel_state_t CS_DESTROY = 12;
+
+// SMBF_FIRST flag value (switch_types.h:1920 in v1.10.12).
+// Used by MediaBugManager to prepend VAD bugs to the chain head.
+// The mock does not interpret flags — tests assert on the captured
+// flags value to verify the manager ORed it in correctly.
+using switch_media_bug_flag_t = std::uint32_t;
+constexpr switch_media_bug_flag_t SMBF_READ_STREAM = (1u << 0);
+constexpr switch_media_bug_flag_t SMBF_WRITE_STREAM = (1u << 1);
+constexpr switch_media_bug_flag_t SMBF_WRITE_REPLACE = (1u << 2);
+constexpr switch_media_bug_flag_t SMBF_READ_REPLACE = (1u << 3);
+constexpr switch_media_bug_flag_t SMBF_FIRST = (1u << 26);
 
 // FF-018 callback typedef. The mock never invokes one — tests that exercise
 // the bind path simply assert on captured registrations.
@@ -378,6 +395,26 @@ struct MockState {
         bool active = true;
     };
     std::vector<CapturedBinding> bindings;
+
+    // W6A — MediaBugAdd capture (FF-031). Tests assert on function name,
+    // target, flags, and user_data pointer to verify manager behaviour.
+    std::atomic<int> media_bug_remove_callback_calls{0};
+
+    struct CapturedMediaBugAdd {
+        switch_core_session_t* session = nullptr;
+        std::string function_name;
+        std::string target;
+        switch_media_bug_callback_t callback = nullptr;
+        void* user_data = nullptr;
+        uint32_t flags = 0;
+    };
+    std::vector<CapturedMediaBugAdd> media_bug_add_invocations;
+
+    struct CapturedMediaBugRemoveCallback {
+        switch_core_session_t* session = nullptr;
+        switch_media_bug_callback_t callback = nullptr;
+    };
+    std::vector<CapturedMediaBugRemoveCallback> media_bug_remove_callback_invocations;
 };
 
 // Single mutable instance accessed by both the (mock) shim functions and
@@ -452,7 +489,11 @@ inline void MockReset() {
         m.set_variable_invocations.clear();
         m.hold_uuid_invocations.clear();
         m.unhold_uuid_invocations.clear();
+        // W6A.
+        m.media_bug_add_invocations.clear();
+        m.media_bug_remove_callback_invocations.clear();
     }
+    m.media_bug_remove_callback_calls = 0;
 }
 
 // --- Shim functions: SAME signatures as the production fs_api.h ------
@@ -626,21 +667,50 @@ inline const char* EventGetBody(switch_event_t* ev) noexcept {
     (void)ev;
 }
 
-inline switch_status_t MediaBugAdd(switch_core_session_t* /*session*/,
-                                   const char* /*name*/,
-                                   const char* /*function*/,
-                                   switch_media_bug_callback_t /*callback*/,
-                                   void* /*user_data*/,
+inline switch_status_t MediaBugAdd(switch_core_session_t* session,
+                                   const char* function_name,
+                                   const char* target,
+                                   switch_media_bug_callback_t callback,
+                                   void* user_data,
                                    time_t /*stop_time*/,
-                                   uint32_t /*flags*/,
+                                   uint32_t flags,
                                    switch_media_bug_t** bug_out) noexcept {
-    Mock().media_bug_add_calls.fetch_add(1, std::memory_order_relaxed);
-    if (Mock().next_bug_add_status == SWITCH_STATUS_SUCCESS) {
-        *bug_out = Mock().next_bug;
+    auto& m = Mock();
+    m.media_bug_add_calls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        MockState::CapturedMediaBugAdd cap;
+        cap.session = session;
+        cap.function_name = function_name ? function_name : "";
+        cap.target = target ? target : "";
+        cap.callback = callback;
+        cap.user_data = user_data;
+        cap.flags = flags;
+        m.media_bug_add_invocations.push_back(std::move(cap));
+    }
+    if (m.next_bug_add_status == SWITCH_STATUS_SUCCESS) {
+        *bug_out = m.next_bug;
     } else {
         *bug_out = nullptr;
     }
-    return Mock().next_bug_add_status;
+    return m.next_bug_add_status;
+}
+
+// W6A — MediaBugRemoveCallback shim (FF-031).
+// Called by MediaBugManager::Detach to remove a bug by function-name filter.
+inline switch_status_t MediaBugRemoveCallback(switch_core_session_t* session,
+                                              switch_media_bug_callback_t callback) noexcept {
+    auto& m = Mock();
+    m.media_bug_remove_calls.fetch_add(1, std::memory_order_relaxed);
+    m.media_bug_remove_callback_calls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        MockState::CapturedMediaBugRemoveCallback cap;
+        cap.session = session;
+        cap.callback = callback;
+        m.media_bug_remove_callback_invocations.push_back(cap);
+    }
+    return m.next_bug_remove_status;
 }
 
 inline switch_status_t MediaBugRemove(switch_core_session_t* /*session*/,
