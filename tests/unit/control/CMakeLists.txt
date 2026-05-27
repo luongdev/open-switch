@@ -25,6 +25,19 @@ osw_add_unit_test(
     LIBS    osw_control osw_control_fs
 )
 
+# W4 Track A — TLS credential builder tests.
+#
+# Tests BuildServerCredentials(TlsConfig), MakeServerCreds(Config) adapter,
+# and TlsConfigFromConfig(). All use in-memory PEM strings written to a
+# temp directory. No real TLS handshake is performed (FF-028 §unit tests).
+# Links osw_control (FS-agnostic; no FS-mock seam needed).
+osw_add_unit_test(
+    NAME    tls_test
+    LABEL   "control;unit;tls"
+    SOURCES tls_test.cc
+    LIBS    osw_control
+)
+
 # W3 Track A — shared helpers + handler tests (FS-mock seam).
 #
 # The handler tests include "src/control/control_service_skeleton.h" via
