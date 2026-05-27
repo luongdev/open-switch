@@ -73,6 +73,7 @@
 #include "osw/events/subscribe/broadcaster.h"
 #include "osw/events/tier.h"
 #include "osw/media/bug_manager.h"
+#include "osw/media/silence_driver.h"
 #include "osw/observability/audit.h"
 #include "osw/observability/health_metrics.h"
 #include "osw/observability/log.h"
@@ -180,6 +181,13 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
                     try { mod->bug_manager_->UnregisterStateHandlers(); } catch (...) {}
                 }
                 mod->active_media_streams_.reset();
+                if (mod->bug_manager_) {
+                    mod->bug_manager_->SetSilenceDriverRegistry(nullptr);
+                }
+                if (mod->silence_driver_registry_) {
+                    try { mod->silence_driver_registry_->DrainAll(); } catch (...) {}
+                    mod->silence_driver_registry_.reset();
+                }
                 mod->bug_manager_.reset();
                 mod->rpc_metrics_.reset();
                 mod->health_metrics_.reset();
@@ -284,7 +292,9 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
         // function-pointer indirection (avoids a control→media→control
         // header cycle).
         active_media_streams_ = std::make_unique<control::ActiveMediaStreams>();
+        silence_driver_registry_ = std::make_unique<media::SilenceDriverRegistry>(config_);
         bug_manager_ = std::make_unique<media::MediaBugManager>();
+        bug_manager_->SetSilenceDriverRegistry(silence_driver_registry_.get());
         bug_manager_->RegisterStateHandlers(
             /*active_streams_opaque=*/static_cast<void*>(active_media_streams_.get()),
             /*cleanup_fn=*/[](void* opaque, std::string_view uuid) {
@@ -480,13 +490,23 @@ bool Module::Shutdown() noexcept {
         //            client->Close() (joins reader thread) then bugs.clear()
         //            (calls MediaBugManager::Detach via BugHandle dtor),
         //            so bug_manager_ must still be alive at this point.
-        //        (c) bug_manager_.reset() last.  Reversing (b) and (c)
+        //        (c) silence_driver_registry_->DrainAll() then reset while
+        //            bug_manager_ still exists but after stream handles have
+        //            detached their WRITE_REPLACE bugs.
+        //        (d) bug_manager_.reset() last.  Reversing (b) and (d)
         //            would leave BugHandle dtors trying to deref a freed
         //            MediaBugManager.
         if (bug_manager_) {
             bug_manager_->UnregisterStateHandlers();
         }
         active_media_streams_.reset();
+        if (bug_manager_) {
+            bug_manager_->SetSilenceDriverRegistry(nullptr);
+        }
+        if (silence_driver_registry_) {
+            silence_driver_registry_->DrainAll();
+            silence_driver_registry_.reset();
+        }
         bug_manager_.reset();
 
         // 8. Tear down the observability plane. rpc_metrics_ and

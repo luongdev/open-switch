@@ -25,6 +25,16 @@ osw_add_unit_test(
 # gmock for EXPECT_THAT + HasSubstr matchers.
 target_link_libraries(bug_manager_test PRIVATE gmock)
 
+# --- silence_driver_test (W6.6, FS-mock seam) --------------------------
+
+osw_add_unit_test(
+    NAME    silence_driver_test
+    LABEL   "media;unit;w6.6"
+    SOURCES silence_driver_test.cc
+    LIBS    osw_media osw_media_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+
 # --- audio_frame_test (Track B, FS-agnostic) ---------------------------
 
 osw_add_unit_test(

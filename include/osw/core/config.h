@@ -155,6 +155,14 @@ struct Config {
     /// Underrun policy: "silence" (default - clean for speech) or
     /// "repeat_last" (copies last 20 ms frame; better for music).
     std::string tts_underrun_policy = "silence";
+
+    // --- Media (W6.6) ----------------------------------------------------
+    /// Enable module-owned silence_stream://-1 driver threads for parked
+    /// WRITE_REPLACE channels that have no other write-side source.
+    bool silence_driver_enabled = true;
+
+    /// Hard cap on simultaneous silence driver threads.
+    std::uint32_t max_silence_drivers = 200;
 };
 
 /// Validates the config. Returns Ok() or Fail(detail).

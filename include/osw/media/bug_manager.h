@@ -41,6 +41,8 @@ using switch_core_session_t = switch_core_session;
 
 namespace osw::media {
 
+class SilenceDriverRegistry;
+
 /// Configuration passed to Attach.
 struct BugConfig {
     Purpose purpose;
@@ -131,6 +133,16 @@ class MediaBugManager {
     /// hook may dereference the destroyed manager).
     void UnregisterStateHandlers() noexcept;
 
+    /// Wire the optional W6.6 silence driver registry. The registry is
+    /// module-owned and must outlive this manager until shutdown unregisters
+    /// state handlers and drains media streams.
+    void SetSilenceDriverRegistry(SilenceDriverRegistry* registry) noexcept;
+
+    /// Stops any silence driver for this channel. Used by the CS_DESTROY
+    /// trampoline as a final sweep in case no WRITE_REPLACE bug record
+    /// remains by the time channel cleanup runs.
+    void RemoveSilenceDriverForChannel(std::string_view channel_uuid) noexcept;
+
     /// Wire user_cb + user_data onto an existing bug's BugCallbackContext.
     /// Called by Track C handlers after Attach to connect the media bug
     /// callback to the StreamClient / TtsPlayoutBuffer.
@@ -184,10 +196,12 @@ class MediaBugManager {
     std::unordered_map<std::uint64_t, void*> by_id_;
     // Map: channel_uuid → [bug_id, ...]
     std::unordered_map<std::string, std::vector<std::uint64_t>> by_channel_;
+    SilenceDriverRegistry* silence_driver_registry_ = nullptr;
 
     // Internal helpers — called with mu_ held.
     std::uint32_t MaxRankForChannel(const std::string& uuid) const noexcept;
     bool HasPurpose(const std::string& uuid, Purpose p) const noexcept;
+    bool HasWriteReplaceBug(const std::string& uuid) const noexcept;
 };
 
 }  // namespace osw::media

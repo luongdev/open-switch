@@ -47,6 +47,7 @@
 #include "osw/media/bug_handle.h"
 #include "osw/media/bug_manager.h"
 #include "osw/media/purpose.h"
+#include "osw/media/silence_driver.h"
 
 // ---------------------------------------------------------------------------
 // FS constants and type aliases used in this TU only.
@@ -58,10 +59,12 @@ namespace {
 #if defined(OSW_TEST_FS_MOCK)
 // fs_mock.h defines SMBF_FIRST as (1u << 26).
 constexpr std::uint32_t kSmbfFirst = static_cast<std::uint32_t>(SMBF_FIRST);
+constexpr std::uint32_t kSmbfWriteReplace = static_cast<std::uint32_t>(SMBF_WRITE_REPLACE);
 // CS_DESTROY is defined in fs_mock.h as 12.
 constexpr int kCsDestroy = static_cast<int>(CS_DESTROY);
 #else
 constexpr std::uint32_t kSmbfFirst = static_cast<std::uint32_t>(SMBF_FIRST);
+constexpr std::uint32_t kSmbfWriteReplace = static_cast<std::uint32_t>(SMBF_WRITE_REPLACE);
 constexpr int kCsDestroy = static_cast<int>(CS_DESTROY);
 #endif
 
@@ -281,6 +284,7 @@ extern "C" switch_status_t OswMediaChannelDestroy(switch_core_session_t* session
     // FF-032: at CS_DESTROY the FS-side bug chain is already cleaned up.
     // DetachAll must NOT call switch_core_media_bug_remove.
     mgr->DetachAll(uuid_cstr);
+    mgr->RemoveSilenceDriverForChannel(uuid_cstr);
     return SWITCH_STATUS_SUCCESS;
 }
 
@@ -460,6 +464,10 @@ MediaBugManager::AttachResult MediaBugManager::Attach(switch_core_session_t* ses
     by_id_.emplace(assigned_id, static_cast<void*>(rec));
     by_channel_[uuid].push_back(assigned_id);
 
+    if ((effective_flags & kSmbfWriteReplace) != 0 && silence_driver_registry_) {
+        silence_driver_registry_->AttachOpportunistic(session);
+    }
+
     BugHandle handle(this, assigned_id, purpose_copy, uuid);
     return AttachResult{true, grpc::StatusCode::OK, "", std::move(handle)};
 }
@@ -513,6 +521,9 @@ void MediaBugManager::DetachInternal(std::uint64_t bug_id, bool call_remove_call
     switch_media_bug_t* fs_bug_to_remove = nullptr;
     BugCallbackContext* ctx_to_delete = nullptr;
     BugRecord* rec_to_delete = nullptr;
+    SilenceDriverRegistry* silence_registry = nullptr;
+    std::string removed_channel_uuid;
+    bool stop_silence_driver = false;
 
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -543,6 +554,12 @@ void MediaBugManager::DetachInternal(std::uint64_t bug_id, bool call_remove_call
         fs_bug_to_remove = call_remove_callback ? rec->fs_bug : nullptr;
         ctx_to_delete = rec->ctx;
         rec_to_delete = rec;
+        removed_channel_uuid = rec->channel_uuid;
+        if ((rec->config.fs_flags & kSmbfWriteReplace) != 0 &&
+            !HasWriteReplaceBug(removed_channel_uuid)) {
+            stop_silence_driver = true;
+            silence_registry = silence_driver_registry_;
+        }
         by_id_.erase(it);
     }
 
@@ -557,6 +574,10 @@ void MediaBugManager::DetachInternal(std::uint64_t bug_id, bool call_remove_call
 
     delete ctx_to_delete;
     delete rec_to_delete;
+
+    if (stop_silence_driver && silence_registry) {
+        silence_registry->DetachIfOrphan(removed_channel_uuid);
+    }
 }
 
 void MediaBugManager::Detach(std::uint64_t bug_id) noexcept {
@@ -634,6 +655,22 @@ void MediaBugManager::UnregisterStateHandlers() noexcept {
     g_state_hook_cleanup_fn_ = nullptr;
 }
 
+void MediaBugManager::SetSilenceDriverRegistry(SilenceDriverRegistry* registry) noexcept {
+    std::lock_guard<std::mutex> lk(mu_);
+    silence_driver_registry_ = registry;
+}
+
+void MediaBugManager::RemoveSilenceDriverForChannel(std::string_view channel_uuid) noexcept {
+    SilenceDriverRegistry* registry = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        registry = silence_driver_registry_;
+    }
+    if (registry) {
+        registry->RemoveForChannel(channel_uuid);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers (called with mu_ held).
 // ---------------------------------------------------------------------------
@@ -667,6 +704,23 @@ bool MediaBugManager::HasPurpose(const std::string& uuid, Purpose p) const noexc
         if (it != by_id_.end()) {
             const BugRecord* rec = static_cast<const BugRecord*>(it->second);
             if (rec->purpose == p) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool MediaBugManager::HasWriteReplaceBug(const std::string& uuid) const noexcept {
+    auto cit = by_channel_.find(uuid);
+    if (cit == by_channel_.end()) {
+        return false;
+    }
+    for (std::uint64_t id : cit->second) {
+        auto it = by_id_.find(id);
+        if (it != by_id_.end()) {
+            const BugRecord* rec = static_cast<const BugRecord*>(it->second);
+            if ((rec->config.fs_flags & kSmbfWriteReplace) != 0) {
                 return true;
             }
         }

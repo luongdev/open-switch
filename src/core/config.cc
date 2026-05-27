@@ -140,6 +140,11 @@ ConfigValidation Validate(const Config& cfg) {
         }
     }
 
+    // --- Media (W6.6) -- silence driver ---------------------------------
+    if (cfg.max_silence_drivers < 1 || cfg.max_silence_drivers > 5000) {
+        return ConfigValidation::Fail("max_silence_drivers must be in [1, 5000]");
+    }
+
     return ConfigValidation::Ok();
 }
 

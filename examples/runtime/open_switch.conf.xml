@@ -44,5 +44,9 @@
     <param name="tts_high_water_ms"         value="1500"/>
     <param name="tts_max_jitter_buffer_ms"  value="5000"/>
     <param name="tts_underrun_policy"       value="silence"/>
+
+    <!-- W6.6 — module-owned write-side driver for parked WRITE_REPLACE channels -->
+    <param name="silence_driver_enabled"    value="true"/>
+    <param name="max_silence_drivers"       value="200"/>
   </settings>
 </configuration>

@@ -131,6 +131,9 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
     int int_tts_max_jitter = static_cast<int>(out.tts_max_jitter_buffer_ms);
     StringParam sp_tts_underrun{};
     sp_tts_underrun.target = &out.tts_underrun_policy;
+    switch_bool_t bool_silence_driver =
+        out.silence_driver_enabled ? SWITCH_TRUE : SWITCH_FALSE;
+    int int_max_silence_drivers = static_cast<int>(out.max_silence_drivers);
 
     switch_xml_config_int_options_t opt_ge200{};
     opt_ge200.enforce_min = SWITCH_TRUE;
@@ -415,6 +418,22 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
                                     &sp_tts_underrun,
                                     "silence|repeat_last",
                                     "TTS underrun policy (silence or repeat_last)"),
+        SWITCH_CONFIG_ITEM("silence_driver_enabled",
+                           SWITCH_CONFIG_BOOL,
+                           CONFIG_RELOADABLE,
+                           &bool_silence_driver,
+                           reinterpret_cast<const void*>(static_cast<std::intptr_t>(SWITCH_TRUE)),
+                           nullptr,
+                           "true|false",
+                           "Enable module-owned silence driver for parked WRITE_REPLACE channels"),
+        SWITCH_CONFIG_ITEM("max_silence_drivers",
+                           SWITCH_CONFIG_INT,
+                           CONFIG_RELOADABLE,
+                           &int_max_silence_drivers,
+                           reinterpret_cast<const void*>(static_cast<std::intptr_t>(200)),
+                           &opt_ge1,
+                           "threads",
+                           "Max simultaneous silence driver threads"),
 
         SWITCH_CONFIG_ITEM_END()};
 
@@ -449,6 +468,8 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
         out.tts_preroll_ms = static_cast<std::uint32_t>(int_tts_preroll);
         out.tts_high_water_ms = static_cast<std::uint32_t>(int_tts_high_water);
         out.tts_max_jitter_buffer_ms = static_cast<std::uint32_t>(int_tts_max_jitter);
+        out.silence_driver_enabled = (bool_silence_driver == SWITCH_TRUE);
+        out.max_silence_drivers = static_cast<std::uint32_t>(int_max_silence_drivers);
         return true;
     }
 

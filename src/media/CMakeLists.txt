@@ -51,6 +51,8 @@ set_target_properties(osw_media PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(osw_media_fs STATIC
     # Track A
     bug_manager.cc
+    # W6.6
+    silence_driver.cc
     # Track B
     resampler.cc
     # Track C
@@ -88,6 +90,7 @@ set_target_properties(osw_media_fs PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(OSW_BUILD_TESTS)
     add_library(osw_media_test_helpers STATIC
         bug_manager.cc
+        silence_driver.cc
     )
     target_include_directories(osw_media_test_helpers
         PUBLIC
@@ -98,6 +101,7 @@ if(OSW_BUILD_TESTS)
     target_compile_features(osw_media_test_helpers PUBLIC cxx_std_20)
     target_link_libraries(osw_media_test_helpers PUBLIC
         osw_media
+        osw_audit_test_helpers
         Threads::Threads
     )
     target_compile_definitions(osw_media_test_helpers PUBLIC

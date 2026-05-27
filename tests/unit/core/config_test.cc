@@ -183,4 +183,28 @@ TEST(ConfigValidateTest, AcceptsValidPIIRegexList) {
     EXPECT_TRUE(v.ok);
 }
 
+TEST(ConfigValidateTest, SilenceDriverDefaultsAreValid) {
+    auto c = Defaults();
+    EXPECT_TRUE(c.silence_driver_enabled);
+    EXPECT_EQ(200u, c.max_silence_drivers);
+    const auto v = osw::Validate(c);
+    EXPECT_TRUE(v.ok);
+}
+
+TEST(ConfigValidateTest, RejectsSilenceDriverCapBelowRange) {
+    auto c = Defaults();
+    c.max_silence_drivers = 0;
+    const auto v = osw::Validate(c);
+    EXPECT_FALSE(v.ok);
+    EXPECT_NE(v.error.find("max_silence_drivers"), std::string::npos);
+}
+
+TEST(ConfigValidateTest, RejectsSilenceDriverCapAboveRange) {
+    auto c = Defaults();
+    c.max_silence_drivers = 5001;
+    const auto v = osw::Validate(c);
+    EXPECT_FALSE(v.ok);
+    EXPECT_NE(v.error.find("max_silence_drivers"), std::string::npos);
+}
+
 }  // namespace
