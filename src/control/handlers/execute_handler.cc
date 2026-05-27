@@ -129,9 +129,16 @@ grpc::Status ControlServiceSkeleton::Execute(grpc::ServerContext* /*ctx*/,
         if (cache != nullptr && !request_id.empty()) {
             IdempotencyCache::Entry e;
             e.status = status;
-            resp->SerializeToString(&e.serialized_response);
-            e.expires_at = std::chrono::steady_clock::now() + cache->Ttl();
-            cache->Store(request_id, std::move(e));
+            if (!resp->SerializeToString(&e.serialized_response)) {
+                osw::log::Warn(kSubsystem,
+                               "Execute: SerializeToString failed for request_id=%s; "
+                               "cancelling cache reservation to avoid corrupted retry",
+                               request_id.c_str());
+                cache->Cancel(request_id);
+            } else {
+                e.expires_at = std::chrono::steady_clock::now() + cache->Ttl();
+                cache->Store(request_id, std::move(e));
+            }
         }
         return status;
     };

@@ -89,6 +89,14 @@ bool GrpcServer::Start(const Config& config) {
 
     service_ = std::make_unique<ControlServiceSkeleton>(health_);
     service_->SetVersions(module_version_, freeswitch_version_);
+    // Apply any cache pointer staged via SetIdempotencyCache(...) BEFORE
+    // Start() — this closes the race window where the gRPC server is
+    // already accepting RPCs but the skeleton's cache pointer is still
+    // null (Gemini W5 P3-1). Module::Load now constructs the cache and
+    // calls SetIdempotencyCache before Start(); this line applies it.
+    if (pending_cache_) {
+        service_->SetIdempotencyCache(pending_cache_);
+    }
 
     grpc::ServerBuilder builder;
     int bound_port = 0;
@@ -187,13 +195,13 @@ void GrpcServer::SetRpcMetrics(control::RpcMetrics* metrics) noexcept {
 }
 
 void GrpcServer::SetIdempotencyCache(control::IdempotencyCache* cache) noexcept {
-    if (!service_) {
-        osw::log::Warn("control",
-                       "GrpcServer::SetIdempotencyCache called before Start; "
-                       "idempotency deduplication will be inactive");
-        return;
+    // Stash the pointer so Start() can apply it the moment the skeleton is
+    // constructed (closes the pre-Start race window). If the skeleton
+    // already exists (post-Start call), apply immediately too.
+    pending_cache_ = cache;
+    if (service_) {
+        service_->SetIdempotencyCache(cache);
     }
-    service_->SetIdempotencyCache(cache);
 }
 
 void GrpcServer::SetEventPlane(events::Broadcaster* broadcaster,

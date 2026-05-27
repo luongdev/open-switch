@@ -215,21 +215,25 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
         grpc_server_ = std::make_unique<control::GrpcServer>(&health_);
         grpc_server_->SetVersions(kModuleVersion, fs_ver);
         grpc_server_->SetRpcMetrics(rpc_metrics_.get());
-        if (!grpc_server_->Start(config_)) {
-            osw::log::Error(kSubsystem, "gRPC server failed to start");
-            grpc_server_.reset();
-            return false;
-        }
 
-        // 6.5. Construct and inject the W5B idempotency cache.
-        //      Must happen after Start() so the skeleton exists, and
-        //      before TransitionToServing() so no RPC sees a null cache
-        //      while the module is in SERVING state.
+        // 5.5. Construct and inject the W5B idempotency cache BEFORE
+        //      Start(): GrpcServer::SetIdempotencyCache now stashes the
+        //      pointer in pending_cache_ and Start() applies it the moment
+        //      the skeleton is built (Gemini W5 P3-1 fix — closes the race
+        //      window where the gRPC server was accepting RPCs but the
+        //      skeleton's cache pointer was still null).
         idempotency_cache_ = std::make_unique<control::IdempotencyCache>(
             static_cast<std::size_t>(config_.idempotency_cache_capacity),
             std::chrono::seconds(config_.idempotency_ttl_seconds),
             std::chrono::seconds(config_.idempotency_in_flight_max_wait_seconds));
         grpc_server_->SetIdempotencyCache(idempotency_cache_.get());
+
+        if (!grpc_server_->Start(config_)) {
+            osw::log::Error(kSubsystem, "gRPC server failed to start");
+            grpc_server_.reset();
+            idempotency_cache_.reset();
+            return false;
+        }
 
         // 7. Wire the W2 event plane. Order matters:
         //   classifier → rings → binder.Init() → broadcaster.Start()

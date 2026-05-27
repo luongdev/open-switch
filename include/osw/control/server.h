@@ -116,11 +116,12 @@ class GrpcServer {
     /// installed (safe for tests that don't need metrics).
     void SetRpcMetrics(control::RpcMetrics* metrics) noexcept;
 
-    /// Inject the W5B idempotency cache. Called by Module::Load after
-    /// constructing the IdempotencyCache from config.  Must be called
-    /// before or immediately after Start() — Module::Load transitions
-    /// to SERVING (step 8) only after this call, so no RPC handler will
-    /// see a null cache pointer while the module is in the SERVING state.
+    /// Inject the W5B idempotency cache. SAFE to call either before OR
+    /// after Start(): the pointer is stashed in `pending_cache_`, and
+    /// Start() applies it to the skeleton right after construction so
+    /// the very first RPC sees a non-null cache (Gemini W5 P3-1 fix).
+    /// Calling after Start also works — the pointer is applied to the
+    /// already-constructed skeleton immediately.
     /// Non-owning pointer; the Module owns the IdempotencyCache.
     void SetIdempotencyCache(control::IdempotencyCache* cache) noexcept;
 
@@ -137,6 +138,8 @@ class GrpcServer {
     std::string module_version_;
     std::string freeswitch_version_;
     control::RpcMetrics* rpc_metrics_ = nullptr;  // non-owning; may be null
+    control::IdempotencyCache* pending_cache_ =
+        nullptr;  // staged before Start; applied during Start
 };
 
 }  // namespace control

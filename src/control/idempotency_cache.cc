@@ -160,19 +160,14 @@ void IdempotencyCache::Cancel(const std::string& request_id) {
 // ---------------------------------------------------------------------------
 
 void IdempotencyCache::EvictIfNeeded() {
-    // First pass: evict expired entries (lazy TTL sweep, bounded by list size).
-    const auto now = std::chrono::steady_clock::now();
-    auto it = lru_list_.end();
-    while (it != lru_list_.begin()) {
-        --it;
-        if (it->second.expires_at <= now) {
-            auto next = std::next(it);
-            Erase(it);
-            it = next;
-        }
-    }
-
-    // Second pass: LRU eviction until under capacity.
+    // LRU eviction only. The O(N) lazy TTL sweep that used to run here was
+    // removed (Gemini W5 P2-1): it walked the entire list under mu_ on every
+    // Store() and caused lock contention on the gRPC handler hot path.
+    //
+    // Cache size is still safely bounded by capacity_ via O(1) tail eviction,
+    // and LookupOrReserve handles expired entries on access. Expired entries
+    // that are never re-accessed will linger until LRU pushes them out — at
+    // capacity 1500 with a ~5-min TTL that is operationally negligible.
     while (lru_list_.size() >= capacity_) {
         Erase(std::prev(lru_list_.end()));
     }
