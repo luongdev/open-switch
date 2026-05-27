@@ -114,6 +114,8 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
     sp_key.target = &out.grpc_tls_key_path;
     StringParam sp_ca{};
     sp_ca.target = &out.grpc_tls_ca_path;
+    switch_bool_t bool_require_client_cert =
+        out.grpc_tls_require_client_cert ? SWITCH_TRUE : SWITCH_FALSE;
     StringParam sp_log{};
     sp_log.target = &out.log_level;
     StringParam sp_acl{};
@@ -212,6 +214,14 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
                                     &sp_ca,
                                     "path",
                                     "PEM CA bundle (empty = no mTLS)"),
+        SWITCH_CONFIG_ITEM("grpc_tls_require_client_cert",
+                           SWITCH_CONFIG_BOOL,
+                           CONFIG_RELOADABLE,
+                           &bool_require_client_cert,
+                           reinterpret_cast<const void*>(static_cast<std::intptr_t>(SWITCH_FALSE)),
+                           nullptr,
+                           "true|false",
+                           "Require client cert (mTLS). Auto-true when ca_path set (OQ-1)"),
 
         // Event plane
         SWITCH_CONFIG_ITEM("event_ring_capacity_tier1",
@@ -374,6 +384,7 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
         out.event_drain_timeout_seconds = static_cast<std::uint32_t>(int_evdrain_to);
         out.osw_panic_on_unhandled = (bool_panic == SWITCH_TRUE);
         out.osw_install_signal_handlers = (bool_sigh == SWITCH_TRUE);
+        out.grpc_tls_require_client_cert = (bool_require_client_cert == SWITCH_TRUE);
         SplitPipeList(pii_pipe, out.pii_redaction_patterns);
         return true;
     }

@@ -34,6 +34,11 @@ ConfigValidation Validate(const Config& cfg) {
         return ConfigValidation::Fail(
             "grpc_tls_ca_path set without grpc_tls_cert_path — mTLS requires server cert + key");
     }
+    if (cfg.grpc_tls_require_client_cert && cfg.grpc_tls_cert_path.empty()) {
+        return ConfigValidation::Fail(
+            "grpc_tls_require_client_cert=true but grpc_tls_cert_path is empty — "
+            "mTLS requires server cert + key");
+    }
 
     // --- Ring capacities --------------------------------------------------
     constexpr std::uint32_t kMinRingCapacity = 256;

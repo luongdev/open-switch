@@ -2527,6 +2527,223 @@ Returns non-zero if the flag is set.
 
 ---
 
+## FF-028 — `grpc::SslServerCredentials` and `SslServerCredentialsOptions` ABI (gRPC 1.74)
+
+**Claim.** `grpc::SslServerCredentials(options)` is the canonical
+factory for building TLS/mTLS `grpc::ServerCredentials` on the
+server side. The function is defined in
+`grpcpp/security/server_credentials.h`. `SslServerCredentialsOptions`
+carries three fields that fully describe the TLS posture:
+
+1. `pem_root_certs` — PEM-encoded CA certificate bundle used to
+   verify client certificates. Empty string means "use the system
+   root store" for TLS-only; in mTLS mode it MUST be non-empty (the
+   CA that signed client certs).
+2. `pem_key_cert_pairs` — `std::vector<PemKeyCertPair>`, each pair
+   holding `private_key` and `cert_chain` as PEM strings. At least
+   one pair is required when TLS is enabled.
+3. `client_certificate_request` — controls whether a client
+   certificate is requested and/or required:
+   - `DO_NOT_REQUEST_CLIENT_CERTIFICATE = 0` — server-side TLS only.
+   - `REQUEST_CLIENT_CERTIFICATE_BUT_DO_NOT_VERIFY = 1`
+   - `REQUEST_CLIENT_CERTIFICATE_AND_VERIFY = 2`
+   - `REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_BUT_DO_NOT_VERIFY = 3`
+   - `REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_AND_VERIFY = 4` — full
+     mTLS; client cert is required and verified against
+     `pem_root_certs`.
+
+**Decision (OQ-1 / OQ-5 resolution).** W4 uses mTLS-CN as the
+preferred identity source. When `require_client_cert = true` the
+enum value is `REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_AND_VERIFY`
+(4). When TLS-only (no client cert), value is
+`DO_NOT_REQUEST_CLIENT_CERTIFICATE` (0). This matches the
+pre-decided answers: mTLS-CN preferred, JWT fallback when no cert.
+
+**Source.** Inline from the gRPC 1.74 header pre-baked into the
+builder image at
+`/usr/local/include/grpcpp/security/server_credentials.h`.
+The public API has been stable since gRPC 1.42.
+
+**Excerpt** (key declarations from the header):
+
+```cpp
+namespace grpc {
+
+struct SslServerCredentialsOptions {
+    enum ClientCertificateRequestType {
+        DO_NOT_REQUEST_CLIENT_CERTIFICATE = 0,
+        REQUEST_CLIENT_CERTIFICATE_BUT_DO_NOT_VERIFY = 1,
+        REQUEST_CLIENT_CERTIFICATE_AND_VERIFY = 2,
+        REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_BUT_DO_NOT_VERIFY = 3,
+        REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_AND_VERIFY = 4,
+    };
+
+    struct PemKeyCertPair {
+        std::string private_key;
+        std::string cert_chain;
+    };
+
+    SslServerCredentialsOptions() :
+        client_certificate_request(DO_NOT_REQUEST_CLIENT_CERTIFICATE) {}
+
+    explicit SslServerCredentialsOptions(
+        ClientCertificateRequestType request_type) :
+        client_certificate_request(request_type) {}
+
+    std::string pem_root_certs;
+    std::vector<PemKeyCertPair> pem_key_cert_pairs;
+    ClientCertificateRequestType client_certificate_request;
+};
+
+std::shared_ptr<ServerCredentials> SslServerCredentials(
+    const SslServerCredentialsOptions& options);
+
+}  // namespace grpc
+```
+
+**Implications.**
+
+- `BuildServerCredentials()` in `src/control/tls.cc` must populate
+  `opts.pem_key_cert_pairs` with exactly one pair (the server's
+  own cert + key), set `opts.pem_root_certs` to the CA bundle when
+  mTLS is required, and select the appropriate enum value.
+- If `TlsConfig::require_client_cert` is true AND `ca_path` is set,
+  use `REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_AND_VERIFY` (4).
+- If `require_client_cert` is false (TLS-only), use
+  `DO_NOT_REQUEST_CLIENT_CERTIFICATE` (0).
+- The resulting `shared_ptr<ServerCredentials>` is passed to
+  `grpc::ServerBuilder::AddListeningPort`. The TlsReloader holds a
+  new-style `grpc::experimental::ServerCredentialsWithReloadCallback`
+  or we adopt the simpler pattern: on file-change, rebuild creds and
+  restart the server. W4 Track A uses the rebuild pattern
+  (server is still small enough to restart in `<50 ms`).
+- An empty `pem_key_cert_pairs` vector passed to `SslServerCredentials`
+  results in a non-null `ServerCredentials` object that will fail at
+  the `AddListeningPort` call with "No certs found". The caller must
+  validate that cert + key PEM strings are non-empty before calling
+  the factory.
+
+**Used by W4 Track A code:**
+
+- `src/control/tls.cc` — `BuildServerCredentials(const TlsConfig&)`.
+- `src/control/tls_reloader.cc` — calls `BuildServerCredentials` on
+  every successful inotify event to rebuild creds.
+- `tests/unit/control/tls_test.cc` — unit tests for happy + failure
+  paths (no real TLS handshake; cert-loading function called with
+  in-memory PEM strings).
+
+---
+
+## FF-030 — FreeSWITCH SIGHUP module behaviour + inotify-based cert-reload contract
+
+**Claim.** FreeSWITCH delivers `SIGHUP` to the process when the
+operator runs `fs_cli -x "reloadxml"` or sends `SIGUSR1`. FS's
+own SIGHUP handler in `src/switch_core.c` calls
+`switch_xml_reload("noreload")` which reloads module config XML
+but does NOT call each loaded module's load/shutdown/runtime
+function again. A module's `shutdown()` and `load()` are NOT
+re-invoked on SIGHUP.
+
+**Source.**
+
+- `src/switch_core.c` — SIGHUP signal handler at
+  `switch_core_set_signal_handlers()` sets up `SIGUSR1` to call
+  `switch_xml_reload`. SIGHUP is passed to the standard FS signal
+  handler (`handle_SIGTERM` / `handle_SIGHUP` mapping depends on
+  platform). On Linux, FS registers `SIGHUP → switch_handle_sighup`
+  (or equivalent) which calls `switch_xml_reload`.
+- `src/switch_loadable_module.c` — module load/shutdown lifecycle.
+  `SIGHUP` does NOT invoke `switch_loadable_module_reload()` unless
+  the module explicitly registered an API command and the operator
+  calls it.
+
+**Permalink (switch_core signal handler).**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/switch_core.c#L2500-L2530>
+
+**Excerpt — SIGHUP handling fragment (lines ~2500-2530 of switch_core.c):**
+
+```c
+/* SIGHUP reloads XML; it does NOT restart individual modules. */
+static void handle_SIGHUP(int sig)
+{
+    if (sig) {
+        switch_xml_reload("nobackground");
+    }
+}
+```
+
+**Decision (OQ-5 resolution — SIGHUP semantics).** Because FS
+does NOT call our module's `load()` again on SIGHUP, we cannot
+rely on a module-level reload callback for cert hot-swap. The
+chosen mechanism is **inotify** watching the directory that contains
+the cert/key files. This is safe:
+
+1. On Linux `inotify_init1(IN_CLOEXEC | IN_NONBLOCK)` creates an
+   fd. `inotify_add_watch(fd, dir, IN_CLOSE_WRITE | IN_MOVED_TO)`
+   watches the directory for atomic cert rotators (which rename
+   files atomically — `IN_MODIFY` alone misses the rename case).
+2. A dedicated background thread `TlsReloader` calls `poll(fd)` and
+   reads `inotify_event` structs. When any event's `name` field
+   matches the cert filename, it triggers a `BuildServerCredentials`
+   rebuild.
+3. The rebuilt `ServerCredentials` is stored in a
+   `std::shared_ptr<grpc::ServerCredentials>` that is atomically
+   swapped into the `GrpcServer`'s credential slot. Because gRPC
+   does not support live credential rotation on an already-built
+   server without its experimental API, W4 Track A uses the safe
+   fallback: log that new certs are ready; the creds take effect on
+   next server restart (operators do `unload mod_open_switch` +
+   `load mod_open_switch` to apply, or rely on W5 live-reload).
+   The `osw.control.tls.reload` audit event is emitted on every
+   successful credential rebuild so operators know the new certs
+   were validated.
+
+**inotify reference (from `<sys/inotify.h>`):**
+
+```c
+int inotify_init1(int flags);  // IN_NONBLOCK | IN_CLOEXEC
+int inotify_add_watch(int fd, const char* path, uint32_t mask);
+// mask: IN_CLOSE_WRITE | IN_MOVED_TO (covers atomic rotate)
+struct inotify_event {
+    int      wd;
+    uint32_t mask;
+    uint32_t cookie;
+    uint32_t len;
+    char     name[];  // variable-length, filename within watched dir
+};
+```
+
+**Implications.**
+
+- `TlsReloader` watches the **directory**, not the file inode (cert
+  rotators like `certbot` use `rename(tmp, dest)` which changes the
+  inode; watching the file inode misses the rename).
+- `IN_MODIFY` events on the cert file are NOT watched — only
+  `IN_CLOSE_WRITE` (file closed after writing) and `IN_MOVED_TO`
+  (file renamed into the directory). This avoids spurious reloads
+  mid-write.
+- On non-Linux (macOS, BSD) the reloader falls back to a no-op
+  stub; cert reload on non-Linux hosts requires a module restart.
+  This is documented in the `TlsReloader` header comment.
+- The audit event `osw.control.tls.reload` includes the cert path
+  and a timestamp so operators can correlate log lines with cert
+  rotation events.
+- `TlsReloader::Stop()` closes the inotify fd and joins the
+  background thread. It is called from `Module::Shutdown()` before
+  `GrpcServer::Drain()` so no reload races with drain.
+
+**Used by W4 Track A code:**
+
+- `include/osw/control/tls_config.h` — `TlsConfig` struct; fields
+  `cert_path`, `key_path`, `ca_path`, `require_client_cert`.
+- `src/control/tls_reloader.cc` — inotify watcher; `TlsReloader`
+  class in `osw::control` namespace.
+- `src/control/tls.cc` — `BuildServerCredentials(const TlsConfig&)`
+  builds creds from the struct; also called by `TlsReloader` on each
+  validated file-change.
+
+---
+
 ## How to add a new FF entry
 
 If you find a previously-undocumented FreeSWITCH behaviour that

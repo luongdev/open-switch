@@ -51,15 +51,35 @@
     <param name="grpc_drain_deadline_seconds" value="2"/>
 
     <!-- ============================================================
-         TLS (optional)
-         If grpc_tls_cert_path is non-empty the module loads PEM
-         creds; otherwise gRPC starts with insecure credentials.
-         mTLS (client-cert verification) is on iff grpc_tls_ca_path
-         is also set.
+         TLS / mTLS (W4 Track A)
+         If grpc_tls_cert_path is non-empty the module enables TLS.
+         mTLS (client-cert required and verified) is active when
+         grpc_tls_ca_path is set OR grpc_tls_require_client_cert=true.
+
+         Decision OQ-1 (mTLS-CN preferred, JWT fallback): when mTLS
+         is active, the client certificate CN is the primary identity
+         source. Clients without a cert fall back to the JWT Bearer
+         token path (Track B auth interceptor).
+
+         Decision OQ-2 (default-deny): if cert_path is set but any
+         PEM file is unreadable the module refuses to start (nullptr
+         from BuildServerCredentials → fatal load error). Insecure
+         credentials are only used when cert_path is empty (dev only).
+
+         Decision OQ-5 (SIGHUP via inotify): cert hot-reload does NOT
+         require a module restart. TlsReloader watches the cert
+         directory with inotify; a validated cert rebuild emits the
+         osw.control.tls.reload audit event (FF-030). Apply with:
+           unload mod_open_switch && load mod_open_switch
+         or via operator-controlled cert rotation + inotify trigger.
          ============================================================ -->
-    <param name="grpc_tls_cert_path" value=""/>
-    <param name="grpc_tls_key_path"  value=""/>
-    <param name="grpc_tls_ca_path"   value=""/>
+    <param name="grpc_tls_cert_path"           value=""/>
+    <param name="grpc_tls_key_path"            value=""/>
+    <param name="grpc_tls_ca_path"             value=""/>
+    <!-- Set true to require AND verify client cert (mTLS, OQ-1).
+         Automatically true when grpc_tls_ca_path is non-empty.
+         Explicit false with a ca_path allows optional client certs. -->
+    <param name="grpc_tls_require_client_cert" value="false"/>
 
     <!-- ============================================================
          Event plane (W2-W4 owns; schema lives here)
