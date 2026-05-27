@@ -19,6 +19,7 @@
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/server_builder.h>
 
+#include "osw/control/rpc_metrics.h"
 #include "osw/control/tls.h"
 #include "osw/core/config.h"
 #include "osw/observability/health.h"
@@ -92,6 +93,18 @@ bool GrpcServer::Start(const Config& config) {
     int bound_port = 0;
     builder.AddListeningPort(config.grpc_listen_address, creds_, &bound_port);
     builder.RegisterService(service_.get());
+
+    // W4C: register the RpcMetrics interceptor if a collector was injected.
+    // The factory is heap-allocated here and transferred to the builder
+    // (grpc::ServerBuilder takes ownership via the interceptor factory
+    // vector — it moves the unique_ptr in).
+    if (rpc_metrics_) {
+        std::vector<std::unique_ptr<grpc::experimental::ServerInterceptorFactoryInterface>>
+            interceptor_creators;
+        interceptor_creators.push_back(rpc_metrics_->MakeFactory());
+        builder.experimental().SetInterceptorCreators(std::move(interceptor_creators));
+        osw::log::Info("control", "RpcMetrics interceptor registered");
+    }
     // Note: bound_port is filled in by BuildAndStart() (the resolver
     // runs there, not at AddListeningPort registration). We capture
     // it into the member after BuildAndStart succeeds.
@@ -164,6 +177,10 @@ std::string GrpcServer::BoundAddress() const noexcept {
 
 int GrpcServer::BoundPort() const noexcept {
     return bound_port_;
+}
+
+void GrpcServer::SetRpcMetrics(control::RpcMetrics* metrics) noexcept {
+    rpc_metrics_ = metrics;
 }
 
 void GrpcServer::SetEventPlane(events::Broadcaster* broadcaster,

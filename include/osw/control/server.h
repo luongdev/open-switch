@@ -51,6 +51,7 @@ class RingSet;
 namespace control {
 
 class ControlServiceSkeleton;
+class RpcMetrics;
 
 class GrpcServer {
   public:
@@ -106,6 +107,14 @@ class GrpcServer {
                        std::uint32_t max_subscribers,
                        std::uint32_t subscriber_send_queue_capacity) noexcept;
 
+    /// Inject the W4C RpcMetrics collector. Must be called before Start().
+    /// Non-owning pointer; the caller (Module) owns the RpcMetrics and the
+    /// associated prometheus::Registry. When set, GrpcServer registers the
+    /// RpcMetricsInterceptorFactory with the ServerBuilder so every RPC is
+    /// timed and counted. When null (default), no metrics interceptor is
+    /// installed (safe for tests that don't need metrics).
+    void SetRpcMetrics(control::RpcMetrics* metrics) noexcept;
+
   private:
     Health* health_;
     std::shared_ptr<grpc::ServerCredentials> creds_;
@@ -118,6 +127,7 @@ class GrpcServer {
     int bound_port_ = -1;
     std::string module_version_;
     std::string freeswitch_version_;
+    control::RpcMetrics* rpc_metrics_ = nullptr;  // non-owning; may be null
 };
 
 }  // namespace control
