@@ -49,6 +49,17 @@ std::uint64_t BugFanout::Push(AudioFrame frame) noexcept {
         return 0;
     }
 
+    std::size_t last_target_index = write_queues_.size();
+    for (std::size_t i = write_queues_.size(); i > 0; --i) {
+        if (write_queues_[i - 1] != nullptr) {
+            last_target_index = i - 1;
+            break;
+        }
+    }
+    if (last_target_index == write_queues_.size()) {
+        return 0;
+    }
+
     std::uint64_t dropped = 0;
     for (std::size_t i = 0; i < write_queues_.size(); ++i) {
         TargetQueue* target = write_queues_[i];
@@ -57,7 +68,7 @@ std::uint64_t BugFanout::Push(AudioFrame frame) noexcept {
         }
 
         std::lock_guard<std::mutex> lock(target->mu_);
-        if (i + 1 == write_queues_.size()) {
+        if (i == last_target_index) {
             target->queue.push_back(std::move(frame));
         } else {
             target->queue.push_back(frame);

@@ -275,6 +275,11 @@ struct MockState {
     std::atomic<int> event_unbind_calls{0};
     std::atomic<int> media_bug_add_calls{0};
     std::atomic<int> media_bug_remove_calls{0};
+    std::mutex media_bug_add_block_mu;
+    std::condition_variable media_bug_add_cv;
+    int media_bug_add_block_remaining = 0;
+    int media_bug_add_waiting = 0;
+    bool media_bug_add_release = false;
     std::atomic<int> xml_open_cfg_calls{0};
     std::atomic<int> xml_free_calls{0};
     // W3 control-plane counters (FF-021 + FF-022).
@@ -498,6 +503,13 @@ inline void MockReset() {
     m.event_unbind_calls = 0;
     m.media_bug_add_calls = 0;
     m.media_bug_remove_calls = 0;
+    {
+        std::lock_guard<std::mutex> g(m.media_bug_add_block_mu);
+        m.media_bug_add_block_remaining = 0;
+        m.media_bug_add_waiting = 0;
+        m.media_bug_add_release = false;
+    }
+    m.media_bug_add_cv.notify_all();
     m.xml_open_cfg_calls = 0;
     m.xml_free_calls = 0;
     m.next_session = nullptr;
@@ -766,6 +778,15 @@ inline switch_status_t MediaBugAdd(switch_core_session_t* session,
         cap.user_data = user_data;
         cap.flags = flags;
         m.media_bug_add_invocations.push_back(std::move(cap));
+    }
+    {
+        std::unique_lock<std::mutex> g(m.media_bug_add_block_mu);
+        if (m.media_bug_add_block_remaining > 0) {
+            --m.media_bug_add_block_remaining;
+            ++m.media_bug_add_waiting;
+            m.media_bug_add_cv.notify_all();
+            m.media_bug_add_cv.wait(g, [&m] { return m.media_bug_add_release; });
+        }
     }
     if (m.next_bug_add_status == SWITCH_STATUS_SUCCESS) {
         *bug_out = m.next_bug;

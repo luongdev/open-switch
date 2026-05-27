@@ -343,6 +343,42 @@ MediaBugManager::~MediaBugManager() noexcept {
     by_channel_.clear();
 }
 
+std::shared_ptr<std::mutex> MediaBugManager::ChannelLockFor(const std::string& uuid) noexcept {
+    try {
+        std::lock_guard<std::mutex> lk(mu_);
+
+        auto it = channel_locks_.find(uuid);
+        if (it != channel_locks_.end()) {
+            auto lock = it->second.lock();
+            if (lock) {
+                return lock;
+            }
+            channel_locks_.erase(it);
+        }
+
+        auto& weak_lock = channel_locks_[uuid];
+        auto lock = std::shared_ptr<std::mutex>{};
+        lock = std::make_shared<std::mutex>();
+        weak_lock = lock;
+        return lock;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+void MediaBugManager::PruneExpiredChannelLock(const std::string& uuid) noexcept {
+    try {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = channel_locks_.find(uuid);
+        if (it != channel_locks_.end() && it->second.expired()) {
+            channel_locks_.erase(it);
+        }
+    } catch (...) {
+        // Best-effort cleanup only; lifecycle correctness does not depend on
+        // pruning an expired weak lock entry.
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Attach.
 // ---------------------------------------------------------------------------
@@ -356,66 +392,88 @@ MediaBugManager::AttachResult MediaBugManager::Attach(switch_core_session_t* ses
     }
     const std::string uuid(uuid_cstr);
 
-    // W6.5 P2-001 fix: hold mu_ for the entire Attach path (validation
-    // → FS add → register).  The previous code released mu_ between
-    // validation and FsMediaBugAdd, so 2 concurrent Attach calls on the
-    // same channel could both pass uniqueness/rank checks, both call FS,
-    // and both register — silently violating the "one bug per purpose per
-    // channel" + "stage-rank monotonic" invariants.
-    //
-    // Safety analysis: holding mu_ across FsMediaBugAdd is safe because
-    // FS's internal switch_core_media_bug_add invokes the trampoline once
-    // synchronously with SWITCH_ABC_TYPE_INIT.  The trampoline forwards
-    // to ctx->user_cb iff non-null — but Track C's flow sets user_cb via
-    // SetBugCallback AFTER Attach returns, so during the FS-add call
-    // user_cb is always nullptr and the trampoline returns SWITCH_TRUE
-    // without touching anything else.  No re-entry into MediaBugManager.
-    std::lock_guard<std::mutex> lk(mu_);
-
-    // Duplicate purpose check.
-    if (HasPurpose(uuid, cfg.purpose)) {
-        return AttachResult{
-            false,
-            grpc::StatusCode::ALREADY_EXISTS,
-            std::string("purpose already attached: ") + std::string(PurposeName(cfg.purpose)),
-            BugHandle{}};
+    auto channel_lock = ChannelLockFor(uuid);
+    if (!channel_lock) {
+        return AttachResult{false,
+                            grpc::StatusCode::RESOURCE_EXHAUSTED,
+                            "failed to allocate channel lifecycle lock",
+                            BugHandle{}};
     }
 
-    // Stage-rank enforcement.
-    const std::uint32_t this_rank = StageRank(cfg.purpose);
-    const std::uint32_t max_rank = MaxRankForChannel(uuid);
-    std::uint32_t effective_flags = cfg.fs_flags;
+    // Serialize lifecycle mutations per channel, not globally. This keeps
+    // the per-channel uniqueness/rank invariants stable while FsMediaBugAdd
+    // runs, without blocking attaches on unrelated channels.
+    std::unique_lock<std::mutex> channel_lk(*channel_lock);
+    auto cleanup_channel_lock = [&]() noexcept {
+        if (channel_lk.owns_lock()) {
+            channel_lk.unlock();
+        }
+        channel_lock.reset();
+        PruneExpiredChannelLock(uuid);
+    };
 
-    if (cfg.purpose == Purpose::kVadBargeIn) {
-        // VAD always gets SMBF_FIRST regardless of attach order.
-        effective_flags |= kSmbfFirst;
-    } else if (this_rank < max_rank) {
-        // Out-of-order attach.  Allowed only if caller already set
-        // SMBF_FIRST in cfg.fs_flags.
-        if ((cfg.fs_flags & kSmbfFirst) == 0) {
-            return AttachResult{false,
-                                grpc::StatusCode::FAILED_PRECONDITION,
-                                std::string("out-of-order attach: purpose=") +
-                                    std::string(PurposeName(cfg.purpose)) +
-                                    " rank=" + std::to_string(this_rank) +
-                                    " already-attached max-rank=" + std::to_string(max_rank),
-                                BugHandle{}};
+    std::uint64_t assigned_id = 0;
+    std::uint32_t effective_flags = cfg.fs_flags;
+    const Purpose purpose_copy = cfg.purpose;
+    AttachResult validation_failure{
+        false, grpc::StatusCode::UNKNOWN, "validation not run", BugHandle{}};
+    bool validation_failed = false;
+
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+
+        // Duplicate purpose check.
+        if (HasPurpose(uuid, cfg.purpose)) {
+            validation_failure = AttachResult{
+                false,
+                grpc::StatusCode::ALREADY_EXISTS,
+                std::string("purpose already attached: ") + std::string(PurposeName(cfg.purpose)),
+                BugHandle{}};
+            validation_failed = true;
+        } else {
+            // Stage-rank enforcement.
+            const std::uint32_t this_rank = StageRank(cfg.purpose);
+            const std::uint32_t max_rank = MaxRankForChannel(uuid);
+
+            if (cfg.purpose == Purpose::kVadBargeIn) {
+                // VAD always gets SMBF_FIRST regardless of attach order.
+                effective_flags |= kSmbfFirst;
+            } else if (this_rank < max_rank) {
+                // Out-of-order attach.  Allowed only if caller already set
+                // SMBF_FIRST in cfg.fs_flags.
+                if ((cfg.fs_flags & kSmbfFirst) == 0) {
+                    validation_failure = AttachResult{
+                        false,
+                        grpc::StatusCode::FAILED_PRECONDITION,
+                        std::string("out-of-order attach: purpose=") +
+                            std::string(PurposeName(cfg.purpose)) +
+                            " rank=" + std::to_string(this_rank) +
+                            " already-attached max-rank=" + std::to_string(max_rank),
+                        BugHandle{}};
+                    validation_failed = true;
+                }
+            }
+
+            if (!validation_failed) {
+                assigned_id = next_id_++;
+            }
         }
     }
 
-    const std::uint64_t assigned_id = next_id_++;
+    if (validation_failed) {
+        cleanup_channel_lock();
+        return validation_failure;
+    }
 
     // Allocate callback context before calling FS.
     auto* ctx = new (std::nothrow) BugCallbackContext{this, assigned_id, nullptr, nullptr};
     if (!ctx) {
+        cleanup_channel_lock();
         return AttachResult{false,
                             grpc::StatusCode::RESOURCE_EXHAUSTED,
                             "failed to allocate BugCallbackContext",
                             BugHandle{}};
     }
-
-    // Capture purpose before moving cfg into BugRecord.
-    const Purpose purpose_copy = cfg.purpose;
 
     // Call switch_core_media_bug_add.
     switch_media_bug_t* fs_bug = nullptr;
@@ -430,6 +488,7 @@ MediaBugManager::AttachResult MediaBugManager::Attach(switch_core_session_t* ses
 
     if (rc != SWITCH_STATUS_SUCCESS) {
         delete ctx;
+        cleanup_channel_lock();
         return AttachResult{
             false,
             grpc::StatusCode::INTERNAL,
@@ -446,6 +505,7 @@ MediaBugManager::AttachResult MediaBugManager::Attach(switch_core_session_t* ses
         // Remove the bug from FS BEFORE freeing ctx.
         FsMediaBugRemove(session, &fs_bug);
         delete ctx;
+        cleanup_channel_lock();
         return AttachResult{false,
                             grpc::StatusCode::RESOURCE_EXHAUSTED,
                             "failed to allocate BugRecord",
@@ -461,14 +521,22 @@ MediaBugManager::AttachResult MediaBugManager::Attach(switch_core_session_t* ses
     rec->config.fs_flags = effective_flags;
     rec->ctx = ctx;
 
-    by_id_.emplace(assigned_id, static_cast<void*>(rec));
-    by_channel_[uuid].push_back(assigned_id);
+    SilenceDriverRegistry* silence_registry = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        by_id_.emplace(assigned_id, static_cast<void*>(rec));
+        by_channel_[uuid].push_back(assigned_id);
+        if ((effective_flags & kSmbfWriteReplace) != 0) {
+            silence_registry = silence_driver_registry_;
+        }
+    }
 
-    if ((effective_flags & kSmbfWriteReplace) != 0 && silence_driver_registry_) {
-        silence_driver_registry_->AttachOpportunistic(session);
+    if (silence_registry) {
+        silence_registry->AttachOpportunistic(session);
     }
 
     BugHandle handle(this, assigned_id, purpose_copy, uuid);
+    cleanup_channel_lock();
     return AttachResult{true, grpc::StatusCode::OK, "", std::move(handle)};
 }
 
@@ -515,7 +583,8 @@ bool MediaBugManager::SetBugCallback(std::uint64_t bug_id,
 //     would be redundant or unsafe), and by DetachAll on CS_DESTROY
 //     (FS has already closed all bugs for the dying channel; bug_t* is
 //     stale at this point — see FF-032).
-void MediaBugManager::DetachInternal(std::uint64_t bug_id, bool call_remove_callback) noexcept {
+void MediaBugManager::DetachInternalLocked(std::uint64_t bug_id,
+                                           bool call_remove_callback) noexcept {
     // Capture what we need under mu_, then release before calling FS.
     switch_core_session_t* session_to_remove = nullptr;
     switch_media_bug_t* fs_bug_to_remove = nullptr;
@@ -580,6 +649,37 @@ void MediaBugManager::DetachInternal(std::uint64_t bug_id, bool call_remove_call
     }
 }
 
+void MediaBugManager::DetachInternal(std::uint64_t bug_id, bool call_remove_callback) noexcept {
+    std::string channel_uuid;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = by_id_.find(bug_id);
+        if (it == by_id_.end()) {
+            return;
+        }
+        const BugRecord* rec = ToRecord(it->second);
+        if (!rec) {
+            return;
+        }
+        channel_uuid = rec->channel_uuid;
+    }
+
+    auto channel_lock = ChannelLockFor(channel_uuid);
+    if (channel_lock) {
+        {
+            std::unique_lock<std::mutex> channel_lk(*channel_lock);
+            DetachInternalLocked(bug_id, call_remove_callback);
+        }
+        channel_lock.reset();
+        PruneExpiredChannelLock(channel_uuid);
+        return;
+    }
+
+    // Best-effort cleanup under memory pressure. ChannelLockFor only fails
+    // when allocating a new lock object fails; do not leak a known bug record.
+    DetachInternalLocked(bug_id, call_remove_callback);
+}
+
 void MediaBugManager::Detach(std::uint64_t bug_id) noexcept {
     DetachInternal(bug_id, /*call_remove_callback=*/true);
 }
@@ -588,20 +688,41 @@ void MediaBugManager::DetachAll(std::string_view channel_uuid) noexcept {
     const std::string uuid(channel_uuid);
     std::vector<std::uint64_t> ids;
 
+    auto channel_lock = ChannelLockFor(uuid);
+    std::unique_lock<std::mutex> channel_lk;
+    if (channel_lock) {
+        channel_lk = std::unique_lock<std::mutex>(*channel_lock);
+    }
+
+    bool already_clean = false;
     {
         std::lock_guard<std::mutex> lk(mu_);
         auto cit = by_channel_.find(uuid);
         if (cit == by_channel_.end()) {
-            return;  // already clean — idempotent
+            already_clean = true;
+        } else {
+            ids = cit->second;  // copy the id list
         }
-        ids = cit->second;  // copy the id list
+    }
+    if (already_clean) {
+        if (channel_lk.owns_lock()) {
+            channel_lk.unlock();
+        }
+        channel_lock.reset();
+        PruneExpiredChannelLock(uuid);
+        return;  // already clean — idempotent
     }
 
     // FF-032: during CS_DESTROY do NOT call remove_callback (FS already
     // closed our bugs). Still must free ctx + rec for every record.
     for (std::uint64_t id : ids) {
-        DetachInternal(id, /*call_remove_callback=*/false);
+        DetachInternalLocked(id, /*call_remove_callback=*/false);
     }
+    if (channel_lk.owns_lock()) {
+        channel_lk.unlock();
+    }
+    channel_lock.reset();
+    PruneExpiredChannelLock(uuid);
 }
 
 // ---------------------------------------------------------------------------

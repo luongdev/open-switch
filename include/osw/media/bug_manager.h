@@ -19,6 +19,7 @@
 #define OSW_MEDIA_BUG_MANAGER_H_
 
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -196,12 +197,19 @@ class MediaBugManager {
     std::unordered_map<std::uint64_t, void*> by_id_;
     // Map: channel_uuid → [bug_id, ...]
     std::unordered_map<std::string, std::vector<std::uint64_t>> by_channel_;
+    // Map: channel_uuid → per-channel lifecycle lock.  The weak value lets
+    // inactive lock objects disappear after the last holder releases them.
+    std::unordered_map<std::string, std::weak_ptr<std::mutex>> channel_locks_;
     SilenceDriverRegistry* silence_driver_registry_ = nullptr;
 
-    // Internal helpers — called with mu_ held.
+    // Registry helpers — called with mu_ held.
     std::uint32_t MaxRankForChannel(const std::string& uuid) const noexcept;
     bool HasPurpose(const std::string& uuid, Purpose p) const noexcept;
     bool HasWriteReplaceBug(const std::string& uuid) const noexcept;
+    // Lifecycle helpers — acquire/use the per-channel lock internally.
+    std::shared_ptr<std::mutex> ChannelLockFor(const std::string& uuid) noexcept;
+    void PruneExpiredChannelLock(const std::string& uuid) noexcept;
+    void DetachInternalLocked(std::uint64_t bug_id, bool call_remove_callback) noexcept;
 };
 
 }  // namespace osw::media
