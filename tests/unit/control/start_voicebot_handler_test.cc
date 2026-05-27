@@ -3,7 +3,7 @@
  *
  * Unit tests for HandleStartVoicebot via ControlServiceSkeleton.
  * Uses the FS-mock seam (OSW_TEST_FS_MOCK=1) and
- * osw_control_w6c_test_helpers.
+ * osw_control_media_streaming_test_helpers.
  *
  * Acceptance scenarios:
  *   V1 — Empty channel_uuid → INVALID_ARGUMENT.

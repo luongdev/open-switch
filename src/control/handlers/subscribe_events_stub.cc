@@ -2,7 +2,7 @@
  * src/control/handlers/subscribe_events_stub.cc
  *
  * Minimal stub for ControlServiceSkeleton::SubscribeEvents used ONLY
- * by the W3A unit-test mock-seam library (osw_control_w3a_test_helpers).
+ * by the W3A unit-test mock-seam library (osw_control_call_lifecycle_test_helpers).
  *
  * The W3A handler tests exercise Originate / Hangup / HangupMany and
  * need a complete vtable for ControlServiceSkeleton. SubscribeEvents
@@ -12,7 +12,7 @@
  * builds without pulling in FS or the event-plane subsystem.
  *
  * This file is compiled ONLY when OSW_BUILD_TESTS=ON as part of
- * osw_control_w3a_test_helpers. It MUST NOT be included in
+ * osw_control_call_lifecycle_test_helpers. It MUST NOT be included in
  * osw_control_fs or osw_control.
  *
  * SPDX-License-Identifier: AGPL-3.0-or-later
