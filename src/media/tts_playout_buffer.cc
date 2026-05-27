@@ -42,6 +42,18 @@ void TtsPlayoutBuffer::Push(AudioFrame frame) noexcept {
     queue_.push_back(std::move(frame));
     RecomputeDepth();
 
+    if (!first_push_logged_) {
+        first_push_logged_ = true;
+        osw::log::Info(kSubsystem,
+                       "TtsPlayoutBuffer first push stream_id=%s samples=%zu rate=%u depth_ms=%u "
+                       "preroll_ms=%lld",
+                       stream_id_.c_str(),
+                       queue_.back().sample_count(),
+                       queue_.back().sample_rate_hz(),
+                       depth_ms_,
+                       static_cast<long long>(cfg_.preroll_ms.count()));
+    }
+
     // Drop oldest frames while over high-water mark.
     std::uint64_t dropped = 0;
     while (depth_ms_ > static_cast<std::uint32_t>(cfg_.high_water_ms.count()) &&
@@ -82,6 +94,16 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
         const std::uint32_t n = std::min(out_cap_samples,
                                          cfg_.channel_sample_rate_hz / 50);  // 20ms worth
         std::memset(out, 0, n * sizeof(std::int16_t));
+        if (!first_preroll_silence_logged_) {
+            first_preroll_silence_logged_ = true;
+            osw::log::Info(kSubsystem,
+                           "TtsPlayoutBuffer preroll silence stream_id=%s cap_samples=%u "
+                           "depth_ms=%u preroll_ms=%lld",
+                           stream_id_.c_str(),
+                           out_cap_samples,
+                           depth_ms_,
+                           static_cast<long long>(cfg_.preroll_ms.count()));
+        }
         return n;
     }
 
@@ -95,6 +117,17 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
             (front_offset_samples_ >= total) ? 0u : (total - front_offset_samples_);
         const std::uint32_t n = std::min(out_cap_samples, avail);
         std::memcpy(out, front.data() + front_offset_samples_, n * sizeof(std::int16_t));
+
+        if (!first_pop_logged_) {
+            first_pop_logged_ = true;
+            osw::log::Info(kSubsystem,
+                           "TtsPlayoutBuffer first audio pop stream_id=%s samples=%u "
+                           "depth_ms=%u first_sample=%d",
+                           stream_id_.c_str(),
+                           n,
+                           depth_ms_,
+                           n > 0 ? static_cast<int>(out[0]) : 0);
+        }
 
         // Keep last frame for kRepeatLast policy (full frame, not slice).
         if (cfg_.underrun == UnderrunPolicy::kRepeatLast) {

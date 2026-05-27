@@ -115,6 +115,9 @@ class TtsPlayoutBuffer {
     // Last frame emitted (for kRepeatLast policy). Protected by mu_.
     AudioFrame last_frame_;
     bool has_last_frame_ = false;
+    bool first_push_logged_ = false;
+    bool first_pop_logged_ = false;
+    bool first_preroll_silence_logged_ = false;
 
     // Atomics for snapshot readers (Prometheus, Health) — no mu_ needed.
     std::atomic<bool> preroll_reached_{false};

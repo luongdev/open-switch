@@ -26,7 +26,7 @@ namespace {
 constexpr const char* kSubsystem = "media";
 constexpr const char* kSilenceStream = "silence_stream://-1";
 constexpr switch_media_flag_t kSilenceBroadcastFlags =
-    static_cast<switch_media_flag_t>(SMF_ECHO_ALEG | SMF_LOOP | SMF_PRIORITY);
+    static_cast<switch_media_flag_t>(SMF_ECHO_ALEG | SMF_PRIORITY);
 constexpr const char* kAuditStarted = "osw.media.silence_driver.started";
 constexpr const char* kAuditStopped = "osw.media.silence_driver.stopped";
 constexpr const char* kAuditCapReached = "osw.media.silence_driver.cap_reached";

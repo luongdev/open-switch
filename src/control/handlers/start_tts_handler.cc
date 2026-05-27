@@ -145,6 +145,7 @@ grpc::Status HandleStartTts(grpc::ServerContext* /*ctx*/,
     sc.channels = 1;
     sc.codec = open_switch::media::v1::AudioCodec::PCM_S16LE;
     sc.start_message = req->start_message();
+    sc.half_close_writes_after_start = true;
     for (const auto& [k, v] : req->variables()) {
         sc.variables[k] = v;
     }

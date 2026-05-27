@@ -68,6 +68,10 @@ struct StreamConfig {
     std::string traceparent;    ///< optional W3C traceparent
     std::string start_message;  ///< optional TTS opening line
     std::map<std::string, std::string> variables;
+    /// For server-output-only streams such as TTS playback, half-close the
+    /// client write side after StreamStart/StreamReady. STT/voicebot keep it
+    /// false because they continue sending caller audio/control upstream.
+    bool half_close_writes_after_start = false;
 };
 
 class StreamClient {
@@ -169,10 +173,12 @@ class StreamClient {
     // ----------------------------------------------------------------
     mutable std::mutex mu_;  ///< guards open_, final_status_
     bool open_ = false;
+    bool writes_done_ = false;
     grpc::Status final_status_ = grpc::Status::OK;
 
     std::atomic<std::uint64_t> frames_sent_{0};
     std::atomic<std::uint64_t> frames_dropped_{0};
+    std::atomic<bool> first_rx_audio_logged_{false};
     // W6.5 fix (Gemini-P1): per-stream monotonic seq + timestamp.
     std::atomic<std::uint64_t> seq_counter_{0};
     std::atomic<std::uint64_t> ts_counter_{0};

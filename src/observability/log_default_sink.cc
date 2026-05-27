@@ -54,7 +54,8 @@ switch_log_level_t MapLevel(Level lvl) noexcept {
 void DefaultSink(Level level,
                  std::string_view subsystem,
                  std::string_view traceparent,
-                 std::string_view message) noexcept {
+                 std::string_view message,
+                 SourceLocation location) noexcept {
     char line[2048];
     int written;
     if (!traceparent.empty()) {
@@ -80,20 +81,16 @@ void DefaultSink(Level level,
         return;
     }
 
+    const char* file = location.file ? location.file : "mod_open_switch";
+    const char* function = location.function ? location.function : "osw_log_emit";
+
     // FF-012: switch_log_printf is thread-safe. We use the lower-level
-    // SWITCH_CHANNEL_ID_LOG channel id (a scalar) so we can pass our
-    // own literal file/func/line/userdata. The convenience macro
-    // SWITCH_CHANNEL_LOG would expand to
-    //   SWITCH_CHANNEL_ID_LOG, __FILE__, __SWITCH_FUNC__, __LINE__, NULL
-    // and inserting our literal "mod_open_switch", "osw_log_emit", 0
-    // after that would push them past the level argument and break
-    // the signature. A future refinement can plumb the original
-    // caller's __FILE__/__LINE__ through a macro at every osw::log::*
-    // call site.
+    // SWITCH_CHANNEL_ID_LOG channel id (a scalar) so we can pass the
+    // source_location captured by osw::log's FormatString wrapper.
     switch_log_printf(SWITCH_CHANNEL_ID_LOG,
-                      "mod_open_switch",
-                      "osw_log_emit",
-                      0,
+                      file,
+                      function,
+                      static_cast<int>(location.line),
                       nullptr,
                       MapLevel(level),
                       "%s\n",

@@ -79,7 +79,7 @@ TEST_F(SilenceDriverTest, StartsOnParkedWriteReplaceChannel) {
         ASSERT_EQ(1u, Mock().ivr_broadcast_invocations.size());
         EXPECT_EQ("silence-driver-channel-1", Mock().ivr_broadcast_invocations[0].uuid);
         EXPECT_EQ("silence_stream://-1", Mock().ivr_broadcast_invocations[0].path);
-        EXPECT_EQ(static_cast<switch_media_flag_t>(SMF_ECHO_ALEG | SMF_LOOP | SMF_PRIORITY),
+        EXPECT_EQ(static_cast<switch_media_flag_t>(SMF_ECHO_ALEG | SMF_PRIORITY),
                   Mock().ivr_broadcast_invocations[0].flags);
     }
 

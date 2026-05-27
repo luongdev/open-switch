@@ -47,7 +47,8 @@ namespace {
 void NullSink(Level /*level*/,
               std::string_view /*subsystem*/,
               std::string_view /*traceparent*/,
-              std::string_view /*message*/) noexcept {
+              std::string_view /*message*/,
+              SourceLocation /*location*/) noexcept {
     // Intentional no-op. Production code overrides via
     // InstallDefaultSinkForModule() (log_default_sink.cc) early in
     // mod_open_switch_load.
@@ -139,7 +140,11 @@ TraceScope::~TraceScope() noexcept {
 
 // --- Emit functions --------------------------------------------------
 
-void Logv(Level level, std::string_view subsystem, const char* fmt, std::va_list ap) noexcept {
+void LogvAt(Level level,
+            SourceLocation location,
+            std::string_view subsystem,
+            const char* fmt,
+            std::va_list ap) noexcept {
     // Format into a stack buffer first; on overflow, heap retry.
     char stack_buf[1024];
     std::va_list ap_copy;
@@ -169,8 +174,12 @@ void Logv(Level level, std::string_view subsystem, const char* fmt, std::va_list
 
     SinkFn sink = g_sink.load(std::memory_order_acquire);
     if (sink) {
-        sink(level, subsystem, tls_traceparent, redacted);
+        sink(level, subsystem, tls_traceparent, redacted, location);
     }
+}
+
+void Logv(Level level, std::string_view subsystem, const char* fmt, std::va_list ap) noexcept {
+    LogvAt(level, SourceLocation{}, subsystem, fmt, ap);
 }
 
 void Logf(Level level, std::string_view subsystem, const char* fmt, ...) noexcept {
