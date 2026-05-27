@@ -155,14 +155,27 @@ void MetricsServer::Stop() {
     if (!running_.exchange(false, std::memory_order_acq_rel)) {
         return;  // was already stopped
     }
-    // Closing the listen socket causes the blocking accept() in Run()
-    // to return with an error, which breaks the loop.
+    // shutdown(SHUT_RDWR) first: on Linux, close() on a socket that another
+    // thread is blocked in accept() is not guaranteed to unblock accept()
+    // (POSIX leaves this unspecified). shutdown() flushes the socket's
+    // receive/send queues and causes accept() to return with EINVAL, which
+    // the Run() loop treats as a stop signal.
+    //
+    // IMPORTANT: do NOT close()/reset listen_fd_ here — the Run thread is
+    // still using it in accept(). TSAN flags listen_fd_ = -1 vs accept(fd)
+    // as a data race. shutdown() is enough to wake the thread; we close
+    // (and reset listen_fd_) only AFTER joining the loop thread, so the
+    // sole reader is gone before we mutate the field.
     if (listen_fd_ >= 0) {
-        ::close(listen_fd_);
-        listen_fd_ = -1;
+        ::shutdown(listen_fd_, SHUT_RDWR);
     }
     if (loop_.joinable()) {
         loop_.join();
+    }
+    // Now safe — the Run thread has exited; no one else reads listen_fd_.
+    if (listen_fd_ >= 0) {
+        ::close(listen_fd_);
+        listen_fd_ = -1;
     }
     osw::log::Info(kSubsystem, "Metrics HTTP server stopped");
 }

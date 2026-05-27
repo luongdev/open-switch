@@ -28,6 +28,7 @@
 #include "osw/core/config.h"
 #include "osw/core/lifecycle.h"
 #include "osw/observability/health.h"
+#include "osw/observability/prometheus.h"
 
 // Forward-declare FreeSWITCH opaque types; mod_open_switch.cc includes
 // <switch.h> for the actual definitions. Module's header consumers
@@ -47,7 +48,8 @@ namespace osw {
 
 namespace control {
 class GrpcServer;  // forward; defined in osw/control/server.h
-}
+class RpcMetrics;  // forward; defined in osw/control/rpc_metrics.h
+}  // namespace control
 
 namespace events {
 class Binder;          // forward; defined in osw/events/binder.h
@@ -55,6 +57,11 @@ class Broadcaster;     // forward; defined in osw/events/subscribe/broadcaster.h
 class RingSet;         // forward; defined in osw/events/binder.h
 class TierClassifier;  // forward; defined in osw/events/tier.h
 }  // namespace events
+
+namespace observability {
+class HealthMetrics;  // forward; defined in osw/observability/health_metrics.h
+class MetricsServer;  // forward; defined in osw/observability/metrics_server.h
+}  // namespace observability
 
 class Module {
   public:
@@ -96,6 +103,18 @@ class Module {
     Health health_;
     Lifecycle lifecycle_;
     std::unique_ptr<control::GrpcServer> grpc_server_;
+
+    // W4C/W5A observability plane. Construction order in Module::Load:
+    //   1. prometheus_registry_  (owns all metric objects; module-lifetime)
+    //   2. health_metrics_       (registers Health-derived gauges into registry)
+    //   3. rpc_metrics_          (registers per-RPC counters/histograms)
+    //   4. metrics_server_       (HTTP /metrics endpoint; started if metrics_enabled)
+    // Destruction order: metrics_server_.Stop() first (it reads registry during
+    // scrapes), then the adapters, then registry_ last.
+    std::unique_ptr<observability::prometheus::Registry> prometheus_registry_;
+    std::unique_ptr<observability::HealthMetrics> health_metrics_;
+    std::unique_ptr<control::RpcMetrics> rpc_metrics_;
+    std::unique_ptr<observability::MetricsServer> metrics_server_;
 
     // W2 event-plane subsystems. Construction order in Module::Load:
     //   1. classifier_  (FS-agnostic; built from tier rules)
