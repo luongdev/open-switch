@@ -2225,6 +2225,308 @@ SWITCH_DECLARE(switch_channel_state_t) switch_channel_perform_hangup(switch_chan
 
 ---
 
+## FF-023 — `switch_ivr_uuid_bridge` two-UUID bridge and locking order
+
+**Claim.** `switch_ivr_uuid_bridge(originator_uuid, originatee_uuid)`
+locates both sessions by UUID internally (acquiring their read-locks),
+then bridges them. The function blocks the calling thread until one of
+the parties hangs up or the bridge times out. The handler must hold both
+session read-locks (via `SessionGuard`) in a deterministic lexicographic
+UUID order (lower UUID first) before calling this function. This prevents
+the AB-BA deadlock that would arise if two concurrent Bridge calls on the
+same reversed pair each acquired their first lock and then blocked waiting
+for the second.
+
+**Source.** `src/include/switch_ivr.h:617` in `signalwire/freeswitch`.
+
+**Permalink.**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_ivr.h#L617>
+
+**Excerpt (header, line 617):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_ivr_uuid_bridge(const char *originator_uuid,
+                                                       const char *originatee_uuid);
+```
+
+**Implications.**
+
+- The caller MUST hold both session read-locks via `SessionGuard` across
+  the `switch_ivr_uuid_bridge` call, then release both after it returns.
+- Acquire the guard for the lexicographically-lower UUID first, then the
+  higher. Any caller that reverses this order with a concurrent inverse-
+  pair call risks AB-BA deadlock.
+- `switch_ivr_uuid_bridge` returns `SWITCH_STATUS_SUCCESS` on a
+  successful bridge setup. Non-success means FS could not locate or join
+  the sessions (e.g., one was tearing down).
+- The bridge itself blocks; gRPC thread is occupied for the duration.
+  V1 accepts this.
+
+**Used by W3 code:**
+
+- `src/control/handlers/bridge_handler.cc` — acquires two `SessionGuard`
+  objects in lex-UUID order, validates channel states, calls
+  `osw::raii::fs::UuidBridge`, then releases both guards on return.
+
+---
+
+## FF-024 — `switch_core_session_execute_application` blocking semantics
+
+**Claim.** `switch_core_session_execute_application(session, app, arg)`
+is a convenience macro that expands to
+`switch_core_session_execute_application_get_flags(session, app, arg, NULL)`.
+The underlying function runs the named dialplan application synchronously
+on the given session. It blocks the calling thread until the application's
+main body returns. The caller MUST hold the session read-lock (FF-016)
+across the entire call; FS does not acquire or release the read-lock
+inside this function.
+
+**Source.** `src/include/switch_core.h:1115` (underlying function) and
+`src/include/switch_core.h:1129` (macro definition) in
+`signalwire/freeswitch`.
+
+**Permalink (function).**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_core.h#L1115>
+
+**Permalink (macro).**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_core.h#L1129>
+
+**Excerpt (lines 1115 and 1129):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_core_session_execute_application_get_flags(
+    switch_core_session_t *session,
+    const char *app,
+    const char *arg,
+    int32_t *flags);
+
+#define switch_core_session_execute_application(_a, _b, _c) \
+    switch_core_session_execute_application_get_flags(_a, _b, _c, NULL)
+```
+
+**Implications.**
+
+- The call is synchronous: the gRPC thread is blocked until the app
+  finishes. This is acceptable for V1's bounded allow-list of short-
+  duration apps (`playback`, `bridge`, `transfer`, `set`, `hangup`,
+  `answer`, `play_and_get_digits`). Async execution is deferred to V2.
+- `app` and `arg` are consumed by FS during the call. Both may be NULL
+  (a NULL `arg` means no argument), but `app` being NULL or unknown
+  produces undefined/error behaviour in FS; the handler validates `app`
+  against the allow-list before calling.
+- Returns `SWITCH_STATUS_SUCCESS` on normal completion. Any other value
+  means the application encountered an error or the session was torn
+  down mid-execute.
+
+**Used by W3 code:**
+
+- `src/control/handlers/execute_handler.cc` — validates `app` against
+  the allow-list, acquires `SessionGuard`, then calls
+  `osw::raii::fs::ExecuteApplication(session, app, arg)` under the
+  read-lock.
+
+---
+
+## FF-025 — `switch_ivr_session_transfer` optional-NULL arg semantics
+
+**Claim.** `switch_ivr_session_transfer(session, extension, dialplan,
+context)` transfers a live session to a new dialplan entry point.
+`dialplan` and `context` are optional: passing NULL causes FS to default
+`dialplan` to `"XML"` and `context` to the channel's current context.
+`extension` is REQUIRED and must be a non-NULL, non-empty string; FS does
+not guard against a NULL extension and passing one leads to a NULL-
+dereference crash.
+
+**Source.** `src/include/switch_ivr.h:585` in `signalwire/freeswitch`.
+
+**Permalink.**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_ivr.h#L585>
+
+**Excerpt (header, line 585):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_ivr_session_transfer(switch_core_session_t *session,
+                                                             const char *extension,
+                                                             const char *dialplan,
+                                                             const char *context);
+```
+
+**Implications.**
+
+- The handler MUST validate that `extension` is non-empty before calling
+  FS. Passing empty or NULL extension is `INVALID_ARGUMENT`.
+- `dialplan` and `context` are passed through as-is: an empty proto
+  string becomes `nullptr` at the FS call site (FS defaults kick in),
+  while a non-empty string is passed verbatim.
+- The function returns `SWITCH_STATUS_SUCCESS` when the session has been
+  queued for transfer; the actual execution happens asynchronously on the
+  channel's state machine thread. The calling gRPC thread is not blocked
+  waiting for the transfer to complete.
+- The caller MUST hold the session read-lock (FF-016) when calling
+  `switch_ivr_session_transfer`.
+
+**Used by W3 code:**
+
+- `src/control/handlers/blind_transfer_handler.cc` — validates extension
+  non-empty, acquires `SessionGuard`, then calls
+  `osw::raii::fs::SessionTransfer(session, ext, dialplan_or_null,
+  context_or_null)` under the read-lock.
+
+---
+
+## FF-026 — `switch_channel_set_variable` lifetime and thread safety
+
+**Claim.** `switch_channel_set_variable(channel, name, value)` expands
+to `switch_channel_set_variable_var_check(channel, name, value, SWITCH_TRUE)`.
+The underlying function copies both `name` and `value` into the channel's
+APR memory pool. The caller's buffers can be freed immediately after the
+call returns — the channel holds its own copy.
+
+The function is safe to call from any thread as long as the caller holds
+the session read-lock (FF-016). It acquires `channel->profile_mutex`
+internally before writing to the hash.
+
+**Source.**
+
+- Macro: `src/include/switch_channel.h:299`.
+- Underlying function: `src/include/switch_channel.h:279` (declaration),
+  `src/switch_channel.c` (definition).
+
+**Permalink (macro).**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_channel.h#L299>
+
+**Excerpt — macro (line 299):**
+
+```c
+#define switch_channel_set_variable(_channel, _var, _val) \
+    switch_channel_set_variable_var_check(_channel, _var, _val, SWITCH_TRUE)
+```
+
+**Excerpt — declaration (line 279):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_channel_set_variable_var_check(
+    switch_channel_t *channel, const char *varname, const char *value,
+    switch_bool_t var_check);
+```
+
+**Implications.**
+
+- Setting a variable to NULL or empty string clears it. Calling with
+  `value = NULL` removes the key from the hash.
+- Caller retains no obligation to keep the `varname` or `value` strings
+  alive after the call. This means using a `std::string::c_str()` pointer
+  from a temporary is safe as long as the temporary is alive during the
+  call — which it is when passed inline as a function argument.
+- All-or-nothing semantics (atomic batch set) are not available at the FS
+  level; each call is independent.
+
+**Used by W3 code:**
+
+- `src/control/handlers/set_variables_handler.cc` — iterates the proto
+  variables map and calls `osw::raii::fs::ChannelSetVariable` once per
+  pair.
+
+---
+
+## FF-027 — `switch_ivr_hold_uuid` / `switch_ivr_unhold_uuid` semantics + `message` vs `moh_class` resolution
+
+**Claim.**
+
+```c
+// switch_ivr.h:645
+switch_status_t switch_ivr_hold_uuid(const char *uuid, const char *message,
+                                     switch_bool_t moh);
+
+// switch_ivr.h:661
+switch_status_t switch_ivr_unhold_uuid(const char *uuid);
+```
+
+Both functions return `switch_status_t`. `SWITCH_STATUS_SUCCESS` means the
+FS state machine accepted the request, NOT that the user-perceived hold
+state has completed. The second parameter to `switch_ivr_hold_uuid` is
+`message` (a display string or MoH class name), NOT `moh_class` — this
+differs from naive expectation.
+
+`hold_uuid` is guarded by `CF_ANSWERED`: it will not hold a channel that
+is not answered. `unhold_uuid` requires `CF_HOLD`. Neither function
+performs these checks internally in a way that exposes a distinct error
+code — they silently succeed or return FALSE. Our handlers check the flags
+explicitly before calling to surface FAILED_PRECONDITION.
+
+Idempotency: holding an already-held channel produces a no-op SUCCESS;
+unholding a not-held channel returns FALSE without side effects.
+
+**Source.**
+
+- `src/include/switch_ivr.h:645` (hold_uuid declaration).
+- `src/include/switch_ivr.h:661` (unhold_uuid declaration).
+
+**Permalink.**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_ivr.h#L645>
+
+**Excerpt — hold_uuid (line 645):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_ivr_hold_uuid(const char *uuid,
+                                                     const char *message,
+                                                     switch_bool_t moh);
+```
+
+**Excerpt — unhold_uuid (line 661):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_ivr_unhold_uuid(const char *uuid);
+```
+
+**Contract correction — `message` vs `moh_class`.**
+
+The planning doc (`W3-track-C-mutators.md`) referred to the second
+`switch_ivr_hold_uuid` parameter as `moh_class`. The actual FS signature
+names it `message`. Resolution:
+
+- The proto's `HoldRequest` carries no `moh_class` field. Pass `nullptr`
+  as `message` so FS picks the channel's configured default MoH class.
+- Always pass `moh = SWITCH_TRUE` (play music-on-hold; FS internally
+  selects the class when `message` is NULL).
+- If a future proto version adds a `moh_class` field, it maps to the
+  `message` argument (FS interprets a non-NULL message as a class name in
+  `switch_ivr.c`).
+
+**`switch_channel_test_flag` (guard checks).**
+
+```c
+// switch_channel.h:400
+uint32_t switch_channel_test_flag(switch_channel_t *channel,
+                                  switch_channel_flag_t flag);
+```
+
+- `CF_ANSWERED = 1` — gate for Hold (channel must be answered).
+- `CF_HOLD` — gate for Unhold (channel must currently be on hold).
+
+Returns non-zero if the flag is set.
+
+**Implications.**
+
+- Pre-checking `CF_ANSWERED` before calling `switch_ivr_hold_uuid` is
+  required to surface `FAILED_PRECONDITION` correctly; the function
+  itself does not distinguish "channel not answered" from other errors in
+  its return value.
+- Similarly, pre-checking `CF_HOLD` before `switch_ivr_unhold_uuid`
+  catches "not on hold" as `FAILED_PRECONDITION`.
+- Caller must hold the session read-lock (FF-016) during both the flag
+  check and the IVR call to prevent a race between flag observation and
+  the call.
+
+**Used by W3 code:**
+
+- `src/control/handlers/hold_handler.cc` — checks `CF_ANSWERED`, then
+  calls `osw::raii::fs::HoldUuid(uuid, nullptr, SWITCH_TRUE)`.
+- `src/control/handlers/unhold_handler.cc` — checks `CF_HOLD`, then
+  calls `osw::raii::fs::UnholdUuid(uuid)`.
+
+---
+
 ## How to add a new FF entry
 
 If you find a previously-undocumented FreeSWITCH behaviour that

@@ -74,3 +74,67 @@ osw_add_unit_test(
     DEFINES OSW_TEST_FS_MOCK=1
 )
 target_include_directories(hangup_many_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
+
+# W3 Track B — connect/execute handler tests (FS-mock seam).
+#
+# All three tests link osw_control_w3b_test_helpers which compiles the W3B
+# handlers (bridge, execute, blind_transfer) against OSW_TEST_FS_MOCK=1.
+# Link order: osw_control FIRST so vtable forward-references accumulate
+# before the helpers library is scanned (same discipline as W3A tests).
+
+osw_add_unit_test(
+    NAME    bridge_handler_test
+    LABEL   "control;unit"
+    SOURCES bridge_handler_test.cc
+    LIBS    osw_control osw_control_w3b_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(bridge_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
+
+osw_add_unit_test(
+    NAME    execute_handler_test
+    LABEL   "control;unit"
+    SOURCES execute_handler_test.cc
+    LIBS    osw_control osw_control_w3b_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(execute_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
+
+osw_add_unit_test(
+    NAME    blind_transfer_handler_test
+    LABEL   "control;unit"
+    SOURCES blind_transfer_handler_test.cc
+    LIBS    osw_control osw_control_w3b_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(blind_transfer_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
+
+# W3 Track C — channel mutators (FF-026..027). Reuses
+# osw_control_w3a_test_helpers, which the Track C src/control/CMakeLists.txt
+# extension compiles WITH the Track C handler TUs added in.
+osw_add_unit_test(
+    NAME    set_variables_handler_test
+    LABEL   "control;unit"
+    SOURCES set_variables_handler_test.cc
+    LIBS    osw_control osw_control_w3a_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(set_variables_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
+
+osw_add_unit_test(
+    NAME    hold_handler_test
+    LABEL   "control;unit"
+    SOURCES hold_handler_test.cc
+    LIBS    osw_control osw_control_w3a_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(hold_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
+
+osw_add_unit_test(
+    NAME    unhold_handler_test
+    LABEL   "control;unit"
+    SOURCES unhold_handler_test.cc
+    LIBS    osw_control osw_control_w3a_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(unhold_handler_test PRIVATE ${CMAKE_SOURCE_DIR})

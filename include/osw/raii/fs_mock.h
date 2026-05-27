@@ -188,6 +188,13 @@ constexpr switch_call_cause_t SWITCH_CAUSE_INVALID_IDENTITY = 823;
 constexpr switch_call_cause_t SWITCH_CAUSE_STALE_DATE = 824;
 constexpr switch_call_cause_t SWITCH_CAUSE_REJECT_ALL = 825;
 
+// switch_channel_flag_t (switch_types.h:1473). Only the two flags used
+// by the W3C handlers are declared here. CF_ANSWERED = 1, CF_HOLD is the
+// value from v1.10.12 enum (exact numeric value matches the real header).
+using switch_channel_flag_t = int;
+constexpr switch_channel_flag_t CF_ANSWERED = 1;
+constexpr switch_channel_flag_t CF_HOLD = 4;
+
 // switch_originate_flag_t (switch_types.h:330). SOF_NONE = 0 is all
 // we need in tests.
 using switch_originate_flag_t = int;
@@ -239,6 +246,11 @@ struct MockState {
     // W3 control-plane counters (FF-021 + FF-022).
     std::atomic<int> originate_calls{0};
     std::atomic<int> channel_hangup_calls{0};
+    // W3 Track C — SetVariables / Hold / Unhold (FF-026..027).
+    std::atomic<int> channel_set_variable_calls{0};
+    std::atomic<int> channel_test_flag_calls{0};
+    std::atomic<int> hold_uuid_calls{0};
+    std::atomic<int> unhold_uuid_calls{0};
 
     // Programmable return values for the next call. Set to non-default
     // to drive failure paths.
@@ -260,6 +272,50 @@ struct MockState {
     // UUID string for the next successfully originated bleg.
     std::string next_bleg_uuid;
     switch_channel_state_t next_channel_hangup_state = CS_HANGUP;
+    // W3 Track C — SetVariables / Hold / Unhold (FF-026..027).
+    switch_status_t next_set_variable_status = SWITCH_STATUS_SUCCESS;
+    // channel_test_flag returns a bitmask; the test sets flags it wants active.
+    uint32_t next_channel_flags = 0;
+    switch_status_t next_hold_uuid_status = SWITCH_STATUS_SUCCESS;
+    switch_status_t next_unhold_uuid_status = SWITCH_STATUS_SUCCESS;
+
+    // W3 Track B — Bridge / Execute / BlindTransfer (FF-023..FF-025).
+    std::atomic<int> uuid_bridge_calls{0};
+    std::atomic<int> execute_application_calls{0};
+    std::atomic<int> session_transfer_calls{0};
+    std::atomic<int> channel_get_state_calls{0};
+
+    switch_status_t next_uuid_bridge_status = SWITCH_STATUS_SUCCESS;
+    switch_status_t next_execute_application_status = SWITCH_STATUS_SUCCESS;
+    switch_status_t next_session_transfer_status = SWITCH_STATUS_SUCCESS;
+    // Returned by ChannelGetState. Tests set this to drive state checks.
+    switch_channel_state_t next_channel_get_state = CS_EXECUTE;
+
+    // Captured Bridge invocations (FF-023).
+    struct CapturedUuidBridge {
+        std::string originator_uuid;
+        std::string originatee_uuid;
+    };
+    std::vector<CapturedUuidBridge> uuid_bridge_invocations;
+
+    // Captured ExecuteApplication invocations (FF-024).
+    struct CapturedExecuteApplication {
+        switch_core_session_t* session = nullptr;
+        std::string app;
+        std::string args;
+    };
+    std::vector<CapturedExecuteApplication> execute_application_invocations;
+
+    // Captured SessionTransfer invocations (FF-025).
+    struct CapturedSessionTransfer {
+        switch_core_session_t* session = nullptr;
+        std::string extension;
+        std::string dialplan;  // empty string when NULL was passed
+        std::string context;   // empty string when NULL was passed
+        bool dialplan_was_null = false;
+        bool context_was_null = false;
+    };
+    std::vector<CapturedSessionTransfer> session_transfer_invocations;
 
     // Captured artefacts for verification. Tests read these under
     // capture_mu (which is locked by the shim layer when writing).
@@ -280,6 +336,26 @@ struct MockState {
         switch_call_cause_t cause = SWITCH_CAUSE_NORMAL_CLEARING;
     };
     std::vector<CapturedHangup> hangup_invocations;
+
+    // W3 Track C — SetVariables / Hold / Unhold (FF-026..027).
+    struct CapturedSetVariable {
+        switch_channel_t* channel = nullptr;
+        std::string name;
+        std::string value;
+    };
+    std::vector<CapturedSetVariable> set_variable_invocations;
+
+    struct CapturedHoldUuid {
+        std::string uuid;
+        std::string message;
+        switch_bool_t moh = SWITCH_FALSE;
+    };
+    std::vector<CapturedHoldUuid> hold_uuid_invocations;
+
+    struct CapturedUnholdUuid {
+        std::string uuid;
+    };
+    std::vector<CapturedUnholdUuid> unhold_uuid_invocations;
 
     // Per-event-pointer state, keyed on switch_event_t*. Populated by
     // EventCreateSubclass + EventAddHeaderString.
@@ -344,12 +420,38 @@ inline void MockReset() {
     m.next_originate_cause = SWITCH_CAUSE_NORMAL_CLEARING;
     m.next_bleg_uuid.clear();
     m.next_channel_hangup_state = CS_HANGUP;
+    // W3 Track B resets — Bridge / Execute / BlindTransfer (FF-023..025).
+    m.uuid_bridge_calls = 0;
+    m.execute_application_calls = 0;
+    m.session_transfer_calls = 0;
+    m.channel_get_state_calls = 0;
+    m.next_uuid_bridge_status = SWITCH_STATUS_SUCCESS;
+    m.next_execute_application_status = SWITCH_STATUS_SUCCESS;
+    m.next_session_transfer_status = SWITCH_STATUS_SUCCESS;
+    m.next_channel_get_state = CS_EXECUTE;
+    // W3 Track C resets — SetVariables / Hold / Unhold (FF-026..027).
+    m.channel_set_variable_calls = 0;
+    m.channel_test_flag_calls = 0;
+    m.hold_uuid_calls = 0;
+    m.unhold_uuid_calls = 0;
+    m.next_set_variable_status = SWITCH_STATUS_SUCCESS;
+    m.next_channel_flags = 0;
+    m.next_hold_uuid_status = SWITCH_STATUS_SUCCESS;
+    m.next_unhold_uuid_status = SWITCH_STATUS_SUCCESS;
     {
         std::lock_guard<std::mutex> g(m.capture_mu);
         m.events_by_ptr.clear();
         m.bindings.clear();
         m.originate_invocations.clear();
         m.hangup_invocations.clear();
+        // W3 Track B.
+        m.uuid_bridge_invocations.clear();
+        m.execute_application_invocations.clear();
+        m.session_transfer_invocations.clear();
+        // W3 Track C.
+        m.set_variable_invocations.clear();
+        m.hold_uuid_invocations.clear();
+        m.unhold_uuid_invocations.clear();
     }
 }
 
@@ -644,6 +746,155 @@ inline const char* SessionGetUuid(switch_core_session_t* session) noexcept {
     }
     const auto& uuid = Mock().next_bleg_uuid;
     return uuid.empty() ? nullptr : uuid.c_str();
+}
+
+// W3 Track B — Bridge / Execute / BlindTransfer (FF-023..025) -------
+
+// --- switch_channel_get_state wrapper (FF-023) -----------------------
+//
+// Returns the current channel state. Used by Bridge to validate that
+// both channels are in CS_ROUTING or CS_EXECUTE before bridging.
+
+inline switch_channel_state_t ChannelGetState(switch_channel_t* channel) noexcept {
+    if (!channel) {
+        return CS_HANGUP;
+    }
+    Mock().channel_get_state_calls.fetch_add(1, std::memory_order_relaxed);
+    return Mock().next_channel_get_state;
+}
+
+// --- switch_ivr_uuid_bridge wrapper (FF-023) -------------------------
+//
+// Records the call, increments the counter, and returns
+// next_uuid_bridge_status. Does NOT model the blocking-bridge
+// semantics — tests assert on invocations and status return only.
+
+inline switch_status_t UuidBridge(const char* originator_uuid,
+                                  const char* originatee_uuid) noexcept {
+    auto& m = Mock();
+    m.uuid_bridge_calls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        MockState::CapturedUuidBridge cap;
+        cap.originator_uuid = originator_uuid ? originator_uuid : "";
+        cap.originatee_uuid = originatee_uuid ? originatee_uuid : "";
+        m.uuid_bridge_invocations.push_back(std::move(cap));
+    }
+    return m.next_uuid_bridge_status;
+}
+
+// --- switch_core_session_execute_application wrapper (FF-024) --------
+//
+// Records the call and returns next_execute_application_status. The
+// blocking semantics are not modelled — tests inject status directly.
+
+inline switch_status_t ExecuteApplication(switch_core_session_t* session,
+                                          const char* app,
+                                          const char* arg) noexcept {
+    auto& m = Mock();
+    m.execute_application_calls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        MockState::CapturedExecuteApplication cap;
+        cap.session = session;
+        cap.app = app ? app : "";
+        cap.args = arg ? arg : "";
+        m.execute_application_invocations.push_back(std::move(cap));
+    }
+    return m.next_execute_application_status;
+}
+
+// --- switch_ivr_session_transfer wrapper (FF-025) --------------------
+//
+// Records the call (including NULL-ness of optional dialplan/context)
+// and returns next_session_transfer_status.
+
+inline switch_status_t SessionTransfer(switch_core_session_t* session,
+                                       const char* extension,
+                                       const char* dialplan,
+                                       const char* context) noexcept {
+    auto& m = Mock();
+    m.session_transfer_calls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        MockState::CapturedSessionTransfer cap;
+        cap.session = session;
+        cap.extension = extension ? extension : "";
+        cap.dialplan_was_null = (dialplan == nullptr);
+        cap.context_was_null = (context == nullptr);
+        cap.dialplan = dialplan ? dialplan : "";
+        cap.context = context ? context : "";
+        m.session_transfer_invocations.push_back(std::move(cap));
+    }
+    return m.next_session_transfer_status;
+}
+
+// W3 Track C — SetVariables / Hold / Unhold (FF-026..027) ------------
+
+// --- switch_channel_set_variable wrapper (FF-026) --------------------
+//
+// Records the invocation and returns next_set_variable_status.
+
+inline switch_status_t ChannelSetVariable(switch_channel_t* channel,
+                                          const char* name,
+                                          const char* value) noexcept {
+    auto& m = Mock();
+    m.channel_set_variable_calls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        MockState::CapturedSetVariable cap;
+        cap.channel = channel;
+        cap.name = name ? name : "";
+        cap.value = value ? value : "";
+        m.set_variable_invocations.push_back(std::move(cap));
+    }
+    return m.next_set_variable_status;
+}
+
+// --- switch_channel_test_flag wrapper (FF-027) -----------------------
+//
+// Returns the bit of next_channel_flags that corresponds to `flag`.
+// Tests set next_channel_flags to a bitmask of the flags they want active.
+
+inline uint32_t ChannelTestFlag(switch_channel_t* /*channel*/,
+                                switch_channel_flag_t flag) noexcept {
+    auto& m = Mock();
+    m.channel_test_flag_calls.fetch_add(1, std::memory_order_relaxed);
+    return m.next_channel_flags & static_cast<uint32_t>(flag);
+}
+
+// --- switch_ivr_hold_uuid wrapper (FF-027) ---------------------------
+//
+// Records the invocation and returns next_hold_uuid_status.
+
+inline switch_status_t HoldUuid(const char* uuid, const char* message, switch_bool_t moh) noexcept {
+    auto& m = Mock();
+    m.hold_uuid_calls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        MockState::CapturedHoldUuid cap;
+        cap.uuid = uuid ? uuid : "";
+        cap.message = message ? message : "";
+        cap.moh = moh;
+        m.hold_uuid_invocations.push_back(std::move(cap));
+    }
+    return m.next_hold_uuid_status;
+}
+
+// --- switch_ivr_unhold_uuid wrapper (FF-027) -------------------------
+//
+// Records the invocation and returns next_unhold_uuid_status.
+
+inline switch_status_t UnholdUuid(const char* uuid) noexcept {
+    auto& m = Mock();
+    m.unhold_uuid_calls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        MockState::CapturedUnholdUuid cap;
+        cap.uuid = uuid ? uuid : "";
+        m.unhold_uuid_invocations.push_back(std::move(cap));
+    }
+    return m.next_unhold_uuid_status;
 }
 
 }  // namespace osw::raii::fs
