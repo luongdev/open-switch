@@ -18,8 +18,13 @@
 add_library(osw_control STATIC
     server.cc
     tls.cc
+    # W4 Track A — TLS + cert reloader
     config_tls.cc
     tls_reloader.cc
+    # W4 Track B — Auth + RBAC interceptor
+    auth_interceptor.cc
+    rbac.cc
+    jwt_verifier.cc
     handlers/health_handler.cc
     handlers/unimplemented.cc
 )
@@ -36,6 +41,10 @@ target_link_libraries(osw_control PUBLIC
     osw_observability
     osw_proto
     Threads::Threads
+    # W4 Track B: JWT verifier uses OpenSSL EVP / ECDSA
+    # (already linked via gRPC's BoringSSL on most platforms; explicitly
+    # list OpenSSL::Crypto as a fallback for dev builds without BoringSSL).
+    OpenSSL::Crypto
 )
 set_target_properties(osw_control PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

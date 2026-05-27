@@ -119,6 +119,12 @@ struct Config {
     /// XML-loader convenience (parsed into a map by the W3 ACL code).
     std::string tenant_allowed_contexts;
 
+    // --- Auth (W4 Track B) ----------------------------------------------
+    /// Raw XML bytes of the <auth> element from open_switch.conf.xml.
+    /// Empty string → default-deny (all RPCs except anonymous Health.Check
+    /// are rejected).  Populated by the W4 config loader.
+    std::string auth_xml;
+
     // --- Observability --------------------------------------------------
     /// Log level threshold ("trace","debug","info","warn","error","crit").
     std::string log_level = "info";

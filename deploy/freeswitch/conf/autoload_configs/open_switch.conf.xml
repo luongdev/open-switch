@@ -147,4 +147,47 @@
     <param name="tenant_allowed_contexts"  value=""/>
 
   </settings>
+
+  <!--
+       W4 Track B — Auth + RBAC.
+
+       The <auth> block is consumed by the AuthInterceptor at server
+       Start() time.  Remove or comment out this block to revert to
+       default-deny (all RPCs except anonymous Health.Check rejected).
+
+       require="true"  — anonymous callers get UNAUTHENTICATED.
+       require="false" — anonymous callers may call Health.Check only.
+
+       jwt_public_key_path — path to PEM-encoded EC P-256 public key
+         used to verify ES256 Bearer tokens.  Omit if JWT auth is not
+         configured (mTLS-CN identity only).
+
+       <role name="..."> lists the permissions that role grants.
+       <identity name="..." role="..."/> maps a CN (mTLS) or JWT sub
+         claim to a role.
+
+       See openspec/changes/core-module-v1/implementation/W4-auth-tls-metrics.md
+       §"Track B — Auth + RBAC" for the full schema.
+  -->
+  <auth require="true" jwt_public_key_path="/etc/open_switch/jwt-es256.pub">
+    <role name="operator">
+      <permission>health.read</permission>
+      <permission>events.subscribe</permission>
+      <permission>control.originate</permission>
+      <permission>control.hangup</permission>
+      <permission>control.bridge</permission>
+      <permission>control.execute</permission>
+      <permission>control.transfer</permission>
+      <permission>control.set_variables</permission>
+      <permission>control.hold</permission>
+    </role>
+    <role name="readonly">
+      <permission>health.read</permission>
+      <permission>events.subscribe</permission>
+    </role>
+    <!-- Add identity→role mappings here, one per CN/sub claim. -->
+    <!-- <identity name="ops-team-cn" role="operator"/> -->
+    <!-- <identity name="readonly-cn"  role="readonly"/> -->
+  </auth>
+
 </configuration>
