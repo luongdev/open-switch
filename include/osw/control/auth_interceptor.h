@@ -50,15 +50,18 @@
 
 namespace osw::control {
 
-class AuthInterceptorFactory
-    : public grpc::ServerInterceptorFactoryInterface {
+// gRPC 1.74 keeps the server-side interceptor factory interface in the
+// `grpc::experimental` namespace (see
+// /opt/grpc/include/grpcpp/support/server_interceptor.h). Earlier drafts
+// referenced `grpc::ServerInterceptorFactoryInterface` which is the
+// client-side type — wrong base class for our use.
+class AuthInterceptorFactory : public grpc::experimental::ServerInterceptorFactoryInterface {
   public:
     /// Construct with an initial RBAC registry and optional JWT verifier.
     /// `registry` must not be null.
     /// `jwt_verifier` may be null if JWT auth is not configured.
-    explicit AuthInterceptorFactory(
-        std::shared_ptr<RbacRegistry> registry,
-        std::unique_ptr<JwtVerifier> jwt_verifier = nullptr) noexcept;
+    explicit AuthInterceptorFactory(std::shared_ptr<RbacRegistry> registry,
+                                    std::unique_ptr<JwtVerifier> jwt_verifier = nullptr) noexcept;
 
     ~AuthInterceptorFactory() override = default;
 

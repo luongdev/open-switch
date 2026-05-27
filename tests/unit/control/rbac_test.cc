@@ -100,9 +100,9 @@ TEST(ParseAuthConfigTest, ParsesTwoIdentities) {
     auto cfg = ParseAuthConfig(kAuthXml);
     ASSERT_EQ(cfg.identities.size(), 2u);
     EXPECT_EQ(cfg.identities[0].identity, "ops-team-cn");
-    EXPECT_EQ(cfg.identities[0].role,     "operator");
+    EXPECT_EQ(cfg.identities[0].role, "operator");
     EXPECT_EQ(cfg.identities[1].identity, "readonly-cn");
-    EXPECT_EQ(cfg.identities[1].role,     "readonly");
+    EXPECT_EQ(cfg.identities[1].role, "readonly");
 }
 
 TEST(ParseAuthConfigTest, RequireFalse) {
@@ -116,24 +116,19 @@ TEST(ParseAuthConfigTest, RequireFalse) {
 // ---------------------------------------------------------------------------
 
 TEST(RbacRegistryTest, RequiredPermissionKnownRpcs) {
-    EXPECT_EQ(RbacRegistry::RequiredPermission(
-                  "/open_switch.control.v1.ControlService/Health"),
+    EXPECT_EQ(RbacRegistry::RequiredPermission("/open_switch.control.v1.ControlService/Health"),
               "health.read");
-    EXPECT_EQ(RbacRegistry::RequiredPermission(
-                  "/open_switch.control.v1.ControlService/Originate"),
+    EXPECT_EQ(RbacRegistry::RequiredPermission("/open_switch.control.v1.ControlService/Originate"),
               "control.originate");
-    EXPECT_EQ(RbacRegistry::RequiredPermission(
-                  "/open_switch.control.v1.ControlService/HangupMany"),
+    EXPECT_EQ(RbacRegistry::RequiredPermission("/open_switch.control.v1.ControlService/HangupMany"),
               "control.hangup");
-    EXPECT_EQ(RbacRegistry::RequiredPermission(
-                  "/open_switch.control.v1.ControlService/Hold"),
+    EXPECT_EQ(RbacRegistry::RequiredPermission("/open_switch.control.v1.ControlService/Hold"),
               "control.hold");
-    EXPECT_EQ(RbacRegistry::RequiredPermission(
-                  "/open_switch.control.v1.ControlService/Unhold"),
+    EXPECT_EQ(RbacRegistry::RequiredPermission("/open_switch.control.v1.ControlService/Unhold"),
               "control.hold");
-    EXPECT_EQ(RbacRegistry::RequiredPermission(
-                  "/open_switch.control.v1.ControlService/BlindTransfer"),
-              "control.transfer");
+    EXPECT_EQ(
+        RbacRegistry::RequiredPermission("/open_switch.control.v1.ControlService/BlindTransfer"),
+        "control.transfer");
 }
 
 TEST(RbacRegistryTest, RequiredPermissionUnknownRpcFallback) {
@@ -155,8 +150,8 @@ class RbacAuthorizeTest : public ::testing::Test {
 };
 
 TEST_F(RbacAuthorizeTest, OperatorAllowedOriginate) {
-    auto d = registry_->Authorize("ops-team-cn",
-        "/open_switch.control.v1.ControlService/Originate");
+    auto d =
+        registry_->Authorize("ops-team-cn", "/open_switch.control.v1.ControlService/Originate");
     EXPECT_TRUE(d.allowed);
     EXPECT_EQ(d.identity, "ops-team-cn");
     EXPECT_EQ(d.permission_required, "control.originate");
@@ -164,20 +159,18 @@ TEST_F(RbacAuthorizeTest, OperatorAllowedOriginate) {
 }
 
 TEST_F(RbacAuthorizeTest, OperatorAllowedHealth) {
-    auto d = registry_->Authorize("ops-team-cn",
-        "/open_switch.control.v1.ControlService/Health");
+    auto d = registry_->Authorize("ops-team-cn", "/open_switch.control.v1.ControlService/Health");
     EXPECT_TRUE(d.allowed);
 }
 
 TEST_F(RbacAuthorizeTest, ReadonlyAllowedHealth) {
-    auto d = registry_->Authorize("readonly-cn",
-        "/open_switch.control.v1.ControlService/Health");
+    auto d = registry_->Authorize("readonly-cn", "/open_switch.control.v1.ControlService/Health");
     EXPECT_TRUE(d.allowed);
 }
 
 TEST_F(RbacAuthorizeTest, ReadonlyDeniedOriginate) {
-    auto d = registry_->Authorize("readonly-cn",
-        "/open_switch.control.v1.ControlService/Originate");
+    auto d =
+        registry_->Authorize("readonly-cn", "/open_switch.control.v1.ControlService/Originate");
     EXPECT_FALSE(d.allowed);
     EXPECT_EQ(d.permission_required, "control.originate");
     EXPECT_FALSE(d.deny_reason.empty());
@@ -185,20 +178,18 @@ TEST_F(RbacAuthorizeTest, ReadonlyDeniedOriginate) {
 
 TEST_F(RbacAuthorizeTest, ReadonlyAllowedSubscribeEvents) {
     auto d = registry_->Authorize("readonly-cn",
-        "/open_switch.control.v1.ControlService/SubscribeEvents");
+                                  "/open_switch.control.v1.ControlService/SubscribeEvents");
     EXPECT_TRUE(d.allowed);
 }
 
 TEST_F(RbacAuthorizeTest, UnknownIdentityDenied) {
-    auto d = registry_->Authorize("unknown-cn",
-        "/open_switch.control.v1.ControlService/Health");
+    auto d = registry_->Authorize("unknown-cn", "/open_switch.control.v1.ControlService/Health");
     EXPECT_FALSE(d.allowed);
     EXPECT_EQ(d.deny_reason, "no_role_for_identity");
 }
 
 TEST_F(RbacAuthorizeTest, AnonymousRequireTrueDeniedUnauthenticated) {
-    auto d = registry_->Authorize("anonymous",
-        "/open_switch.control.v1.ControlService/Health");
+    auto d = registry_->Authorize("anonymous", "/open_switch.control.v1.ControlService/Health");
     EXPECT_FALSE(d.allowed);
     EXPECT_EQ(d.deny_reason, "unauthenticated");
 }
@@ -210,8 +201,7 @@ TEST(RbacAuthorizeRequireFalse, AnonymousHealthAllowed) {
     auto cfg = ParseAuthConfig(xml);
     RbacRegistry reg(std::move(cfg));
 
-    auto d = reg.Authorize("anonymous",
-        "/open_switch.control.v1.ControlService/Health");
+    auto d = reg.Authorize("anonymous", "/open_switch.control.v1.ControlService/Health");
     EXPECT_TRUE(d.allowed);
 }
 
@@ -220,18 +210,15 @@ TEST(RbacAuthorizeRequireFalse, AnonymousOriginateDenied) {
     auto cfg = ParseAuthConfig(xml);
     RbacRegistry reg(std::move(cfg));
 
-    auto d = reg.Authorize("anonymous",
-        "/open_switch.control.v1.ControlService/Originate");
+    auto d = reg.Authorize("anonymous", "/open_switch.control.v1.ControlService/Originate");
     EXPECT_FALSE(d.allowed);
 }
 
 TEST_F(RbacAuthorizeTest, OperatorHoldAndUnhold) {
-    auto dh = registry_->Authorize("ops-team-cn",
-        "/open_switch.control.v1.ControlService/Hold");
+    auto dh = registry_->Authorize("ops-team-cn", "/open_switch.control.v1.ControlService/Hold");
     EXPECT_TRUE(dh.allowed);
 
-    auto du = registry_->Authorize("ops-team-cn",
-        "/open_switch.control.v1.ControlService/Unhold");
+    auto du = registry_->Authorize("ops-team-cn", "/open_switch.control.v1.ControlService/Unhold");
     EXPECT_TRUE(du.allowed);
 }
 

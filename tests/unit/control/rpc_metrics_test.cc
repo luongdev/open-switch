@@ -119,8 +119,7 @@ TEST_F(RpcMetricsTest, RecordDifferentStatusCodesProduceSeparateCounters) {
     metrics_->Record("Originate", grpc::StatusCode::OK, 0.05);
     metrics_->Record("Originate", grpc::StatusCode::INVALID_ARGUMENT, 0.001);
     const auto page = registry_->Render();
-    EXPECT_TRUE(PageContains(page,
-                             "osw_rpc_calls_total{rpc=\"Originate\",code=\"OK\"} 1"));
+    EXPECT_TRUE(PageContains(page, "osw_rpc_calls_total{rpc=\"Originate\",code=\"OK\"} 1"));
     EXPECT_TRUE(PageContains(page,
                              "osw_rpc_calls_total{rpc=\"Originate\","
                              "code=\"INVALID_ARGUMENT\"} 1"));
@@ -147,8 +146,8 @@ TEST_F(RpcMetricsTest, RecordAuthzCreatesAuthzCounter) {
     metrics_->RecordAuthz("Health", "allow");
     const auto page = registry_->Render();
     EXPECT_TRUE(PageContains(page, "osw_rpc_authz_decisions_total"));
-    EXPECT_TRUE(PageContains(page,
-                             "osw_rpc_authz_decisions_total{rpc=\"Health\",outcome=\"allow\"} 1"));
+    EXPECT_TRUE(
+        PageContains(page, "osw_rpc_authz_decisions_total{rpc=\"Health\",outcome=\"allow\"} 1"));
 }
 
 TEST_F(RpcMetricsTest, RecordAuthzDenyAndAllow) {

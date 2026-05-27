@@ -75,9 +75,7 @@ class RpcMetrics {
     ///   - `rpc_name`: short method name ("Health", "Originate", …).
     ///   - `status_code`: gRPC status code (e.g. grpc::StatusCode::OK).
     ///   - `latency_seconds`: elapsed time from receipt to send-status.
-    void Record(const std::string& rpc_name,
-                grpc::StatusCode status_code,
-                double latency_seconds);
+    void Record(const std::string& rpc_name, grpc::StatusCode status_code, double latency_seconds);
 
     /// Record one authz decision. Called by Track B's auth interceptor.
     ///   - `outcome`: "allow" or "deny".
@@ -90,12 +88,12 @@ class RpcMetrics {
 
   private:
     // Get-or-create a counter for (rpc_name, status_code). Protected by mu_.
-    osw::observability::prometheus::Counter* GetOrCreateCallCounter(
-        const std::string& rpc_name, grpc::StatusCode code);
+    osw::observability::prometheus::Counter* GetOrCreateCallCounter(const std::string& rpc_name,
+                                                                    grpc::StatusCode code);
 
     // Get-or-create an authz counter for (rpc_name, outcome). Protected by mu_.
-    osw::observability::prometheus::Counter* GetOrCreateAuthzCounter(
-        const std::string& rpc_name, const std::string& outcome);
+    osw::observability::prometheus::Counter* GetOrCreateAuthzCounter(const std::string& rpc_name,
+                                                                     const std::string& outcome);
 
     // Get-or-create a latency histogram for rpc_name. Protected by mu_.
     osw::observability::prometheus::Histogram* GetOrCreateLatencyHistogram(
@@ -120,8 +118,7 @@ class RpcMetrics {
 /// Per-RPC interceptor that records call count and latency.
 class RpcMetricsInterceptor : public grpc::experimental::Interceptor {
   public:
-    RpcMetricsInterceptor(RpcMetrics* metrics,
-                          grpc::experimental::ServerRpcInfo* info);
+    RpcMetricsInterceptor(RpcMetrics* metrics, grpc::experimental::ServerRpcInfo* info);
 
     void Intercept(grpc::experimental::InterceptorBatchMethods* methods) override;
 
@@ -134,11 +131,9 @@ class RpcMetricsInterceptor : public grpc::experimental::Interceptor {
 
 /// Factory registered with the gRPC ServerBuilder. Creates one
 /// RpcMetricsInterceptor per incoming RPC.
-class RpcMetricsInterceptorFactory
-    : public grpc::experimental::ServerInterceptorFactoryInterface {
+class RpcMetricsInterceptorFactory : public grpc::experimental::ServerInterceptorFactoryInterface {
   public:
-    explicit RpcMetricsInterceptorFactory(RpcMetrics* metrics) noexcept
-        : metrics_(metrics) {}
+    explicit RpcMetricsInterceptorFactory(RpcMetrics* metrics) noexcept : metrics_(metrics) {}
 
     grpc::experimental::Interceptor* CreateServerInterceptor(
         grpc::experimental::ServerRpcInfo* info) override;

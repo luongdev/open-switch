@@ -46,15 +46,15 @@ namespace osw::control {
 /// Result of an authorization check.
 struct AuthzDecision {
     bool allowed = false;
-    std::string identity;          ///< CN or JWT sub (or "anonymous").
+    std::string identity;  ///< CN or JWT sub (or "anonymous").
     std::string permission_required;
-    std::string deny_reason;       ///< Non-empty only when !allowed.
+    std::string deny_reason;  ///< Non-empty only when !allowed.
 };
 
 /// AuthConfig holds the parsed `<auth>` block from open_switch.conf.xml.
 /// Used to construct an `RbacRegistry`; also stored in `Config`.
 struct AuthConfig {
-    bool require = true;           ///< <auth require="true|false">
+    bool require = true;              ///< <auth require="true|false">
     std::string jwt_public_key_path;  ///< <auth jwt_public_key_path="...">
 
     struct Role {
@@ -64,7 +64,7 @@ struct AuthConfig {
     std::vector<Role> roles;
 
     struct IdentityMapping {
-        std::string identity;      ///< CN or JWT sub
+        std::string identity;  ///< CN or JWT sub
         std::string role;
     };
     std::vector<IdentityMapping> identities;
@@ -85,8 +85,7 @@ class RbacRegistry {
     std::string_view RoleFor(std::string_view identity) const noexcept;
 
     /// Returns true iff `role` has `permission`.
-    bool RoleHasPermission(std::string_view role,
-                           std::string_view permission) const noexcept;
+    bool RoleHasPermission(std::string_view role, std::string_view permission) const noexcept;
 
     /// Authorizes an (identity, rpc_path) pair.
     /// Encapsulates:
@@ -98,9 +97,7 @@ class RbacRegistry {
                                           std::string_view rpc_path) const noexcept;
 
     bool require() const noexcept { return config_.require; }
-    const std::string& jwt_public_key_path() const noexcept {
-        return config_.jwt_public_key_path;
-    }
+    const std::string& jwt_public_key_path() const noexcept { return config_.jwt_public_key_path; }
 
   private:
     AuthConfig config_;

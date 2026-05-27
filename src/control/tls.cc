@@ -90,30 +90,26 @@ std::shared_ptr<grpc::ServerCredentials> BuildServerCredentials(const TlsConfig&
     // --- Read server certificate -------------------------------------------
     const std::string cert = SlurpFile(cfg.cert_path);
     if (cert.empty()) {
-        osw::log::Error(
-            "control.tls", "failed to read TLS cert at %s", cfg.cert_path.c_str());
+        osw::log::Error("control.tls", "failed to read TLS cert at %s", cfg.cert_path.c_str());
         return {};
     }
     if (!LooksLikePem(cert)) {
-        osw::log::Error(
-            "control.tls",
-            "TLS cert at %s does not appear to be PEM-encoded (no '-----BEGIN' marker)",
-            cfg.cert_path.c_str());
+        osw::log::Error("control.tls",
+                        "TLS cert at %s does not appear to be PEM-encoded (no '-----BEGIN' marker)",
+                        cfg.cert_path.c_str());
         return {};
     }
 
     // --- Read server private key -------------------------------------------
     const std::string key = SlurpFile(cfg.key_path);
     if (key.empty()) {
-        osw::log::Error(
-            "control.tls", "failed to read TLS key at %s", cfg.key_path.c_str());
+        osw::log::Error("control.tls", "failed to read TLS key at %s", cfg.key_path.c_str());
         return {};
     }
     if (!LooksLikePem(key)) {
-        osw::log::Error(
-            "control.tls",
-            "TLS key at %s does not appear to be PEM-encoded (no '-----BEGIN' marker)",
-            cfg.key_path.c_str());
+        osw::log::Error("control.tls",
+                        "TLS key at %s does not appear to be PEM-encoded (no '-----BEGIN' marker)",
+                        cfg.key_path.c_str());
         return {};
     }
 
@@ -121,13 +117,18 @@ std::shared_ptr<grpc::ServerCredentials> BuildServerCredentials(const TlsConfig&
     //
     // Decision OQ-1: mTLS-CN preferred identity source.
     // When require_client_cert is true, set
-    //   REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_AND_VERIFY (enum value 4).
-    // Otherwise set DO_NOT_REQUEST_CLIENT_CERTIFICATE (enum value 0).
-    using ClientCertReq = grpc::SslServerCredentialsOptions::ClientCertificateRequestType;
-
-    const ClientCertReq cert_req = cfg.require_client_cert
-        ? ClientCertReq::REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_AND_VERIFY
-        : ClientCertReq::DO_NOT_REQUEST_CLIENT_CERTIFICATE;
+    //   GRPC_SSL_REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_AND_VERIFY (4).
+    // Otherwise set GRPC_SSL_DONT_REQUEST_CLIENT_CERTIFICATE (0).
+    //
+    // gRPC 1.74 exposes the request type via the C enum
+    // `grpc_ssl_client_certificate_request_type` declared in
+    // <grpc/grpc_security_constants.h>. The deprecated nested
+    // `SslServerCredentialsOptions::ClientCertificateRequestType`
+    // referenced by an earlier draft of this file no longer exists
+    // in the gRPC 1.74 ABI we ship.
+    const grpc_ssl_client_certificate_request_type cert_req =
+        cfg.require_client_cert ? GRPC_SSL_REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_AND_VERIFY
+                                : GRPC_SSL_DONT_REQUEST_CLIENT_CERTIFICATE;
 
     grpc::SslServerCredentialsOptions opts(cert_req);
 
@@ -136,16 +137,13 @@ std::shared_ptr<grpc::ServerCredentials> BuildServerCredentials(const TlsConfig&
         const std::string ca = SlurpFile(cfg.ca_path);
         if (ca.empty()) {
             osw::log::Error(
-                "control.tls",
-                "failed to read TLS CA bundle at %s",
-                cfg.ca_path.c_str());
+                "control.tls", "failed to read TLS CA bundle at %s", cfg.ca_path.c_str());
             return {};
         }
         if (!LooksLikePem(ca)) {
-            osw::log::Error(
-                "control.tls",
-                "TLS CA at %s does not appear to be PEM-encoded",
-                cfg.ca_path.c_str());
+            osw::log::Error("control.tls",
+                            "TLS CA at %s does not appear to be PEM-encoded",
+                            cfg.ca_path.c_str());
             return {};
         }
         opts.pem_root_certs = ca;
@@ -173,8 +171,8 @@ std::shared_ptr<grpc::ServerCredentials> MakeServerCreds(const Config& config) {
     cfg.ca_path = config.grpc_tls_ca_path;
     // Use the explicit flag if set, otherwise infer from ca_path presence.
     // OQ-1: mTLS-CN preferred; only enabled when operator provides CA bundle.
-    cfg.require_client_cert = config.grpc_tls_require_client_cert ||
-                              !config.grpc_tls_ca_path.empty();
+    cfg.require_client_cert =
+        config.grpc_tls_require_client_cert || !config.grpc_tls_ca_path.empty();
     return BuildServerCredentials(cfg);
 }
 

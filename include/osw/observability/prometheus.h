@@ -158,10 +158,7 @@ class Histogram {
     /// `bounds` defines the upper-inclusive bucket boundaries. An
     /// implicit +Inf bucket is always appended. Use kDefaultLatencyBuckets
     /// for gRPC latency.
-    Histogram(std::string name,
-              std::string help,
-              Labels labels,
-              const std::vector<double>& bounds);
+    Histogram(std::string name, std::string help, Labels labels, const std::vector<double>& bounds);
 
     /// Record one observation of `value` (in the unit of the histogram).
     void Observe(double value) noexcept;

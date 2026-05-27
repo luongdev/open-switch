@@ -15,16 +15,16 @@
 
 #include "osw/observability/metrics_server.h"
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
 #include <array>
 #include <cerrno>
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <unistd.h>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 #include "osw/observability/log.h"
 
@@ -39,7 +39,7 @@ constexpr const char* kSubsystem = "metrics.server";
 constexpr std::size_t kMaxRequestBytes = 8192;
 
 constexpr std::string_view kMetricsPath = "/metrics";
-constexpr std::string_view kOkHeader    =
+constexpr std::string_view kOkHeader =
     "HTTP/1.1 200 OK\r\n"
     "Content-Type: text/plain; version=0.0.4; charset=utf-8\r\n"
     "Connection: close\r\n";
@@ -171,8 +171,8 @@ void MetricsServer::Run() {
     while (running_.load(std::memory_order_acquire)) {
         struct sockaddr_in client_addr = {};
         socklen_t addr_len = sizeof(client_addr);
-        const int conn_fd = ::accept(
-            listen_fd_, reinterpret_cast<struct sockaddr*>(&client_addr), &addr_len);
+        const int conn_fd =
+            ::accept(listen_fd_, reinterpret_cast<struct sockaddr*>(&client_addr), &addr_len);
         if (conn_fd < 0) {
             if (!running_.load(std::memory_order_acquire)) {
                 // We closed listen_fd_ in Stop(); accept() failing here is
@@ -199,8 +199,7 @@ void MetricsServer::HandleConnection(int fd) const {
     std::size_t total = 0;
     bool got_end = false;
     while (total < kMaxRequestBytes) {
-        const ssize_t n =
-            ::recv(fd, buf.data() + total, kMaxRequestBytes - total, 0);
+        const ssize_t n = ::recv(fd, buf.data() + total, kMaxRequestBytes - total, 0);
         if (n <= 0) {
             break;
         }
@@ -239,9 +238,8 @@ int MetricsServer::HandleRequest(std::string_view raw_request, std::string& resp
     const auto method = request_line.substr(0, sp1);
 
     const auto sp2 = request_line.find(' ', sp1 + 1);
-    const auto path = (sp2 == std::string_view::npos)
-                          ? request_line.substr(sp1 + 1)
-                          : request_line.substr(sp1 + 1, sp2 - sp1 - 1);
+    const auto path = (sp2 == std::string_view::npos) ? request_line.substr(sp1 + 1)
+                                                      : request_line.substr(sp1 + 1, sp2 - sp1 - 1);
 
     // Only GET is supported.
     if (method != "GET") {

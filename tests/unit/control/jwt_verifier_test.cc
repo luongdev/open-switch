@@ -29,7 +29,6 @@
 #include <vector>
 
 #include <gtest/gtest.h>
-
 #include <openssl/bio.h>
 #include <openssl/bn.h>
 #include <openssl/ec.h>
@@ -50,10 +49,13 @@ std::string Base64UrlEncode(const uint8_t* data, std::size_t len) {
     int n = EVP_EncodeBlock(buf.data(), data, static_cast<int>(len));
     std::string s(reinterpret_cast<char*>(buf.data()), static_cast<std::size_t>(n));
     for (char& c : s) {
-        if (c == '+') c = '-';
-        if (c == '/') c = '_';
+        if (c == '+')
+            c = '-';
+        if (c == '/')
+            c = '_';
     }
-    while (!s.empty() && s.back() == '=') s.pop_back();
+    while (!s.empty() && s.back() == '=')
+        s.pop_back();
     return s;
 }
 
@@ -72,15 +74,14 @@ std::string BuildJwt(const std::string& header_json,
 
     // EVP_DigestSign for ES256.
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    if (!ctx) return {};
+    if (!ctx)
+        return {};
 
     if (EVP_DigestSignInit(ctx, nullptr, EVP_sha256(), nullptr, priv_key) != 1) {
         EVP_MD_CTX_free(ctx);
         return {};
     }
-    if (EVP_DigestSignUpdate(ctx,
-                             signing_input.data(),
-                             signing_input.size()) != 1) {
+    if (EVP_DigestSignUpdate(ctx, signing_input.data(), signing_input.size()) != 1) {
         EVP_MD_CTX_free(ctx);
         return {};
     }
@@ -96,14 +97,15 @@ std::string BuildJwt(const std::string& header_json,
     // Parse DER → ECDSA_SIG → r‖s raw 64 bytes.
     const uint8_t* p2 = der.data();
     ECDSA_SIG* sig = d2i_ECDSA_SIG(nullptr, &p2, static_cast<long>(der.size()));
-    if (!sig) return {};
+    if (!sig)
+        return {};
 
     const BIGNUM* r = nullptr;
     const BIGNUM* s = nullptr;
     ECDSA_SIG_get0(sig, &r, &s);
 
     uint8_t raw[64] = {};
-    BN_bn2binpad(r, raw,      32);
+    BN_bn2binpad(r, raw, 32);
     BN_bn2binpad(s, raw + 32, 32);
     ECDSA_SIG_free(sig);
 
@@ -151,7 +153,7 @@ class JwtVerifierTest : public ::testing::Test {
     // Build a valid ES256 JWT with the given sub and exp offset (seconds from now).
     std::string MakeJwt(const std::string& sub, std::int64_t exp_offset_secs = 3600) {
         std::int64_t exp = static_cast<std::int64_t>(std::time(nullptr)) + exp_offset_secs;
-        std::string header  = R"({"alg":"ES256","typ":"JWT"})";
+        std::string header = R"({"alg":"ES256","typ":"JWT"})";
         std::string payload = R"({"sub":")" + sub + R"(","exp":)" + std::to_string(exp) + "}";
         return BuildJwt(header, payload, key_pair_.get());
     }
@@ -203,49 +205,44 @@ TEST_F(JwtVerifierTest, TamperedPayloadBadSignature) {
 
     auto r = verifier_->Verify(tampered);
     EXPECT_FALSE(r.ok);
-    EXPECT_NE(r.error.find("bad_signature"), std::string::npos)
-        << "error was: " << r.error;
+    EXPECT_NE(r.error.find("bad_signature"), std::string::npos) << "error was: " << r.error;
 }
 
 TEST_F(JwtVerifierTest, WrongAlgorithmRejected) {
     // Build a token with alg=RS256 in the header.
     std::int64_t exp = static_cast<std::int64_t>(std::time(nullptr)) + 3600;
-    std::string header  = R"({"alg":"RS256","typ":"JWT"})";
+    std::string header = R"({"alg":"RS256","typ":"JWT"})";
     std::string payload = R"({"sub":"user","exp":)" + std::to_string(exp) + "}";
     auto token = BuildJwt(header, payload, key_pair_.get());
     ASSERT_FALSE(token.empty());
 
     auto r = verifier_->Verify(token);
     EXPECT_FALSE(r.ok);
-    EXPECT_NE(r.error.find("bad_algorithm"), std::string::npos)
-        << "error was: " << r.error;
+    EXPECT_NE(r.error.find("bad_algorithm"), std::string::npos) << "error was: " << r.error;
 }
 
 TEST_F(JwtVerifierTest, MissingSubClaim) {
     std::int64_t exp = static_cast<std::int64_t>(std::time(nullptr)) + 3600;
-    std::string header  = R"({"alg":"ES256","typ":"JWT"})";
+    std::string header = R"({"alg":"ES256","typ":"JWT"})";
     std::string payload = R"({"exp":)" + std::to_string(exp) + "}";
     auto token = BuildJwt(header, payload, key_pair_.get());
     ASSERT_FALSE(token.empty());
 
     auto r = verifier_->Verify(token);
     EXPECT_FALSE(r.ok);
-    EXPECT_NE(r.error.find("missing_subject"), std::string::npos)
-        << "error was: " << r.error;
+    EXPECT_NE(r.error.find("missing_subject"), std::string::npos) << "error was: " << r.error;
 }
 
 TEST_F(JwtVerifierTest, MalformedTokenNoDots) {
     auto r = verifier_->Verify("notavalidjwtatall");
     EXPECT_FALSE(r.ok);
-    EXPECT_NE(r.error.find("bad_format"), std::string::npos)
-        << "error was: " << r.error;
+    EXPECT_NE(r.error.find("bad_format"), std::string::npos) << "error was: " << r.error;
 }
 
 TEST_F(JwtVerifierTest, MalformedTokenOneDot) {
     auto r = verifier_->Verify("header.payload");
     EXPECT_FALSE(r.ok);
-    EXPECT_NE(r.error.find("bad_format"), std::string::npos)
-        << "error was: " << r.error;
+    EXPECT_NE(r.error.find("bad_format"), std::string::npos) << "error was: " << r.error;
 }
 
 TEST(JwtVerifierFromPemTest, BadPemReturnsNullptr) {

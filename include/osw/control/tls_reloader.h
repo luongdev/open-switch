@@ -66,8 +66,7 @@ namespace osw::control {
 
 /// Callback type invoked by TlsReloader whenever new credentials have been
 /// built and validated. The callee typically logs and stores the new creds.
-using TlsReloadCallback =
-    std::function<void(std::shared_ptr<grpc::ServerCredentials> new_creds)>;
+using TlsReloadCallback = std::function<void(std::shared_ptr<grpc::ServerCredentials> new_creds)>;
 
 /// inotify-backed cert-file watcher that rebuilds grpc::ServerCredentials
 /// whenever a cert file changes on disk.

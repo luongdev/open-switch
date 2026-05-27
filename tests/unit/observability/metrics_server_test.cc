@@ -42,8 +42,7 @@ static bool Contains(std::string_view haystack, std::string_view needle) {
 
 // Build a minimal HTTP/1.1 GET request string.
 static std::string GetRequest(std::string_view path) {
-    return std::string("GET ") + std::string(path) +
-           " HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    return std::string("GET ") + std::string(path) + " HTTP/1.1\r\nHost: localhost\r\n\r\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -65,8 +64,9 @@ TEST(MetricsServerTest, GetMetricsResponseContainsOkStatus) {
 }
 
 TEST(MetricsServerTest, GetMetricsBodyIsPropagated) {
-    const std::string body = "# HELP osw_rpc_calls_total Total RPC calls\n"
-                             "osw_rpc_calls_total{rpc=\"Health\",code=\"OK\"} 42\n";
+    const std::string body =
+        "# HELP osw_rpc_calls_total Total RPC calls\n"
+        "osw_rpc_calls_total{rpc=\"Health\",code=\"OK\"} 42\n";
     auto server = MakeServer(body);
     std::string response;
     server.HandleRequest(GetRequest("/metrics"), response);
@@ -85,8 +85,7 @@ TEST(MetricsServerTest, GetMetricsContentLengthMatchesBodySize) {
     auto server = MakeServer(body);
     std::string response;
     server.HandleRequest(GetRequest("/metrics"), response);
-    EXPECT_TRUE(Contains(response,
-                         "Content-Length: " + std::to_string(body.size())));
+    EXPECT_TRUE(Contains(response, "Content-Length: " + std::to_string(body.size())));
 }
 
 TEST(MetricsServerTest, GetMetricsWithQueryStringReturns200) {
@@ -114,8 +113,8 @@ TEST(MetricsServerTest, GetRootReturns404) {
 TEST(MetricsServerTest, PostMetricsReturns405) {
     auto server = MakeServer();
     std::string response;
-    const int code = server.HandleRequest(
-        "POST /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n", response);
+    const int code =
+        server.HandleRequest("POST /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n", response);
     EXPECT_EQ(code, 405);
     EXPECT_TRUE(Contains(response, "405 Method Not Allowed"));
 }
@@ -137,8 +136,8 @@ TEST(MetricsServerTest, MalformedRequestLineNoSpaceReturns400) {
 TEST(MetricsServerTest, HeadMethodReturns405) {
     auto server = MakeServer();
     std::string response;
-    const int code = server.HandleRequest(
-        "HEAD /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n", response);
+    const int code =
+        server.HandleRequest("HEAD /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n", response);
     EXPECT_EQ(code, 405);
 }
 

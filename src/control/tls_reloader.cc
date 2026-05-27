@@ -33,8 +33,9 @@
 
 #ifdef __linux__
 #include <poll.h>
-#include <sys/inotify.h>
 #include <unistd.h>
+
+#include <sys/inotify.h>
 #endif
 
 #include "osw/control/tls.h"
@@ -83,8 +84,7 @@ void TlsReloader::Start() {
         return;  // already running
     }
     if (!cfg_.enabled()) {
-        osw::log::Info("control.tls.reloader",
-                       "TLS not configured; cert hot-reload disabled");
+        osw::log::Info("control.tls.reloader", "TLS not configured; cert hot-reload disabled");
         return;
     }
 
@@ -121,9 +121,7 @@ void TlsReloader::Start() {
     // on the cert directory; if key and CA live elsewhere we add additional
     // watches. De-duplicate to avoid adding the same directory twice.
     const std::string cert_dir = DirOf(cfg_.cert_path);
-    const int wd = ::inotify_add_watch(inotify_fd_,
-                                       cert_dir.c_str(),
-                                       IN_CLOSE_WRITE | IN_MOVED_TO);
+    const int wd = ::inotify_add_watch(inotify_fd_, cert_dir.c_str(), IN_CLOSE_WRITE | IN_MOVED_TO);
     if (wd < 0) {
         osw::log::Error("control.tls.reloader",
                         "inotify_add_watch('%s') failed: %s — cert hot-reload disabled",
@@ -221,8 +219,7 @@ void TlsReloader::ThreadFunc() noexcept {
     try {
         RunLoop();
     } catch (const std::exception& e) {
-        osw::log::Error(
-            "control.tls.reloader", "watcher thread threw: %s", e.what());
+        osw::log::Error("control.tls.reloader", "watcher thread threw: %s", e.what());
     } catch (...) {
         osw::log::Error("control.tls.reloader", "watcher thread threw an unknown exception");
     }
@@ -259,8 +256,7 @@ void TlsReloader::RunLoop() {
             if (errno == EINTR) {
                 continue;  // interrupted by signal; retry
             }
-            osw::log::Error(
-                "control.tls.reloader", "poll() failed: %s", std::strerror(errno));
+            osw::log::Error("control.tls.reloader", "poll() failed: %s", std::strerror(errno));
             break;
         }
         if (ready == 0) {

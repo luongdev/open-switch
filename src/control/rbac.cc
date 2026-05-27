@@ -41,17 +41,17 @@ constexpr const char* kSubsystem = "control.rbac";
 // Per-RPC required permission table (V1 fixed, from spec).
 // ---------------------------------------------------------------------------
 static const std::unordered_map<std::string, std::string> kRpcPermissions = {
-    {"/open_switch.control.v1.ControlService/Health",           "health.read"},
-    {"/open_switch.control.v1.ControlService/SubscribeEvents",  "events.subscribe"},
-    {"/open_switch.control.v1.ControlService/Originate",        "control.originate"},
-    {"/open_switch.control.v1.ControlService/Hangup",           "control.hangup"},
-    {"/open_switch.control.v1.ControlService/HangupMany",       "control.hangup"},
-    {"/open_switch.control.v1.ControlService/Bridge",           "control.bridge"},
-    {"/open_switch.control.v1.ControlService/Execute",          "control.execute"},
-    {"/open_switch.control.v1.ControlService/BlindTransfer",    "control.transfer"},
-    {"/open_switch.control.v1.ControlService/SetVariables",     "control.set_variables"},
-    {"/open_switch.control.v1.ControlService/Hold",             "control.hold"},
-    {"/open_switch.control.v1.ControlService/Unhold",           "control.hold"},
+    {"/open_switch.control.v1.ControlService/Health", "health.read"},
+    {"/open_switch.control.v1.ControlService/SubscribeEvents", "events.subscribe"},
+    {"/open_switch.control.v1.ControlService/Originate", "control.originate"},
+    {"/open_switch.control.v1.ControlService/Hangup", "control.hangup"},
+    {"/open_switch.control.v1.ControlService/HangupMany", "control.hangup"},
+    {"/open_switch.control.v1.ControlService/Bridge", "control.bridge"},
+    {"/open_switch.control.v1.ControlService/Execute", "control.execute"},
+    {"/open_switch.control.v1.ControlService/BlindTransfer", "control.transfer"},
+    {"/open_switch.control.v1.ControlService/SetVariables", "control.set_variables"},
+    {"/open_switch.control.v1.ControlService/Hold", "control.hold"},
+    {"/open_switch.control.v1.ControlService/Unhold", "control.hold"},
 };
 
 // ---------------------------------------------------------------------------
@@ -100,7 +100,8 @@ std::string_view Trim(std::string_view sv) {
 
 // Case-insensitive compare for small strings (attribute values).
 bool IequalsAscii(std::string_view a, std::string_view b) {
-    if (a.size() != b.size()) return false;
+    if (a.size() != b.size())
+        return false;
     for (std::size_t i = 0; i < a.size(); ++i) {
         if (std::tolower(static_cast<unsigned char>(a[i])) !=
             std::tolower(static_cast<unsigned char>(b[i]))) {
@@ -158,7 +159,7 @@ bool RbacRegistry::RoleHasPermission(std::string_view role,
 }
 
 AuthzDecision RbacRegistry::Authorize(std::string_view identity,
-                                       std::string_view rpc_path) const noexcept {
+                                      std::string_view rpc_path) const noexcept {
     AuthzDecision result;
     result.identity = std::string(identity);
     result.permission_required = std::string(RequiredPermission(rpc_path));
@@ -221,11 +222,13 @@ AuthConfig ParseAuthConfig(std::string_view xml_text) noexcept {
     // Simple token loop: find '<', extract tag content up to '>'.
     while (!text.empty()) {
         auto lt = text.find('<');
-        if (lt == std::string_view::npos) break;
+        if (lt == std::string_view::npos)
+            break;
         text.remove_prefix(lt + 1);  // skip past '<'
 
         auto gt = text.find('>');
-        if (gt == std::string_view::npos) break;
+        if (gt == std::string_view::npos)
+            break;
 
         std::string_view tag_content = text.substr(0, gt);
         std::string_view remainder = text.substr(gt + 1);
@@ -245,7 +248,8 @@ AuthConfig ParseAuthConfig(std::string_view xml_text) noexcept {
             trimmed.remove_prefix(1);
             // Extract tag name.
             auto sp = trimmed.find_first_of(" \t\r\n/>");
-            std::string_view tname = (sp == std::string_view::npos) ? trimmed : trimmed.substr(0, sp);
+            std::string_view tname =
+                (sp == std::string_view::npos) ? trimmed : trimmed.substr(0, sp);
             if (tname == "role") {
                 current_role = nullptr;
             }
@@ -261,8 +265,10 @@ AuthConfig ParseAuthConfig(std::string_view xml_text) noexcept {
 
         // Extract tag name.
         auto sp = trimmed.find_first_of(" \t\r\n");
-        std::string_view tag_name = (sp == std::string_view::npos) ? trimmed : trimmed.substr(0, sp);
-        std::string_view attrs = (sp == std::string_view::npos) ? std::string_view{} : trimmed.substr(sp);
+        std::string_view tag_name =
+            (sp == std::string_view::npos) ? trimmed : trimmed.substr(0, sp);
+        std::string_view attrs =
+            (sp == std::string_view::npos) ? std::string_view{} : trimmed.substr(sp);
 
         if (tag_name == "auth") {
             // Parse require= and jwt_public_key_path=
@@ -298,8 +304,8 @@ AuthConfig ParseAuthConfig(std::string_view xml_text) noexcept {
             std::string iname = ExtractAttr(attrs, "name");
             std::string irole = ExtractAttr(attrs, "role");
             if (!iname.empty() && !irole.empty()) {
-                cfg.identities.push_back(AuthConfig::IdentityMapping{
-                    std::move(iname), std::move(irole)});
+                cfg.identities.push_back(
+                    AuthConfig::IdentityMapping{std::move(iname), std::move(irole)});
             }
         }
 

@@ -101,7 +101,7 @@ bool GrpcServer::Start(const Config& config) {
     //
     // JWT verifier: loaded from jwt_public_key_path if set.
     std::shared_ptr<RbacRegistry> rbac_registry;
-    std::unique_ptr<JwtVerifier>  jwt_verifier;
+    std::unique_ptr<JwtVerifier> jwt_verifier;
 
     if (!config.auth_xml.empty()) {
         AuthConfig auth_cfg = ParseAuthConfig(config.auth_xml);
@@ -123,8 +123,8 @@ bool GrpcServer::Start(const Config& config) {
                        "(all RPCs except anonymous Health.Check will be rejected)");
     }
 
-    auth_factory_ = std::make_shared<AuthInterceptorFactory>(
-        rbac_registry, std::move(jwt_verifier));
+    auth_factory_ =
+        std::make_shared<AuthInterceptorFactory>(rbac_registry, std::move(jwt_verifier));
 
     grpc::ServerBuilder builder;
     int bound_port = 0;
@@ -150,8 +150,7 @@ bool GrpcServer::Start(const Config& config) {
         // swap the RBAC table without restarting the server. Wrap with a
         // non-owning adapter so the SetInterceptorCreators contract
         // (unique_ptr ownership) is honoured while we keep our own ref.
-        struct AuthFactoryAdapter
-            : public grpc::experimental::ServerInterceptorFactoryInterface {
+        struct AuthFactoryAdapter : public grpc::experimental::ServerInterceptorFactoryInterface {
             explicit AuthFactoryAdapter(std::shared_ptr<AuthInterceptorFactory> f)
                 : factory(std::move(f)) {}
             grpc::experimental::Interceptor* CreateServerInterceptor(

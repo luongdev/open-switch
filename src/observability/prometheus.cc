@@ -233,8 +233,8 @@ void Histogram::Render(std::string& out) const {
 
 Counter* Registry::AddCounter(std::string name, std::string help, Labels labels) {
     std::lock_guard<std::mutex> lk(mu_);
-    counters_.push_back(std::make_unique<Counter>(std::move(name), std::move(help),
-                                                  std::move(labels)));
+    counters_.push_back(
+        std::make_unique<Counter>(std::move(name), std::move(help), std::move(labels)));
     return counters_.back().get();
 }
 
@@ -245,9 +245,9 @@ Gauge* Registry::AddGauge(std::string name, std::string help, Labels labels) {
 }
 
 Histogram* Registry::AddHistogram(std::string name,
-                                   std::string help,
-                                   Labels labels,
-                                   const std::vector<double>& bounds) {
+                                  std::string help,
+                                  Labels labels,
+                                  const std::vector<double>& bounds) {
     std::lock_guard<std::mutex> lk(mu_);
     histograms_.push_back(
         std::make_unique<Histogram>(std::move(name), std::move(help), std::move(labels), bounds));

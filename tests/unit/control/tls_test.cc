@@ -167,8 +167,7 @@ TEST_F(TlsTest, TlsOnlyHappyPath) {
     cfg.require_client_cert = false;
 
     auto creds = osw::control::BuildServerCredentials(cfg);
-    EXPECT_NE(creds, nullptr)
-        << "Expected non-null creds for TLS-only (cert + key present)";
+    EXPECT_NE(creds, nullptr) << "Expected non-null creds for TLS-only (cert + key present)";
 }
 
 TEST_F(TlsTest, MtlsHappyPath) {
@@ -183,8 +182,7 @@ TEST_F(TlsTest, MtlsHappyPath) {
     cfg.require_client_cert = true;
 
     auto creds = osw::control::BuildServerCredentials(cfg);
-    EXPECT_NE(creds, nullptr)
-        << "Expected non-null creds for mTLS (cert + key + CA present)";
+    EXPECT_NE(creds, nullptr) << "Expected non-null creds for mTLS (cert + key + CA present)";
 }
 
 // ─── Failure-path tests ────────────────────────────────────────────────────

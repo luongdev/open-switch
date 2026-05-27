@@ -17,34 +17,32 @@ namespace osw::observability {
 HealthMetrics::HealthMetrics(prometheus::Registry* registry) {
     // --- Subscriber count -----------------------------------------------
     subscriber_gauge_ = registry->AddGauge(
-        "osw_events_subscribers",
-        "Current number of active SubscribeEvents gRPC streams",
-        {});
+        "osw_events_subscribers", "Current number of active SubscribeEvents gRPC streams", {});
 
     // --- Tier ring drop counters ----------------------------------------
     // These are rendered as gauges internally but represent a running
     // total (monotonically increasing unless module restarts). Prometheus
     // operators use rate() for per-interval drop rates.
-    tier1_drops_gauge_ = registry->AddGauge(
-        "osw_events_tier_ring_drops_total",
-        "Total events dropped from the tier-1 ring since module load",
-        {{"tier", "1"}});
+    tier1_drops_gauge_ =
+        registry->AddGauge("osw_events_tier_ring_drops_total",
+                           "Total events dropped from the tier-1 ring since module load",
+                           {{"tier", "1"}});
 
-    tier2_drops_gauge_ = registry->AddGauge(
-        "osw_events_tier_ring_drops_total",
-        "Total events dropped from the tier-2 ring since module load",
-        {{"tier", "2"}});
+    tier2_drops_gauge_ =
+        registry->AddGauge("osw_events_tier_ring_drops_total",
+                           "Total events dropped from the tier-2 ring since module load",
+                           {{"tier", "2"}});
 
-    tier3_drops_gauge_ = registry->AddGauge(
-        "osw_events_tier_ring_drops_total",
-        "Total events dropped from the tier-3 ring since module load",
-        {{"tier", "3"}});
+    tier3_drops_gauge_ =
+        registry->AddGauge("osw_events_tier_ring_drops_total",
+                           "Total events dropped from the tier-3 ring since module load",
+                           {{"tier", "3"}});
 
     // --- Audit emit counter ---------------------------------------------
-    audit_emit_gauge_ = registry->AddGauge(
-        "osw_events_audit_emit_total",
-        "Total audit events emitted (osw::audit::Emit calls) since module load",
-        {});
+    audit_emit_gauge_ =
+        registry->AddGauge("osw_events_audit_emit_total",
+                           "Total audit events emitted (osw::audit::Emit calls) since module load",
+                           {});
 }
 
 void HealthMetrics::Refresh(const osw::Health& health) {

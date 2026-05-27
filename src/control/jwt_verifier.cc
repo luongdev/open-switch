@@ -55,8 +55,10 @@ std::vector<uint8_t> Base64UrlDecode(std::string_view input) {
     // Replace URL-safe chars and add padding.
     std::string s(input);
     for (char& c : s) {
-        if (c == '-') c = '+';
-        if (c == '_') c = '/';
+        if (c == '-')
+            c = '+';
+        if (c == '_')
+            c = '/';
     }
     while (s.size() % 4 != 0) {
         s += '=';
@@ -64,9 +66,8 @@ std::vector<uint8_t> Base64UrlDecode(std::string_view input) {
 
     // Use OpenSSL EVP_DecodeBlock.
     std::vector<uint8_t> out(s.size());  // upper bound
-    int len = EVP_DecodeBlock(out.data(),
-                              reinterpret_cast<const uint8_t*>(s.data()),
-                              static_cast<int>(s.size()));
+    int len = EVP_DecodeBlock(
+        out.data(), reinterpret_cast<const uint8_t*>(s.data()), static_cast<int>(s.size()));
     if (len < 0) {
         return {};
     }
@@ -91,20 +92,26 @@ std::string JsonExtractString(std::string_view json, std::string_view key) {
     needle += '"';
 
     auto pos = json.find(needle);
-    if (pos == std::string_view::npos) return {};
+    if (pos == std::string_view::npos)
+        return {};
     pos += needle.size();
 
     // Skip whitespace + colon.
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) ++pos;
-    if (pos >= json.size() || json[pos] != ':') return {};
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t'))
+        ++pos;
+    if (pos >= json.size() || json[pos] != ':')
+        return {};
     ++pos;
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) ++pos;
-    if (pos >= json.size() || json[pos] != '"') return {};
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t'))
+        ++pos;
+    if (pos >= json.size() || json[pos] != '"')
+        return {};
     ++pos;
 
     // Find closing quote (no escape handling — V1 sub claims are simple).
     auto end = json.find('"', pos);
-    if (end == std::string_view::npos) return {};
+    if (end == std::string_view::npos)
+        return {};
     return std::string(json.substr(pos, end - pos));
 }
 
@@ -115,14 +122,19 @@ std::int64_t JsonExtractInt(std::string_view json, std::string_view key) {
     needle += '"';
 
     auto pos = json.find(needle);
-    if (pos == std::string_view::npos) return -1;
+    if (pos == std::string_view::npos)
+        return -1;
     pos += needle.size();
 
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) ++pos;
-    if (pos >= json.size() || json[pos] != ':') return -1;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t'))
+        ++pos;
+    if (pos >= json.size() || json[pos] != ':')
+        return -1;
     ++pos;
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) ++pos;
-    if (pos >= json.size()) return -1;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t'))
+        ++pos;
+    if (pos >= json.size())
+        return -1;
 
     std::int64_t v = 0;
     bool found = false;
@@ -144,7 +156,7 @@ std::vector<uint8_t> RawToDerEcdsaSig(const std::vector<uint8_t>& raw) {
         return {};
     }
 
-    BIGNUM* r = BN_bin2bn(raw.data(),      32, nullptr);
+    BIGNUM* r = BN_bin2bn(raw.data(), 32, nullptr);
     BIGNUM* s = BN_bin2bn(raw.data() + 32, 32, nullptr);
     if (!r || !s) {
         BN_free(r);
@@ -184,10 +196,13 @@ std::vector<uint8_t> RawToDerEcdsaSig(const std::vector<uint8_t>& raw) {
 // Returns true iff signature over msg is valid for pk.
 // ---------------------------------------------------------------------------
 bool EvpVerifyEs256(EVP_PKEY* pk,
-                   const uint8_t* msg, std::size_t msg_len,
-                   const uint8_t* sig_der, std::size_t sig_len) {
+                    const uint8_t* msg,
+                    std::size_t msg_len,
+                    const uint8_t* sig_der,
+                    std::size_t sig_len) {
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    if (!ctx) return false;
+    if (!ctx)
+        return false;
 
     bool ok = false;
     if (EVP_DigestVerifyInit(ctx, nullptr, EVP_sha256(), nullptr, pk) == 1) {
@@ -202,7 +217,8 @@ bool EvpVerifyEs256(EVP_PKEY* pk,
 // Load EVP_PKEY from PEM data in memory.
 EVP_PKEY* LoadPubKeyFromPem(const char* pem_data, std::size_t pem_len) {
     BIO* bio = BIO_new_mem_buf(pem_data, static_cast<int>(pem_len));
-    if (!bio) return nullptr;
+    if (!bio)
+        return nullptr;
     EVP_PKEY* pk = PEM_read_bio_PUBKEY(bio, nullptr, nullptr, nullptr);
     BIO_free(bio);
     return pk;
@@ -228,8 +244,10 @@ std::unique_ptr<JwtVerifier> JwtVerifier::FromPemFile(std::string_view path) noe
     try {
         FILE* f = ::fopen(std::string(path).c_str(), "r");
         if (!f) {
-            osw::log::Error(kSubsystem, "JwtVerifier::FromPemFile: cannot open '%.*s'",
-                            static_cast<int>(path.size()), path.data());
+            osw::log::Error(kSubsystem,
+                            "JwtVerifier::FromPemFile: cannot open '%.*s'",
+                            static_cast<int>(path.size()),
+                            path.data());
             return nullptr;
         }
         BIO* bio = BIO_new_fp(f, BIO_CLOSE);
@@ -240,8 +258,10 @@ std::unique_ptr<JwtVerifier> JwtVerifier::FromPemFile(std::string_view path) noe
         EVP_PKEY* pk = PEM_read_bio_PUBKEY(bio, nullptr, nullptr, nullptr);
         BIO_free(bio);
         if (!pk) {
-            osw::log::Error(kSubsystem, "JwtVerifier::FromPemFile: PEM_read_bio_PUBKEY failed for '%.*s'",
-                            static_cast<int>(path.size()), path.data());
+            osw::log::Error(kSubsystem,
+                            "JwtVerifier::FromPemFile: PEM_read_bio_PUBKEY failed for '%.*s'",
+                            static_cast<int>(path.size()),
+                            path.data());
             return nullptr;
         }
         return std::make_unique<JwtVerifier>(pk);
@@ -276,9 +296,9 @@ VerifyResult JwtVerifier::Verify(std::string_view token) const noexcept {
             return {false, {}, std::string(JwtError::kBadFormat) + ":missing_dot2"};
         }
 
-        std::string_view header_b64  = token.substr(0, d1);
+        std::string_view header_b64 = token.substr(0, d1);
         std::string_view payload_b64 = token.substr(d1 + 1, d2 - d1 - 1);
-        std::string_view sig_b64     = token.substr(d2 + 1);
+        std::string_view sig_b64 = token.substr(d2 + 1);
 
         // The signing input is the raw ASCII bytes "header_b64.payload_b64".
         std::string signing_input;
@@ -288,9 +308,9 @@ VerifyResult JwtVerifier::Verify(std::string_view token) const noexcept {
         signing_input.append(payload_b64);
 
         // 2. Base64URL-decode header and payload.
-        auto header_bytes  = Base64UrlDecode(header_b64);
+        auto header_bytes = Base64UrlDecode(header_b64);
         auto payload_bytes = Base64UrlDecode(payload_b64);
-        auto sig_bytes     = Base64UrlDecode(sig_b64);
+        auto sig_bytes = Base64UrlDecode(sig_b64);
 
         if (header_bytes.empty()) {
             return {false, {}, std::string(JwtError::kBadBase64) + ":header"};
@@ -303,14 +323,36 @@ VerifyResult JwtVerifier::Verify(std::string_view token) const noexcept {
         }
 
         // 3. Check alg in header JSON.
-        std::string header_json(reinterpret_cast<char*>(header_bytes.data()),
-                                header_bytes.size());
+        std::string header_json(reinterpret_cast<char*>(header_bytes.data()), header_bytes.size());
         std::string alg = JsonExtractString(header_json, "alg");
         if (alg != "ES256") {
             return {false, {}, std::string(JwtError::kBadAlgorithm) + ":" + alg};
         }
 
-        // 4. Parse payload JSON.
+        // 4. Verify signature FIRST — before trusting any payload field.
+        //
+        // Security ordering: tampered base64 payload + an unaltered signature
+        // would naturally fail integrity check; we must surface this as
+        // bad_signature, NOT as a downstream missing_subject / expired /
+        // bad_json deduced from the (untrusted, tampered) payload bytes.
+        // Equivalently: do not read payload contents until the signature
+        // has been validated.
+        auto sig_der = RawToDerEcdsaSig(sig_bytes);
+        if (sig_der.empty()) {
+            return {false, {}, std::string(JwtError::kBadSignature) + ":der_convert"};
+        }
+
+        bool valid = EvpVerifyEs256(pk_,
+                                    reinterpret_cast<const uint8_t*>(signing_input.data()),
+                                    signing_input.size(),
+                                    sig_der.data(),
+                                    sig_der.size());
+
+        if (!valid) {
+            return {false, {}, std::string(JwtError::kBadSignature) + ":verify_failed"};
+        }
+
+        // 5. Parse payload JSON (now trustworthy because signature verified).
         std::string payload_json(reinterpret_cast<char*>(payload_bytes.data()),
                                  payload_bytes.size());
 
@@ -325,24 +367,6 @@ VerifyResult JwtVerifier::Verify(std::string_view token) const noexcept {
         std::string subject = JsonExtractString(payload_json, "sub");
         if (subject.empty()) {
             return {false, {}, std::string(JwtError::kMissingSubject)};
-        }
-
-        // 5. Convert raw signature to DER.
-        auto sig_der = RawToDerEcdsaSig(sig_bytes);
-        if (sig_der.empty()) {
-            return {false, {}, std::string(JwtError::kBadSignature) + ":der_convert"};
-        }
-
-        // 6. Verify signature.
-        bool valid = EvpVerifyEs256(
-            pk_,
-            reinterpret_cast<const uint8_t*>(signing_input.data()),
-            signing_input.size(),
-            sig_der.data(),
-            sig_der.size());
-
-        if (!valid) {
-            return {false, {}, std::string(JwtError::kBadSignature) + ":verify_failed"};
         }
 
         return {true, std::move(subject), {}};

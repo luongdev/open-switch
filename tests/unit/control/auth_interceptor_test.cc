@@ -31,7 +31,6 @@
 #include <vector>
 
 #include <gtest/gtest.h>
-
 #include <openssl/bn.h>
 #include <openssl/ec.h>
 #include <openssl/ecdsa.h>
@@ -67,16 +66,12 @@ std::shared_ptr<RbacRegistry> MakeTestRegistry(bool require = true) {
 TEST(AuthInterceptorFactoryTest, ConstructsWithRegistryOnly) {
     auto reg = MakeTestRegistry();
     ASSERT_NE(reg, nullptr);
-    EXPECT_NO_THROW({
-        AuthInterceptorFactory factory(reg);
-    });
+    EXPECT_NO_THROW({ AuthInterceptorFactory factory(reg); });
 }
 
 TEST(AuthInterceptorFactoryTest, ConstructsWithRegistryAndNullVerifier) {
     auto reg = MakeTestRegistry();
-    EXPECT_NO_THROW({
-        AuthInterceptorFactory factory(reg, nullptr);
-    });
+    EXPECT_NO_THROW({ AuthInterceptorFactory factory(reg, nullptr); });
 }
 
 TEST(AuthInterceptorFactoryTest, CreateServerInterceptorReturnsNonNull) {
@@ -129,38 +124,33 @@ TEST(AuthInterceptorFactoryTest, UpdateJwtVerifierWithNull) {
 
 TEST(AuthInterceptorDecisionTest, OperatorCnAllowedOriginate) {
     auto reg = MakeTestRegistry(true);
-    auto d = reg->Authorize("ops-cn",
-        "/open_switch.control.v1.ControlService/Originate");
+    auto d = reg->Authorize("ops-cn", "/open_switch.control.v1.ControlService/Originate");
     EXPECT_TRUE(d.allowed);
     EXPECT_EQ(d.identity, "ops-cn");
 }
 
 TEST(AuthInterceptorDecisionTest, AnonymousRequireTrueDenied) {
     auto reg = MakeTestRegistry(true);
-    auto d = reg->Authorize("anonymous",
-        "/open_switch.control.v1.ControlService/Health");
+    auto d = reg->Authorize("anonymous", "/open_switch.control.v1.ControlService/Health");
     EXPECT_FALSE(d.allowed);
     EXPECT_EQ(d.deny_reason, "unauthenticated");
 }
 
 TEST(AuthInterceptorDecisionTest, AnonymousRequireFalseHealthAllowed) {
     auto reg = MakeTestRegistry(false);
-    auto d = reg->Authorize("anonymous",
-        "/open_switch.control.v1.ControlService/Health");
+    auto d = reg->Authorize("anonymous", "/open_switch.control.v1.ControlService/Health");
     EXPECT_TRUE(d.allowed);
 }
 
 TEST(AuthInterceptorDecisionTest, AnonymousRequireFalseOriginateDenied) {
     auto reg = MakeTestRegistry(false);
-    auto d = reg->Authorize("anonymous",
-        "/open_switch.control.v1.ControlService/Originate");
+    auto d = reg->Authorize("anonymous", "/open_switch.control.v1.ControlService/Originate");
     EXPECT_FALSE(d.allowed);
 }
 
 TEST(AuthInterceptorDecisionTest, UnknownCnDenied) {
     auto reg = MakeTestRegistry(true);
-    auto d = reg->Authorize("unknown-cn",
-        "/open_switch.control.v1.ControlService/Health");
+    auto d = reg->Authorize("unknown-cn", "/open_switch.control.v1.ControlService/Health");
     EXPECT_FALSE(d.allowed);
     EXPECT_EQ(d.deny_reason, "no_role_for_identity");
 }
@@ -196,21 +186,23 @@ TEST(AuthInterceptorJwtTest, ValidJwtSubjectMapsToRole) {
     // Base64URL encode helper.
     auto b64url = [](const std::string& in) -> std::string {
         std::vector<uint8_t> buf((in.size() + 2) / 3 * 4 + 1);
-        int n = EVP_EncodeBlock(buf.data(),
-                                reinterpret_cast<const uint8_t*>(in.data()),
-                                static_cast<int>(in.size()));
+        int n = EVP_EncodeBlock(
+            buf.data(), reinterpret_cast<const uint8_t*>(in.data()), static_cast<int>(in.size()));
         std::string out(reinterpret_cast<char*>(buf.data()), static_cast<std::size_t>(n));
         for (char& c : out) {
-            if (c == '+') c = '-';
-            if (c == '/') c = '_';
+            if (c == '+')
+                c = '-';
+            if (c == '/')
+                c = '_';
         }
-        while (!out.empty() && out.back() == '=') out.pop_back();
+        while (!out.empty() && out.back() == '=')
+            out.pop_back();
         return out;
     };
 
     // Build signing input.
     std::int64_t exp = static_cast<std::int64_t>(std::time(nullptr)) + 3600;
-    std::string header  = R"({"alg":"ES256","typ":"JWT"})";
+    std::string header = R"({"alg":"ES256","typ":"JWT"})";
     std::string payload = R"({"sub":"ops-cn","exp":)" + std::to_string(exp) + "}";
     std::string signing_input = b64url(header) + "." + b64url(payload);
 
@@ -233,7 +225,7 @@ TEST(AuthInterceptorJwtTest, ValidJwtSubjectMapsToRole) {
     const BIGNUM* s_bn = nullptr;
     ECDSA_SIG_get0(sig, &r_bn, &s_bn);
     uint8_t raw_sig[64] = {};
-    BN_bn2binpad(r_bn, raw_sig,      32);
+    BN_bn2binpad(r_bn, raw_sig, 32);
     BN_bn2binpad(s_bn, raw_sig + 32, 32);
     ECDSA_SIG_free(sig);
 
@@ -242,10 +234,13 @@ TEST(AuthInterceptorJwtTest, ValidJwtSubjectMapsToRole) {
     int elen = EVP_EncodeBlock(encbuf.data(), raw_sig, 64);
     std::string sig_b64(reinterpret_cast<char*>(encbuf.data()), static_cast<std::size_t>(elen));
     for (char& c : sig_b64) {
-        if (c == '+') c = '-';
-        if (c == '/') c = '_';
+        if (c == '+')
+            c = '-';
+        if (c == '/')
+            c = '_';
     }
-    while (!sig_b64.empty() && sig_b64.back() == '=') sig_b64.pop_back();
+    while (!sig_b64.empty() && sig_b64.back() == '=')
+        sig_b64.pop_back();
 
     std::string token = signing_input + "." + sig_b64;
     EVP_PKEY_free(raw_kp);
@@ -257,8 +252,7 @@ TEST(AuthInterceptorJwtTest, ValidJwtSubjectMapsToRole) {
 
     // Run RBAC decision with extracted subject.
     auto reg = MakeTestRegistry(true);
-    auto d = reg->Authorize(vr.subject,
-        "/open_switch.control.v1.ControlService/Originate");
+    auto d = reg->Authorize(vr.subject, "/open_switch.control.v1.ControlService/Originate");
     EXPECT_TRUE(d.allowed);
 }
 

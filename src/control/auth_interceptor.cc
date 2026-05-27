@@ -36,9 +36,9 @@ namespace osw::control {
 
 namespace {
 
-constexpr const char* kSubsystem      = "control.auth";
-constexpr const char* kAuthzAllow     = "control.authz.allow";
-constexpr const char* kAuthzDeny      = "control.authz.deny";
+constexpr const char* kSubsystem = "control.auth";
+constexpr const char* kAuthzAllow = "control.authz.allow";
+constexpr const char* kAuthzDeny = "control.authz.deny";
 constexpr const char* kAuthzMetaHeader = "authorization";
 
 // ---------------------------------------------------------------------------
@@ -49,10 +49,14 @@ constexpr const char* kAuthzMetaHeader = "authorization";
 // Returns the identity string and (via out-param) the JWT verifier result
 // if JWT was used.
 // ---------------------------------------------------------------------------
-std::string ExtractIdentity(
-    grpc::experimental::ServerRpcInfo* info,
-    const std::shared_ptr<JwtVerifier>& jwt_verifier,
-    bool& used_jwt) {
+// NOTE: Unused at present — the real identity extraction happens inline
+// in AuthInterceptor::Intercept (it has direct access to server_ctx_).
+// Kept around as a reference implementation for the eventual refactor
+// where identity extraction is shared between Intercept and a unit-test
+// helper. Marked [[maybe_unused]] to silence -Werror=unused-function.
+[[maybe_unused]] std::string ExtractIdentity(grpc::experimental::ServerRpcInfo* info,
+                                             const std::shared_ptr<JwtVerifier>& jwt_verifier,
+                                             bool& used_jwt) {
     used_jwt = false;
     (void)info;  // RpcInfo doesn't expose ServerContext directly — we store it
                  // at Intercept time when the hook fires with the ServerContext.
@@ -72,8 +76,8 @@ std::string ExtractIdentity(
 class AuthInterceptor : public grpc::experimental::Interceptor {
   public:
     AuthInterceptor(std::shared_ptr<RbacRegistry> registry,
-                    std::shared_ptr<JwtVerifier>  jwt_verifier,
-                    std::string                   rpc_method)
+                    std::shared_ptr<JwtVerifier> jwt_verifier,
+                    std::string rpc_method)
         : registry_(std::move(registry)),
           jwt_verifier_(std::move(jwt_verifier)),
           rpc_method_(std::move(rpc_method)) {}
@@ -110,9 +114,14 @@ class AuthInterceptor : public grpc::experimental::Interceptor {
             if (server_ctx_) {
                 auto auth_ctx = server_ctx_->auth_context();
                 if (auth_ctx) {
+                    // FindPropertyValues returns std::vector<grpc::string_ref>;
+                    // grpc::string_ref is a view-like type with data() + size()
+                    // but no implicit conversion to std::string under libstdc++
+                    // (resolution ambiguity vs. std::initializer_list<char>).
+                    // Construct std::string from the pair explicitly.
                     auto cns = auth_ctx->FindPropertyValues("x509_common_name");
                     if (!cns.empty() && !cns[0].empty()) {
-                        identity = std::string(cns[0]);
+                        identity = std::string(cns[0].data(), cns[0].size());
                     }
                 }
             }
@@ -152,13 +161,14 @@ class AuthInterceptor : public grpc::experimental::Interceptor {
                                 identity.c_str(),
                                 rpc_method_.c_str(),
                                 decision.permission_required.c_str());
-                osw::audit::Emit(kAuthzAllow, {
-                    {"identity",            identity},
-                    {"rpc",                 rpc_method_},
-                    {"permission_required", decision.permission_required},
-                    {"outcome",             "allow"},
-                    {"identity_source",     from_jwt ? "jwt" : "mtls_cn"},
-                });
+                osw::audit::Emit(kAuthzAllow,
+                                 {
+                                     {"identity", identity},
+                                     {"rpc", rpc_method_},
+                                     {"permission_required", decision.permission_required},
+                                     {"outcome", "allow"},
+                                     {"identity_source", from_jwt ? "jwt" : "mtls_cn"},
+                                 });
                 methods->Proceed();
                 return;
             }
@@ -170,13 +180,14 @@ class AuthInterceptor : public grpc::experimental::Interceptor {
                            rpc_method_.c_str(),
                            decision.permission_required.c_str(),
                            decision.deny_reason.c_str());
-            osw::audit::Emit(kAuthzDeny, {
-                {"identity",            identity},
-                {"rpc",                 rpc_method_},
-                {"permission_required", decision.permission_required},
-                {"outcome",             "deny:" + decision.deny_reason},
-                {"identity_source",     from_jwt ? "jwt" : "mtls_cn"},
-            });
+            osw::audit::Emit(kAuthzDeny,
+                             {
+                                 {"identity", identity},
+                                 {"rpc", rpc_method_},
+                                 {"permission_required", decision.permission_required},
+                                 {"outcome", "deny:" + decision.deny_reason},
+                                 {"identity_source", from_jwt ? "jwt" : "mtls_cn"},
+                             });
 
             // Hijack the RPC — we will synthesize the error response.
             denied_ = true;
@@ -200,10 +211,8 @@ class AuthInterceptor : public grpc::experimental::Interceptor {
             if (denied_) {
                 grpc::Status err =
                     deny_anonymous_
-                        ? grpc::Status(grpc::StatusCode::UNAUTHENTICATED,
-                                       "Authentication required")
-                        : grpc::Status(grpc::StatusCode::PERMISSION_DENIED,
-                                       "Permission denied");
+                        ? grpc::Status(grpc::StatusCode::UNAUTHENTICATED, "Authentication required")
+                        : grpc::Status(grpc::StatusCode::PERMISSION_DENIED, "Permission denied");
                 methods->GetSendStatus() = err;
             }
             methods->Proceed();
@@ -217,26 +226,23 @@ class AuthInterceptor : public grpc::experimental::Interceptor {
     /// Called by the factory right after construction, before any Intercept
     /// call, to inject the ServerContext pointer.  Thread-safe: called on the
     /// same gRPC worker thread that will call Intercept().
-    void SetServerContext(grpc::ServerContextBase* ctx) noexcept {
-        server_ctx_ = ctx;
-    }
+    void SetServerContext(grpc::ServerContextBase* ctx) noexcept { server_ctx_ = ctx; }
 
   private:
     std::shared_ptr<RbacRegistry> registry_;
-    std::shared_ptr<JwtVerifier>  jwt_verifier_;
-    std::string                   rpc_method_;
-    grpc::ServerContextBase*      server_ctx_ = nullptr;
-    bool                          denied_         = false;
-    bool                          deny_anonymous_ = false;
+    std::shared_ptr<JwtVerifier> jwt_verifier_;
+    std::string rpc_method_;
+    grpc::ServerContextBase* server_ctx_ = nullptr;
+    bool denied_ = false;
+    bool deny_anonymous_ = false;
 };
 
 // ---------------------------------------------------------------------------
 // AuthInterceptorFactory
 // ---------------------------------------------------------------------------
 
-AuthInterceptorFactory::AuthInterceptorFactory(
-    std::shared_ptr<RbacRegistry> registry,
-    std::unique_ptr<JwtVerifier>  jwt_verifier) noexcept {
+AuthInterceptorFactory::AuthInterceptorFactory(std::shared_ptr<RbacRegistry> registry,
+                                               std::unique_ptr<JwtVerifier> jwt_verifier) noexcept {
     registry_.store(std::move(registry), std::memory_order_release);
     // Wrap the unique_ptr in a shared_ptr for atomic storage.
     if (jwt_verifier) {
@@ -245,11 +251,10 @@ AuthInterceptorFactory::AuthInterceptorFactory(
     }
 }
 
-grpc::experimental::Interceptor*
-AuthInterceptorFactory::CreateServerInterceptor(
+grpc::experimental::Interceptor* AuthInterceptorFactory::CreateServerInterceptor(
     grpc::experimental::ServerRpcInfo* info) {
     // Snapshot current registry and verifier atomically.
-    auto registry     = registry_.load(std::memory_order_acquire);
+    auto registry = registry_.load(std::memory_order_acquire);
     auto jwt_verifier = jwt_verifier_.load(std::memory_order_acquire);
 
     // Extract the RPC method name from ServerRpcInfo.
@@ -258,10 +263,8 @@ AuthInterceptorFactory::CreateServerInterceptor(
         rpc_method = info->method();
     }
 
-    auto* interceptor = new AuthInterceptor(
-        std::move(registry),
-        std::move(jwt_verifier),
-        std::move(rpc_method));
+    auto* interceptor =
+        new AuthInterceptor(std::move(registry), std::move(jwt_verifier), std::move(rpc_method));
 
     // Inject the ServerContext.  grpc::experimental::ServerRpcInfo exposes
     // server_context() in gRPC 1.74.
@@ -272,14 +275,12 @@ AuthInterceptorFactory::CreateServerInterceptor(
     return interceptor;
 }
 
-void AuthInterceptorFactory::UpdateRegistry(
-    std::shared_ptr<RbacRegistry> new_registry) noexcept {
+void AuthInterceptorFactory::UpdateRegistry(std::shared_ptr<RbacRegistry> new_registry) noexcept {
     registry_.store(std::move(new_registry), std::memory_order_release);
     osw::log::Info(kSubsystem, "RBAC registry reloaded");
 }
 
-void AuthInterceptorFactory::UpdateJwtVerifier(
-    std::unique_ptr<JwtVerifier> new_verifier) noexcept {
+void AuthInterceptorFactory::UpdateJwtVerifier(std::unique_ptr<JwtVerifier> new_verifier) noexcept {
     jwt_verifier_.store(std::shared_ptr<JwtVerifier>(std::move(new_verifier)),
                         std::memory_order_release);
     osw::log::Info(kSubsystem, "JWT verifier reloaded");

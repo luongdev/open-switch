@@ -27,33 +27,58 @@ constexpr const char* kSubsystem = "control.rpc_metrics";
 
 std::string ExtractRpcName(std::string_view method_path) {
     // Path format: "/package.ServiceName/MethodName"
+    //
+    // Edge cases (covered by ExtractRpcNameTest):
+    //   - "Health"     → "Health"  (no slash, return whole string).
+    //   - "/pkg/svc/"  → ""        (trailing slash, empty method name).
+    //   - ""           → ""        (empty in, empty out).
     const auto pos = method_path.rfind('/');
-    if (pos == std::string_view::npos || pos + 1 >= method_path.size()) {
+    if (pos == std::string_view::npos) {
         return std::string(method_path);
     }
+    // substr(pos + 1) handles trailing-slash correctly: returns empty
+    // string when pos == size() - 1.
     return std::string(method_path.substr(pos + 1));
 }
 
 std::string StatusCodeToString(grpc::StatusCode code) {
     switch (code) {
-        case grpc::StatusCode::OK:                  return "OK";
-        case grpc::StatusCode::CANCELLED:            return "CANCELLED";
-        case grpc::StatusCode::UNKNOWN:              return "UNKNOWN";
-        case grpc::StatusCode::INVALID_ARGUMENT:     return "INVALID_ARGUMENT";
-        case grpc::StatusCode::DEADLINE_EXCEEDED:    return "DEADLINE_EXCEEDED";
-        case grpc::StatusCode::NOT_FOUND:            return "NOT_FOUND";
-        case grpc::StatusCode::ALREADY_EXISTS:       return "ALREADY_EXISTS";
-        case grpc::StatusCode::PERMISSION_DENIED:    return "PERMISSION_DENIED";
-        case grpc::StatusCode::RESOURCE_EXHAUSTED:   return "RESOURCE_EXHAUSTED";
-        case grpc::StatusCode::FAILED_PRECONDITION:  return "FAILED_PRECONDITION";
-        case grpc::StatusCode::ABORTED:              return "ABORTED";
-        case grpc::StatusCode::OUT_OF_RANGE:         return "OUT_OF_RANGE";
-        case grpc::StatusCode::UNIMPLEMENTED:        return "UNIMPLEMENTED";
-        case grpc::StatusCode::INTERNAL:             return "INTERNAL";
-        case grpc::StatusCode::UNAVAILABLE:          return "UNAVAILABLE";
-        case grpc::StatusCode::DATA_LOSS:            return "DATA_LOSS";
-        case grpc::StatusCode::UNAUTHENTICATED:      return "UNAUTHENTICATED";
-        default:                                     return "UNKNOWN";
+        case grpc::StatusCode::OK:
+            return "OK";
+        case grpc::StatusCode::CANCELLED:
+            return "CANCELLED";
+        case grpc::StatusCode::UNKNOWN:
+            return "UNKNOWN";
+        case grpc::StatusCode::INVALID_ARGUMENT:
+            return "INVALID_ARGUMENT";
+        case grpc::StatusCode::DEADLINE_EXCEEDED:
+            return "DEADLINE_EXCEEDED";
+        case grpc::StatusCode::NOT_FOUND:
+            return "NOT_FOUND";
+        case grpc::StatusCode::ALREADY_EXISTS:
+            return "ALREADY_EXISTS";
+        case grpc::StatusCode::PERMISSION_DENIED:
+            return "PERMISSION_DENIED";
+        case grpc::StatusCode::RESOURCE_EXHAUSTED:
+            return "RESOURCE_EXHAUSTED";
+        case grpc::StatusCode::FAILED_PRECONDITION:
+            return "FAILED_PRECONDITION";
+        case grpc::StatusCode::ABORTED:
+            return "ABORTED";
+        case grpc::StatusCode::OUT_OF_RANGE:
+            return "OUT_OF_RANGE";
+        case grpc::StatusCode::UNIMPLEMENTED:
+            return "UNIMPLEMENTED";
+        case grpc::StatusCode::INTERNAL:
+            return "INTERNAL";
+        case grpc::StatusCode::UNAVAILABLE:
+            return "UNAVAILABLE";
+        case grpc::StatusCode::DATA_LOSS:
+            return "DATA_LOSS";
+        case grpc::StatusCode::UNAUTHENTICATED:
+            return "UNAUTHENTICATED";
+        default:
+            return "UNKNOWN";
     }
 }
 
@@ -61,8 +86,7 @@ std::string StatusCodeToString(grpc::StatusCode code) {
 // RpcMetrics
 // ---------------------------------------------------------------------------
 
-RpcMetrics::RpcMetrics(osw::observability::prometheus::Registry* registry)
-    : registry_(registry) {
+RpcMetrics::RpcMetrics(osw::observability::prometheus::Registry* registry) : registry_(registry) {
     osw::log::Info(kSubsystem, "RpcMetrics initialised; metrics registered into registry");
 }
 
@@ -102,8 +126,8 @@ osw::observability::prometheus::Counter* RpcMetrics::GetOrCreateCallCounter(
         return it->second;
     }
     auto* ctr = registry_->AddCounter("osw_rpc_calls_total",
-                                       "Total gRPC RPC calls by method and status code",
-                                       {{"rpc", rpc_name}, {"code", code_str}});
+                                      "Total gRPC RPC calls by method and status code",
+                                      {{"rpc", rpc_name}, {"code", code_str}});
     call_counters_.emplace(key, ctr);
     return ctr;
 }
@@ -116,8 +140,8 @@ osw::observability::prometheus::Counter* RpcMetrics::GetOrCreateAuthzCounter(
         return it->second;
     }
     auto* ctr = registry_->AddCounter("osw_rpc_authz_decisions_total",
-                                       "Total gRPC authz decisions by RPC and outcome",
-                                       {{"rpc", rpc_name}, {"outcome", outcome}});
+                                      "Total gRPC authz decisions by RPC and outcome",
+                                      {{"rpc", rpc_name}, {"outcome", outcome}});
     authz_counters_.emplace(key, ctr);
     return ctr;
 }
@@ -128,9 +152,8 @@ osw::observability::prometheus::Histogram* RpcMetrics::GetOrCreateLatencyHistogr
     if (it != latency_hists_.end()) {
         return it->second;
     }
-    auto* hist = registry_->AddLatencyHistogram("osw_rpc_latency_seconds",
-                                                 "gRPC RPC latency in seconds",
-                                                 {{"rpc", rpc_name}});
+    auto* hist = registry_->AddLatencyHistogram(
+        "osw_rpc_latency_seconds", "gRPC RPC latency in seconds", {{"rpc", rpc_name}});
     latency_hists_.emplace(rpc_name, hist);
     return hist;
 }
@@ -158,12 +181,14 @@ void RpcMetricsInterceptor::Intercept(grpc::experimental::InterceptorBatchMethod
     }
 
     if (methods->QueryInterceptionHookPoint(
-            grpc::experimental::InterceptionHookPoints::POST_SEND_STATUS)) {
+            grpc::experimental::InterceptionHookPoints::PRE_SEND_STATUS)) {
         // RPC has completed — record latency and call count.
+        // (gRPC 1.74 does not define POST_SEND_STATUS; PRE_SEND_STATUS is the
+        //  last hook fired before the status is written, which is what we want
+        //  for end-of-RPC accounting.)
         if (started_) {
             const auto end = std::chrono::steady_clock::now();
-            const double elapsed =
-                std::chrono::duration<double>(end - start_).count();
+            const double elapsed = std::chrono::duration<double>(end - start_).count();
 
             // The gRPC C++ interceptor API does not expose the final
             // grpc::Status directly from InterceptorBatchMethods::
