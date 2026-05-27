@@ -2225,6 +2225,155 @@ SWITCH_DECLARE(switch_channel_state_t) switch_channel_perform_hangup(switch_chan
 
 ---
 
+## FF-023 — `switch_ivr_uuid_bridge` two-UUID bridge and locking order
+
+**Claim.** `switch_ivr_uuid_bridge(originator_uuid, originatee_uuid)`
+locates both sessions by UUID internally (acquiring their read-locks),
+then bridges them. The function blocks the calling thread until one of
+the parties hangs up or the bridge times out. The handler must hold both
+session read-locks (via `SessionGuard`) in a deterministic lexicographic
+UUID order (lower UUID first) before calling this function. This prevents
+the AB-BA deadlock that would arise if two concurrent Bridge calls on the
+same reversed pair each acquired their first lock and then blocked waiting
+for the second.
+
+**Source.** `src/include/switch_ivr.h:617` in `signalwire/freeswitch`.
+
+**Permalink.**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_ivr.h#L617>
+
+**Excerpt (header, line 617):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_ivr_uuid_bridge(const char *originator_uuid,
+                                                       const char *originatee_uuid);
+```
+
+**Implications.**
+
+- The caller MUST hold both session read-locks via `SessionGuard` across
+  the `switch_ivr_uuid_bridge` call, then release both after it returns.
+- Acquire the guard for the lexicographically-lower UUID first, then the
+  higher. Any caller that reverses this order with a concurrent inverse-
+  pair call risks AB-BA deadlock.
+- `switch_ivr_uuid_bridge` returns `SWITCH_STATUS_SUCCESS` on a
+  successful bridge setup. Non-success means FS could not locate or join
+  the sessions (e.g., one was tearing down).
+- The bridge itself blocks; gRPC thread is occupied for the duration.
+  V1 accepts this.
+
+**Used by W3 code:**
+
+- `src/control/handlers/bridge_handler.cc` — acquires two `SessionGuard`
+  objects in lex-UUID order, validates channel states, calls
+  `osw::raii::fs::UuidBridge`, then releases both guards on return.
+
+---
+
+## FF-024 — `switch_core_session_execute_application` blocking semantics
+
+**Claim.** `switch_core_session_execute_application(session, app, arg)`
+is a convenience macro that expands to
+`switch_core_session_execute_application_get_flags(session, app, arg, NULL)`.
+The underlying function runs the named dialplan application synchronously
+on the given session. It blocks the calling thread until the application's
+main body returns. The caller MUST hold the session read-lock (FF-016)
+across the entire call; FS does not acquire or release the read-lock
+inside this function.
+
+**Source.** `src/include/switch_core.h:1115` (underlying function) and
+`src/include/switch_core.h:1129` (macro definition) in
+`signalwire/freeswitch`.
+
+**Permalink (function).**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_core.h#L1115>
+
+**Permalink (macro).**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_core.h#L1129>
+
+**Excerpt (lines 1115 and 1129):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_core_session_execute_application_get_flags(
+    switch_core_session_t *session,
+    const char *app,
+    const char *arg,
+    int32_t *flags);
+
+#define switch_core_session_execute_application(_a, _b, _c) \
+    switch_core_session_execute_application_get_flags(_a, _b, _c, NULL)
+```
+
+**Implications.**
+
+- The call is synchronous: the gRPC thread is blocked until the app
+  finishes. This is acceptable for V1's bounded allow-list of short-
+  duration apps (`playback`, `bridge`, `transfer`, `set`, `hangup`,
+  `answer`, `play_and_get_digits`). Async execution is deferred to V2.
+- `app` and `arg` are consumed by FS during the call. Both may be NULL
+  (a NULL `arg` means no argument), but `app` being NULL or unknown
+  produces undefined/error behaviour in FS; the handler validates `app`
+  against the allow-list before calling.
+- Returns `SWITCH_STATUS_SUCCESS` on normal completion. Any other value
+  means the application encountered an error or the session was torn
+  down mid-execute.
+
+**Used by W3 code:**
+
+- `src/control/handlers/execute_handler.cc` — validates `app` against
+  the allow-list, acquires `SessionGuard`, then calls
+  `osw::raii::fs::ExecuteApplication(session, app, arg)` under the
+  read-lock.
+
+---
+
+## FF-025 — `switch_ivr_session_transfer` optional-NULL arg semantics
+
+**Claim.** `switch_ivr_session_transfer(session, extension, dialplan,
+context)` transfers a live session to a new dialplan entry point.
+`dialplan` and `context` are optional: passing NULL causes FS to default
+`dialplan` to `"XML"` and `context` to the channel's current context.
+`extension` is REQUIRED and must be a non-NULL, non-empty string; FS does
+not guard against a NULL extension and passing one leads to a NULL-
+dereference crash.
+
+**Source.** `src/include/switch_ivr.h:585` in `signalwire/freeswitch`.
+
+**Permalink.**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_ivr.h#L585>
+
+**Excerpt (header, line 585):**
+
+```c
+SWITCH_DECLARE(switch_status_t) switch_ivr_session_transfer(switch_core_session_t *session,
+                                                             const char *extension,
+                                                             const char *dialplan,
+                                                             const char *context);
+```
+
+**Implications.**
+
+- The handler MUST validate that `extension` is non-empty before calling
+  FS. Passing empty or NULL extension is `INVALID_ARGUMENT`.
+- `dialplan` and `context` are passed through as-is: an empty proto
+  string becomes `nullptr` at the FS call site (FS defaults kick in),
+  while a non-empty string is passed verbatim.
+- The function returns `SWITCH_STATUS_SUCCESS` when the session has been
+  queued for transfer; the actual execution happens asynchronously on the
+  channel's state machine thread. The calling gRPC thread is not blocked
+  waiting for the transfer to complete.
+- The caller MUST hold the session read-lock (FF-016) when calling
+  `switch_ivr_session_transfer`.
+
+**Used by W3 code:**
+
+- `src/control/handlers/blind_transfer_handler.cc` — validates extension
+  non-empty, acquires `SessionGuard`, then calls
+  `osw::raii::fs::SessionTransfer(session, ext, dialplan_or_null,
+  context_or_null)` under the read-lock.
+
+---
+
 ## How to add a new FF entry
 
 If you find a previously-undocumented FreeSWITCH behaviour that

@@ -271,6 +271,61 @@ inline switch_channel_state_t ChannelHangup(switch_channel_t* channel,
     return switch_channel_hangup(channel, cause);
 }
 
+// --- switch_channel_get_state ----------------------------------------
+//
+// Returns the current call state of a channel. Used by Bridge to
+// validate that both parties are in CS_ROUTING or CS_EXECUTE before
+// attempting switch_ivr_uuid_bridge (FF-023).
+// Caller MUST hold the session read-lock while calling (FF-016).
+
+inline switch_channel_state_t ChannelGetState(switch_channel_t* channel) noexcept {
+    return switch_channel_get_state(channel);
+}
+
+// --- switch_ivr_uuid_bridge (FF-023) ---------------------------------
+//
+// FF-023: bridge two live sessions identified by UUID. The helper
+// locates both sessions internally; the handler pre-locks both via
+// SessionGuards in lexicographic UUID order (lower UUID first) before
+// calling this function, then releases both guards after it returns.
+// Cited header: /usr/local/include/switch_ivr.h:617 (v1.10.12).
+
+inline switch_status_t UuidBridge(const char* originator_uuid,
+                                  const char* originatee_uuid) noexcept {
+    return switch_ivr_uuid_bridge(originator_uuid, originatee_uuid);
+}
+
+// --- switch_core_session_execute_application (FF-024) ----------------
+//
+// FF-024: execute a dialplan app synchronously on a session. The macro
+// switch_core_session_execute_application expands to
+// switch_core_session_execute_application_get_flags with flags=NULL.
+// The call blocks the calling thread until the app returns.
+// Caller MUST hold the session read-lock across the entire call
+// (FF-016). Cited header: /usr/local/include/switch_core.h:1129
+// (v1.10.12).
+
+inline switch_status_t ExecuteApplication(switch_core_session_t* session,
+                                          const char* app,
+                                          const char* arg) noexcept {
+    return switch_core_session_execute_application(session, app, arg);
+}
+
+// --- switch_ivr_session_transfer (FF-025) ----------------------------
+//
+// FF-025: transfer a session to a new dialplan extension. `dialplan`
+// and `context` are OPTIONAL (NULL means FS uses defaults: "XML" and
+// the channel's current context, respectively). `extension` is
+// REQUIRED and must be non-NULL. Cited header:
+// /usr/local/include/switch_ivr.h:585 (v1.10.12).
+
+inline switch_status_t SessionTransfer(switch_core_session_t* session,
+                                       const char* extension,
+                                       const char* dialplan,
+                                       const char* context) noexcept {
+    return switch_ivr_session_transfer(session, extension, dialplan, context);
+}
+
 }  // namespace osw::raii::fs
 
 #endif  // !OSW_TEST_FS_MOCK
