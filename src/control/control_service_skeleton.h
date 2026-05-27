@@ -35,6 +35,8 @@ class RingSet;
 
 namespace control {
 
+class IdempotencyCache;  // forward; defined in osw/control/idempotency_cache.h
+
 class ControlServiceSkeleton final : public open_switch::control::v1::ControlService::Service {
   public:
     /// `health` is the module-wide Health aggregator. Non-owning.
@@ -46,6 +48,16 @@ class ControlServiceSkeleton final : public open_switch::control::v1::ControlSer
     /// Set version strings reported by Health RPC. Called by GrpcServer
     /// before the server starts serving.
     void SetVersions(std::string module_version, std::string freeswitch_version);
+
+    /// Inject the W5B idempotency cache. Called by Module::Load before
+    /// Start()-ing the gRPC server (or immediately after; RPCs that arrive
+    /// before the cache is wired will bypass deduplication — acceptable
+    /// because the module is not yet in SERVING state at that point).
+    ///
+    /// Non-owning pointer. The Module owns the IdempotencyCache and must
+    /// ensure it outlives the gRPC server's RPC threads. When null (default),
+    /// Originate/Bridge/Execute handlers skip all cache logic.
+    void SetIdempotencyCache(IdempotencyCache* cache) noexcept;
 
     /// Inject the W2 event-plane bridges. Called by Module::Load after
     /// Broadcaster + RingSet are constructed (and before Start()-ing the
@@ -76,6 +88,9 @@ class ControlServiceSkeleton final : public open_switch::control::v1::ControlSer
     }
     [[nodiscard]] events::RingSet* RingSet() const noexcept {
         return rings_.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] IdempotencyCache* GetIdempotencyCache() const noexcept {
+        return idempotency_cache_.load(std::memory_order_acquire);
     }
 
     // --- Health (real impl) ----------------------------------------
@@ -144,6 +159,12 @@ class ControlServiceSkeleton final : public open_switch::control::v1::ControlSer
     std::atomic<events::RingSet*> rings_{nullptr};
     std::atomic<std::uint32_t> max_subscribers_{0};
     std::atomic<std::uint32_t> subscriber_send_queue_capacity_{4096};
+    // W5B idempotency cache. Written once by SetIdempotencyCache (called
+    // from Module::Load before the gRPC server accepts traffic), then only
+    // read by handler threads. atomic<> ensures a happens-before edge
+    // between the write in Load and any RPC handler read (same rationale
+    // as broadcaster_ above — Codex W2 C-3).
+    std::atomic<IdempotencyCache*> idempotency_cache_{nullptr};
 };
 
 }  // namespace control

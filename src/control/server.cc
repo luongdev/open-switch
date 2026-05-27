@@ -19,6 +19,7 @@
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/server_builder.h>
 
+#include "osw/control/idempotency_cache.h"
 #include "osw/control/rpc_metrics.h"
 #include "osw/control/tls.h"
 #include "osw/core/config.h"
@@ -183,6 +184,16 @@ int GrpcServer::BoundPort() const noexcept {
 
 void GrpcServer::SetRpcMetrics(control::RpcMetrics* metrics) noexcept {
     rpc_metrics_ = metrics;
+}
+
+void GrpcServer::SetIdempotencyCache(control::IdempotencyCache* cache) noexcept {
+    if (!service_) {
+        osw::log::Warn("control",
+                       "GrpcServer::SetIdempotencyCache called before Start; "
+                       "idempotency deduplication will be inactive");
+        return;
+    }
+    service_->SetIdempotencyCache(cache);
 }
 
 void GrpcServer::SetEventPlane(events::Broadcaster* broadcaster,

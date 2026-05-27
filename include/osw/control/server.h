@@ -51,6 +51,7 @@ class RingSet;
 namespace control {
 
 class ControlServiceSkeleton;
+class IdempotencyCache;
 class RpcMetrics;
 
 class GrpcServer {
@@ -114,6 +115,14 @@ class GrpcServer {
     /// timed and counted. When null (default), no metrics interceptor is
     /// installed (safe for tests that don't need metrics).
     void SetRpcMetrics(control::RpcMetrics* metrics) noexcept;
+
+    /// Inject the W5B idempotency cache. Called by Module::Load after
+    /// constructing the IdempotencyCache from config.  Must be called
+    /// before or immediately after Start() — Module::Load transitions
+    /// to SERVING (step 8) only after this call, so no RPC handler will
+    /// see a null cache pointer while the module is in the SERVING state.
+    /// Non-owning pointer; the Module owns the IdempotencyCache.
+    void SetIdempotencyCache(control::IdempotencyCache* cache) noexcept;
 
   private:
     Health* health_;

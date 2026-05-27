@@ -16,6 +16,7 @@
 
 #include "open_switch/control/v1/control.pb.h"
 
+#include "osw/control/idempotency_cache.h"
 #include "osw/observability/health.h"
 
 #include "src/control/control_service_skeleton.h"
@@ -73,6 +74,10 @@ void ControlServiceSkeleton::SetVersions(std::string module_version,
                                          std::string freeswitch_version) {
     module_version_ = std::move(module_version);
     freeswitch_version_ = std::move(freeswitch_version);
+}
+
+void ControlServiceSkeleton::SetIdempotencyCache(IdempotencyCache* cache) noexcept {
+    idempotency_cache_.store(cache, std::memory_order_release);
 }
 
 void ControlServiceSkeleton::SetEventPlane(events::Broadcaster* broadcaster,
