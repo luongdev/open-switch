@@ -17,7 +17,6 @@
 #include <mutex>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <unordered_map>
 
 #include "osw/core/config.h"
@@ -31,7 +30,8 @@ namespace osw::media {
 
 class SilenceDriverRegistry;
 
-/// One per-channel silence playback thread. Spawned by the registry
+/// One per-channel silence broadcast marker. The registry asks
+/// FreeSWITCH to run silence_stream on the channel's own media thread
 /// when a WRITE_REPLACE bug attaches and the channel has no other
 /// write-side source.
 class SilenceDriver {
@@ -44,18 +44,15 @@ class SilenceDriver {
     SilenceDriver(SilenceDriver&&) = delete;
     SilenceDriver& operator=(SilenceDriver&&) = delete;
 
-    /// Set CF_BREAK on the channel and join the driver thread.
+    /// Set CF_BREAK on the channel to stop the queued broadcast.
     /// Idempotent.
     void Stop() noexcept;
 
     [[nodiscard]] bool IsRunning() const noexcept;
 
   private:
-    void Run() noexcept;
-
     std::string channel_uuid_;
-    std::thread thread_;
-    std::atomic<bool> running_{true};
+    std::atomic<bool> running_{false};
     std::atomic<bool> stop_requested_{false};
 };
 
@@ -82,7 +79,7 @@ class SilenceDriverRegistry {
     /// Stops any driver for a channel during CS_DESTROY cleanup.
     void RemoveForChannel(std::string_view channel_uuid) noexcept;
 
-    /// Stops and joins every active driver. Called from module shutdown.
+    /// Stops every active driver. Called from module shutdown.
     void DrainAll() noexcept;
 
     [[nodiscard]] std::size_t ActiveCount() const noexcept;

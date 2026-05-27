@@ -410,6 +410,18 @@ inline switch_status_t IvrPlayFile(switch_core_session_t* session, const char* f
     return switch_ivr_play_file(session, nullptr, file, &args);
 }
 
+// --- switch_ivr_broadcast ---------------------------------------------
+//
+// Queues media onto the channel's native media thread. Used by W6.6 to
+// drive parked WRITE_REPLACE channels without calling switch_ivr_play_file
+// from a module-owned background thread.
+
+inline switch_status_t IvrBroadcast(const char* uuid,
+                                    const char* path,
+                                    switch_media_flag_t flags) noexcept {
+    return switch_ivr_broadcast(uuid, path, flags);
+}
+
 // --- W6C media bug frame access (switch_core.h:322/336/342) -------------
 //
 // switch_core_media_bug_get_write_replace_frame — returns the frame the

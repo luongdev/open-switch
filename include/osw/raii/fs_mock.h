@@ -48,6 +48,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // --- FreeSWITCH types (opaque forward decls) -------------------------
@@ -235,6 +236,14 @@ constexpr switch_media_bug_flag_t SMBF_WRITE_REPLACE = (1u << 2);
 constexpr switch_media_bug_flag_t SMBF_READ_REPLACE = (1u << 3);
 constexpr switch_media_bug_flag_t SMBF_FIRST = (1u << 26);
 
+using switch_media_flag_t = int;
+constexpr switch_media_flag_t SMF_NONE = 0;
+constexpr switch_media_flag_t SMF_ECHO_ALEG = (1 << 1);
+constexpr switch_media_flag_t SMF_ECHO_BLEG = (1 << 2);
+constexpr switch_media_flag_t SMF_FORCE = (1 << 3);
+constexpr switch_media_flag_t SMF_LOOP = (1 << 4);
+constexpr switch_media_flag_t SMF_PRIORITY = (1 << 8);
+
 // FF-018 callback typedef. The mock never invokes one — tests that exercise
 // the bind path simply assert on captured registrations.
 using switch_event_callback_t = void (*)(switch_event_t*);
@@ -279,6 +288,7 @@ struct MockState {
     std::atomic<int> unhold_uuid_calls{0};
     // W6.6 silence driver.
     std::atomic<int> ivr_play_file_calls{0};
+    std::atomic<int> ivr_broadcast_calls{0};
 
     // Programmable return values for the next call. Set to non-default
     // to drive failure paths.
@@ -305,6 +315,7 @@ struct MockState {
     // channel_test_flag returns a bitmask; the test sets flags it wants active.
     uint32_t next_channel_flags = 0;
     switch_status_t next_ivr_play_file_status = SWITCH_STATUS_SUCCESS;
+    switch_status_t next_ivr_broadcast_status = SWITCH_STATUS_SUCCESS;
     bool ivr_play_file_block_until_break = true;
     bool channel_break_set = false;
     std::condition_variable play_file_cv;
@@ -388,6 +399,13 @@ struct MockState {
         std::string file;
     };
     std::vector<CapturedIvrPlayFile> ivr_play_file_invocations;
+
+    struct CapturedIvrBroadcast {
+        std::string uuid;
+        std::string path;
+        switch_media_flag_t flags = SMF_NONE;
+    };
+    std::vector<CapturedIvrBroadcast> ivr_broadcast_invocations;
 
     struct CapturedHoldUuid {
         std::string uuid;
@@ -516,9 +534,11 @@ inline void MockReset() {
     m.hold_uuid_calls = 0;
     m.unhold_uuid_calls = 0;
     m.ivr_play_file_calls = 0;
+    m.ivr_broadcast_calls = 0;
     m.next_set_variable_status = SWITCH_STATUS_SUCCESS;
     m.next_channel_flags = 0;
     m.next_ivr_play_file_status = SWITCH_STATUS_SUCCESS;
+    m.next_ivr_broadcast_status = SWITCH_STATUS_SUCCESS;
     m.ivr_play_file_block_until_break = true;
     m.channel_break_set = false;
     m.next_hold_uuid_status = SWITCH_STATUS_SUCCESS;
@@ -537,6 +557,7 @@ inline void MockReset() {
         m.set_variable_invocations.clear();
         m.set_flag_invocations.clear();
         m.ivr_play_file_invocations.clear();
+        m.ivr_broadcast_invocations.clear();
         m.hold_uuid_invocations.clear();
         m.unhold_uuid_invocations.clear();
         // W6A.
@@ -1033,6 +1054,22 @@ inline switch_status_t IvrPlayFile(switch_core_session_t* session, const char* f
         m.play_file_cv.wait(lk, [&m]() { return m.channel_break_set; });
     }
     return m.next_ivr_play_file_status;
+}
+
+inline switch_status_t IvrBroadcast(const char* uuid,
+                                    const char* path,
+                                    switch_media_flag_t flags) noexcept {
+    auto& m = Mock();
+    m.ivr_broadcast_calls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        MockState::CapturedIvrBroadcast cap;
+        cap.uuid = uuid ? uuid : "";
+        cap.path = path ? path : "";
+        cap.flags = flags;
+        m.ivr_broadcast_invocations.push_back(std::move(cap));
+    }
+    return m.next_ivr_broadcast_status;
 }
 
 // --- switch_ivr_hold_uuid wrapper (FF-027) ---------------------------

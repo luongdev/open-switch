@@ -14,7 +14,6 @@
 
 #include "osw/media/silence_driver.h"
 
-#include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -52,14 +51,6 @@ switch_event_t* FakeEvent(std::uintptr_t v = 0x4) {
     return reinterpret_cast<switch_event_t*>(v);
 }
 
-bool WaitForPlayFileCalls(int expected) {
-    auto& m = Mock();
-    std::unique_lock<std::mutex> lk(m.capture_mu);
-    return m.play_file_cv.wait_for(lk, std::chrono::milliseconds(500), [&m, expected]() {
-        return m.ivr_play_file_calls.load() >= expected;
-    });
-}
-
 class SilenceDriverTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -80,13 +71,16 @@ TEST_F(SilenceDriverTest, StartsOnParkedWriteReplaceChannel) {
 
     registry.AttachOpportunistic(FakeSession());
 
-    ASSERT_TRUE(WaitForPlayFileCalls(1));
+    EXPECT_EQ(1, Mock().ivr_broadcast_calls.load());
     EXPECT_EQ(1u, registry.ActiveCount());
 
     {
         std::lock_guard<std::mutex> g(Mock().capture_mu);
-        ASSERT_EQ(1u, Mock().ivr_play_file_invocations.size());
-        EXPECT_EQ("silence_stream://-1", Mock().ivr_play_file_invocations[0].file);
+        ASSERT_EQ(1u, Mock().ivr_broadcast_invocations.size());
+        EXPECT_EQ("silence-driver-channel-1", Mock().ivr_broadcast_invocations[0].uuid);
+        EXPECT_EQ("silence_stream://-1", Mock().ivr_broadcast_invocations[0].path);
+        EXPECT_EQ(static_cast<switch_media_flag_t>(SMF_ECHO_ALEG | SMF_LOOP | SMF_PRIORITY),
+                  Mock().ivr_broadcast_invocations[0].flags);
     }
 
     registry.DrainAll();
@@ -100,9 +94,8 @@ TEST_F(SilenceDriverTest, RepeatAttachIsIdempotent) {
     registry.AttachOpportunistic(FakeSession());
     registry.AttachOpportunistic(FakeSession());
 
-    ASSERT_TRUE(WaitForPlayFileCalls(1));
     EXPECT_EQ(1u, registry.ActiveCount());
-    EXPECT_EQ(1, Mock().ivr_play_file_calls.load());
+    EXPECT_EQ(1, Mock().ivr_broadcast_calls.load());
 
     registry.DrainAll();
 }
@@ -112,7 +105,7 @@ TEST_F(SilenceDriverTest, DetachIfOrphanStopsDriver) {
     SilenceDriverRegistry registry(cfg);
 
     registry.AttachOpportunistic(FakeSession());
-    ASSERT_TRUE(WaitForPlayFileCalls(1));
+    ASSERT_EQ(1, Mock().ivr_broadcast_calls.load());
 
     registry.DetachIfOrphan("silence-driver-channel-1");
 
@@ -133,7 +126,7 @@ TEST_F(SilenceDriverTest, SkipsWhenChannelBroadcasting) {
     registry.AttachOpportunistic(FakeSession());
 
     EXPECT_EQ(0u, registry.ActiveCount());
-    EXPECT_EQ(0, Mock().ivr_play_file_calls.load());
+    EXPECT_EQ(0, Mock().ivr_broadcast_calls.load());
 }
 
 TEST_F(SilenceDriverTest, SkipsWhenChannelBridged) {
@@ -144,7 +137,7 @@ TEST_F(SilenceDriverTest, SkipsWhenChannelBridged) {
     registry.AttachOpportunistic(FakeSession());
 
     EXPECT_EQ(0u, registry.ActiveCount());
-    EXPECT_EQ(0, Mock().ivr_play_file_calls.load());
+    EXPECT_EQ(0, Mock().ivr_broadcast_calls.load());
 }
 
 TEST_F(SilenceDriverTest, DisabledByConfigDoesNotStart) {
@@ -155,7 +148,7 @@ TEST_F(SilenceDriverTest, DisabledByConfigDoesNotStart) {
     registry.AttachOpportunistic(FakeSession());
 
     EXPECT_EQ(0u, registry.ActiveCount());
-    EXPECT_EQ(0, Mock().ivr_play_file_calls.load());
+    EXPECT_EQ(0, Mock().ivr_broadcast_calls.load());
 }
 
 TEST_F(SilenceDriverTest, CapReachedRefusesAndAudits) {
@@ -164,13 +157,13 @@ TEST_F(SilenceDriverTest, CapReachedRefusesAndAudits) {
     SilenceDriverRegistry registry(cfg);
 
     registry.AttachOpportunistic(FakeSession());
-    ASSERT_TRUE(WaitForPlayFileCalls(1));
+    ASSERT_EQ(1, Mock().ivr_broadcast_calls.load());
 
     Mock().next_bleg_uuid = "silence-driver-channel-2";
     registry.AttachOpportunistic(FakeSession(0x11));
 
     EXPECT_EQ(1u, registry.ActiveCount());
-    EXPECT_EQ(1, Mock().ivr_play_file_calls.load());
+    EXPECT_EQ(1, Mock().ivr_broadcast_calls.load());
 
     {
         std::lock_guard<std::mutex> g(Mock().capture_mu);
@@ -188,11 +181,11 @@ TEST_F(SilenceDriverTest, DrainAllStopsEveryDriver) {
     SilenceDriverRegistry registry(cfg);
 
     registry.AttachOpportunistic(FakeSession());
-    ASSERT_TRUE(WaitForPlayFileCalls(1));
+    ASSERT_EQ(1, Mock().ivr_broadcast_calls.load());
 
     Mock().next_bleg_uuid = "silence-driver-channel-2";
     registry.AttachOpportunistic(FakeSession(0x11));
-    ASSERT_TRUE(WaitForPlayFileCalls(2));
+    ASSERT_EQ(2, Mock().ivr_broadcast_calls.load());
     EXPECT_EQ(2u, registry.ActiveCount());
 
     registry.DrainAll();
@@ -210,7 +203,7 @@ TEST_F(SilenceDriverTest, MediaBugManagerStartsAndStopsOnWriteReplaceLifecycle) 
     BugConfig tts{Purpose::kTtsPlayback, SMBF_WRITE_REPLACE, 8000, "tenant", "ep"};
     auto attached = manager.Attach(FakeSession(), tts);
     ASSERT_TRUE(attached.ok) << attached.error;
-    ASSERT_TRUE(WaitForPlayFileCalls(1));
+    ASSERT_EQ(1, Mock().ivr_broadcast_calls.load());
     EXPECT_EQ(1u, registry.ActiveCount());
 
     attached.handle = BugHandle{};
@@ -228,7 +221,7 @@ TEST_F(SilenceDriverTest, MediaBugManagerKeepsDriverUntilLastWriteReplaceDetache
     auto tts = manager.Attach(
         FakeSession(), {Purpose::kTtsPlayback, SMBF_WRITE_REPLACE, 8000, "tenant", "ep"});
     ASSERT_TRUE(tts.ok) << tts.error;
-    ASSERT_TRUE(WaitForPlayFileCalls(1));
+    ASSERT_EQ(1, Mock().ivr_broadcast_calls.load());
 
     auto voicebot_write = manager.Attach(FakeSession(),
                                          {Purpose::kVoicebotDuplexWrite,
@@ -259,7 +252,7 @@ TEST_F(SilenceDriverTest, MediaBugManagerReadOnlyAttachDoesNotStart) {
     ASSERT_TRUE(attached.ok) << attached.error;
 
     EXPECT_EQ(0u, registry.ActiveCount());
-    EXPECT_EQ(0, Mock().ivr_play_file_calls.load());
+    EXPECT_EQ(0, Mock().ivr_broadcast_calls.load());
 }
 
 }  // namespace

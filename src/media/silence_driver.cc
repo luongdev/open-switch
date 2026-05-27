@@ -12,7 +12,6 @@
 
 #include <exception>
 #include <string>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -26,6 +25,8 @@ namespace {
 
 constexpr const char* kSubsystem = "media";
 constexpr const char* kSilenceStream = "silence_stream://-1";
+constexpr switch_media_flag_t kSilenceBroadcastFlags =
+    static_cast<switch_media_flag_t>(SMF_ECHO_ALEG | SMF_LOOP | SMF_PRIORITY);
 constexpr const char* kAuditStarted = "osw.media.silence_driver.started";
 constexpr const char* kAuditStopped = "osw.media.silence_driver.stopped";
 constexpr const char* kAuditCapReached = "osw.media.silence_driver.cap_reached";
@@ -35,43 +36,23 @@ constexpr const char* kAuditCapReached = "osw.media.silence_driver.cap_reached";
 SilenceDriver::SilenceDriver(std::string channel_uuid, SilenceDriverRegistry& registry)
     : channel_uuid_(std::move(channel_uuid)) {
     (void)registry;
-    thread_ = std::thread(&SilenceDriver::Run, this);
-}
-
-SilenceDriver::~SilenceDriver() {
-    Stop();
-}
-
-void SilenceDriver::Run() noexcept {
-    try {
-        osw::SessionLock session(channel_uuid_.c_str());
-        if (!session) {
-            running_.store(false, std::memory_order_release);
-            osw::audit::Emit(kAuditStopped,
-                             {{"Unique-ID", channel_uuid_}, {"reason", "missing_session"}});
-            return;
-        }
-
-        const switch_status_t status = osw::raii::fs::IvrPlayFile(session.get(), kSilenceStream);
-        (void)status;
-        running_.store(false, std::memory_order_release);
-        osw::audit::Emit(kAuditStopped, {{"Unique-ID", channel_uuid_}});
-    } catch (const std::exception& e) {
-        running_.store(false, std::memory_order_release);
-        osw::log::Error(kSubsystem,
-                        "silence driver thread failed for channel '%s': %s",
-                        channel_uuid_.c_str(),
-                        e.what());
-    } catch (...) {
-        running_.store(false, std::memory_order_release);
-        osw::log::Error(kSubsystem,
-                        "silence driver thread failed for channel '%s': unknown exception",
-                        channel_uuid_.c_str());
+    const switch_status_t status = osw::raii::fs::IvrBroadcast(
+        channel_uuid_.c_str(), kSilenceStream, kSilenceBroadcastFlags);
+    if (status == SWITCH_STATUS_SUCCESS) {
+        running_.store(true, std::memory_order_release);
+    } else {
+        osw::log::Warn(kSubsystem,
+                       "failed to queue silence broadcast for channel '%s': status=%d",
+                       channel_uuid_.c_str(),
+                       static_cast<int>(status));
     }
 }
 
+SilenceDriver::~SilenceDriver() { Stop(); }
+
 void SilenceDriver::Stop() noexcept {
     const bool already_requested = stop_requested_.exchange(true, std::memory_order_acq_rel);
+    const bool was_running = running_.exchange(false, std::memory_order_acq_rel);
     if (!already_requested) {
         osw::SessionLock session(channel_uuid_.c_str());
         if (session) {
@@ -82,8 +63,8 @@ void SilenceDriver::Stop() noexcept {
         }
     }
 
-    if (thread_.joinable()) {
-        thread_.join();
+    if (was_running) {
+        osw::audit::Emit(kAuditStopped, {{"Unique-ID", channel_uuid_}});
     }
 }
 
@@ -131,7 +112,11 @@ void SilenceDriverRegistry::AttachOpportunistic(switch_core_session_t* session) 
             return;
         }
 
-        drivers_.emplace(uuid, std::make_unique<SilenceDriver>(uuid, *this));
+        auto driver = std::make_unique<SilenceDriver>(uuid, *this);
+        if (!driver->IsRunning()) {
+            return;
+        }
+        drivers_.emplace(uuid, std::move(driver));
         osw::audit::Emit(kAuditStarted, {{"Unique-ID", uuid}});
     } catch (const std::exception& e) {
         osw::log::Error(kSubsystem,
