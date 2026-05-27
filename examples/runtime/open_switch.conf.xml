@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  examples/runtime/open_switch.conf.xml — config for the demo container.
+  This is a copy of deploy/freeswitch/conf/autoload_configs/open_switch.conf.xml
+  with the gRPC listen address narrowed to 0.0.0.0:50061 (so docker -p
+  50061:50061 works) and otherwise compiled-in defaults.
+-->
+<configuration name="open_switch.conf" description="mod_open_switch settings">
+  <settings>
+    <!-- Bind on all interfaces so docker -p 50061:50061 forwards in. -->
+    <param name="grpc_listen_address" value="0.0.0.0:50061"/>
+
+    <param name="grpc_max_concurrent_streams" value="256"/>
+    <param name="grpc_drain_deadline_seconds" value="2"/>
+
+    <!-- W4 will land TLS; for demo we run insecure on the host loopback. -->
+    <param name="grpc_tls_cert_path" value=""/>
+    <param name="grpc_tls_key_path"  value=""/>
+    <param name="grpc_tls_ca_path"   value=""/>
+
+    <param name="event_ring_capacity_tier1" value="16384"/>
+    <param name="event_ring_capacity_tier2" value="8192"/>
+    <param name="event_ring_capacity_tier3" value="4096"/>
+    <param name="subscriber_send_queue_capacity" value="4096"/>
+    <param name="max_subscribers" value="16"/>
+
+    <param name="idempotency_ttl_seconds"                  value="300"/>
+    <param name="idempotency_cache_capacity"               value="1500"/>
+    <param name="idempotency_in_flight_max_wait_seconds"   value="30"/>
+
+    <param name="drain_timeout_seconds"        value="30"/>
+    <param name="event_drain_timeout_seconds"  value="5"/>
+
+    <param name="osw_panic_on_unhandled"        value="false"/>
+    <param name="osw_install_signal_handlers"   value="false"/>
+
+    <param name="log_level"                value="info"/>
+    <param name="pii_redaction_patterns"   value=""/>
+    <param name="tenant_allowed_contexts"  value=""/>
+  </settings>
+</configuration>

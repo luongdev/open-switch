@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  examples/runtime/modules.conf.xml — minimal autoload set for the
+  mod_open_switch sample container.
+
+  Loads:
+    - mod_open_switch — the W1-W3 gRPC control plane + events plane.
+    - mod_console     — logging to stdout for `docker logs`.
+    - mod_logfile     — disk log fallback.
+    - mod_sofia       — needed for `originate sofia/...` demos.
+    - mod_loopback    — synthetic endpoint useful for end-to-end demos
+                        without external SIP infrastructure.
+    - mod_commands    — `api` & `bgapi` (FS-internal); harmless in demos.
+    - mod_dptools     — dialplan apps (`set`, `playback`, ...) — the
+                        targets of Execute RPC allow-list.
+
+  This is intentionally SMALLER than the upstream default `modules.conf.xml`
+  so the container starts in <2s.
+-->
+<configuration name="modules.conf" description="Modules">
+  <modules>
+    <!-- Loggers -->
+    <load module="mod_console"/>
+    <load module="mod_logfile"/>
+
+    <!-- Core FS -->
+    <load module="mod_commands"/>
+    <load module="mod_dptools"/>
+
+    <!-- Endpoints (originate demos) -->
+    <load module="mod_sofia"/>
+    <load module="mod_loopback"/>
+
+    <!-- ★ mod_open_switch — the module being demonstrated. -->
+    <load module="mod_open_switch"/>
+  </modules>
+</configuration>

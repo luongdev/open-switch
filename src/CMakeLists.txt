@@ -63,16 +63,37 @@ set_target_properties(mod_open_switch PROPERTIES
 # -Wl,--exclude-libs,ALL (root CMakeLists.txt), this isolates the
 # module's namespace (FREESWITCH-FACTS FF-010 + Codex round-2 N-5).
 #
-# Order matters for static-lib link: list dependents first.
+# Static-lib dead-code elimination caveat
+# ---------------------------------------
+# `osw_control_fs` carries the W3 ControlService method overrides
+# (Originate, Hangup, HangupMany, Bridge, Execute, BlindTransfer,
+# SetVariables, Hold, Unhold). They are referenced ONLY via the
+# ControlServiceSkeleton vtable, which is emitted in
+# `osw_control/handlers/health_handler.cc.o`. GNU ld is single-pass:
+# when it scans osw_control_fs before osw_control, no undefined
+# vtable references exist yet, so it skips the W3 handler .o files.
+# When osw_control's vtable later introduces those references, ld
+# is past osw_control_fs and the symbols stay undefined in the
+# resulting .so. FS dlopen then fails with
+#   "undefined symbol: _ZN3osw7control22ControlServiceSkeleton9Originate..."
+# (caught by the runtime smoke test in examples/runtime).
+#
+# Fix: wrap osw_control_fs in --whole-archive so all its .o files
+# are pulled into the .so unconditionally. The -Wl,--exclude-libs,ALL
+# at the top level still hides the symbols externally.
+#
+# osw_observability_fs has the same indirect-reference pattern via
+# the audit-emit hook; we apply --whole-archive there too as a
+# belt-and-braces measure (cheap; the lib is small).
 target_link_libraries(mod_open_switch
     PRIVATE
         osw_core_fs
         osw_core
         osw_events_fs
         osw_events
-        osw_control_fs
+        "$<LINK_LIBRARY:WHOLE_ARCHIVE,osw_control_fs>"
         osw_control
-        osw_observability_fs
+        "$<LINK_LIBRARY:WHOLE_ARCHIVE,osw_observability_fs>"
         osw_observability
         osw_proto
         Threads::Threads

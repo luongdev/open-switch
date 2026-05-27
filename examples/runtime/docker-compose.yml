@@ -1,0 +1,44 @@
+# examples/runtime/docker-compose.yml — single-node FreeSWITCH +
+# mod_open_switch for local smoke testing.
+#
+# Prerequisite: build the open-switch/runtime:dev image first from the
+# repo root:
+#
+#   docker buildx build \
+#     --platform linux/$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
+#     --build-arg BUILD_TYPE=Release \
+#     --build-arg BASE_TAG=1.10.12-trixie \
+#     --target fs-builder \
+#     -f deploy/docker/Dockerfile.builder \
+#     --load -t open-switch/runtime:dev .
+#
+# Then in this directory:
+#
+#   docker compose build
+#   docker compose up -d
+#   docker compose logs -f fs   # watch boot
+#
+# Test from the host:
+#
+#   ../go-client/osw-client health
+#   ../go-client/osw-client subscribe -tiers TIER_1_CRITICAL &
+#   ../go-client/osw-client originate -endpoints 'loopback/9999' -after-park
+
+services:
+  fs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILDER_TAG: dev
+    image: open-switch/runtime:fs
+    container_name: osw-fs
+    ports:
+      - "50061:50061"
+    # FS allocates a lot of small APR pool blocks; small ulimit on
+    # default Docker hosts isn't a problem but the bump avoids surprises.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    restart: unless-stopped
