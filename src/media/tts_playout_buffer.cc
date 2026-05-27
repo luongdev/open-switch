@@ -70,8 +70,7 @@ void TtsPlayoutBuffer::Push(AudioFrame frame) noexcept {
     }
 }
 
-std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out,
-                                    std::uint32_t out_cap_samples) noexcept {
+std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_samples) noexcept {
     if (!out || out_cap_samples == 0) {
         return 0;
     }
@@ -94,8 +93,7 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out,
     // Case: Buffer has frames — deliver.
     if (!queue_.empty()) {
         AudioFrame& front = queue_.front();
-        const std::uint32_t avail =
-            static_cast<std::uint32_t>(front.sample_count());
+        const std::uint32_t avail = static_cast<std::uint32_t>(front.sample_count());
         const std::uint32_t n = std::min(out_cap_samples, avail);
         std::memcpy(out, front.data(), n * sizeof(std::int16_t));
 
@@ -120,8 +118,7 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out,
     if (!playback_started_.load(std::memory_order_relaxed)) {
         // Playback never started; treat as priming silence (shouldn't normally
         // reach here after preroll, but be defensive).
-        const std::uint32_t n = std::min(out_cap_samples,
-                                         cfg_.channel_sample_rate_hz / 50);
+        const std::uint32_t n = std::min(out_cap_samples, cfg_.channel_sample_rate_hz / 50);
         std::memset(out, 0, n * sizeof(std::int16_t));
         return n;
     }
@@ -131,8 +128,7 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out,
 
     std::uint32_t n = 0;
     if (cfg_.underrun == UnderrunPolicy::kRepeatLast && has_last_frame_) {
-        const std::uint32_t avail =
-            static_cast<std::uint32_t>(last_frame_.sample_count());
+        const std::uint32_t avail = static_cast<std::uint32_t>(last_frame_.sample_count());
         n = std::min(out_cap_samples, avail);
         std::memcpy(out, last_frame_.data(), n * sizeof(std::int16_t));
     } else {
@@ -189,7 +185,7 @@ void TtsPlayoutBuffer::RecomputeDepth() noexcept {
 }
 
 void TtsPlayoutBuffer::EmitUnderrunEvent(std::uint32_t samples_silenced,
-                                          std::uint64_t depth_ms) noexcept {
+                                         std::uint64_t depth_ms) noexcept {
     const auto now = std::chrono::steady_clock::now();
     if (now - last_underrun_emit_ < kAuditRateWindow) {
         ++underrun_suppressed_;

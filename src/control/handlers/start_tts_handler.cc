@@ -7,7 +7,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-#include "osw/raii/fs_api.h"
+#include "osw/control/handlers/start_tts_handler.h"
 
 #include <algorithm>
 #include <chrono>
@@ -20,7 +20,6 @@
 #include "open_switch/media/v1/media.pb.h"
 
 #include "osw/control/active_media_streams.h"
-#include "osw/control/handlers/start_tts_handler.h"
 #include "osw/control/session_guard.h"
 #include "osw/core/config.h"
 #include "osw/events/envelope.h"
@@ -30,6 +29,7 @@
 #include "osw/media/tts_playout_buffer.h"
 #include "osw/observability/audit.h"
 #include "osw/observability/log.h"
+#include "osw/raii/fs_api.h"
 
 #include "src/control/control_service_skeleton.h"
 #include "src/control/handlers/media_bug_callbacks.h"
@@ -43,9 +43,8 @@ constexpr std::uint32_t kDefaultSampleRateHz = 16000;
 
 constexpr std::uint32_t kWriteReplaceFlag = static_cast<std::uint32_t>(SMBF_WRITE_REPLACE);
 
-std::uint32_t ResolveBufferMs(
-    const open_switch::control::v1::TtsBufferOverride& ov,
-    const osw::Config& cfg) noexcept {
+std::uint32_t ResolveBufferMs(const open_switch::control::v1::TtsBufferOverride& ov,
+                              const osw::Config& cfg) noexcept {
     if (ov.jitter_buffer_ms() == 0) {
         return cfg.tts_jitter_buffer_ms;
     }
@@ -61,10 +60,9 @@ std::uint32_t ResolveBufferMs(
     return clamped;
 }
 
-std::uint32_t ResolvePrerollMs(
-    const open_switch::control::v1::TtsBufferOverride& ov,
-    const osw::Config& cfg,
-    std::uint32_t jitter_ms) noexcept {
+std::uint32_t ResolvePrerollMs(const open_switch::control::v1::TtsBufferOverride& ov,
+                               const osw::Config& cfg,
+                               std::uint32_t jitter_ms) noexcept {
     if (ov.preroll_ms() == 0) {
         return std::min(cfg.tts_preroll_ms, jitter_ms);
     }
@@ -79,8 +77,7 @@ std::uint32_t ResolvePrerollMs(
     return clamped;
 }
 
-osw::media::TtsPlayoutBuffer::UnderrunPolicy ParseUnderrunPolicy(
-    const std::string& s) noexcept {
+osw::media::TtsPlayoutBuffer::UnderrunPolicy ParseUnderrunPolicy(const std::string& s) noexcept {
     if (s == "repeat_last") {
         return osw::media::TtsPlayoutBuffer::UnderrunPolicy::kRepeatLast;
     }
@@ -89,14 +86,12 @@ osw::media::TtsPlayoutBuffer::UnderrunPolicy ParseUnderrunPolicy(
 
 }  // namespace
 
-grpc::Status HandleStartTts(
-    grpc::ServerContext* /*ctx*/,
-    const open_switch::control::v1::StartTtsRequest* req,
-    open_switch::control::v1::StartTtsResponse* resp,
-    osw::media::MediaBugManager* bug_mgr,
-    osw::control::ActiveMediaStreams* streams,
-    const osw::Config& config) {
-
+grpc::Status HandleStartTts(grpc::ServerContext* /*ctx*/,
+                            const open_switch::control::v1::StartTtsRequest* req,
+                            open_switch::control::v1::StartTtsResponse* resp,
+                            osw::media::MediaBugManager* bug_mgr,
+                            osw::control::ActiveMediaStreams* streams,
+                            const osw::Config& config) {
     if (!req || !resp) {
         return grpc::Status(grpc::StatusCode::INTERNAL, "null request or response");
     }
@@ -140,8 +135,7 @@ grpc::Status HandleStartTts(
     auto* buf_raw = buffer.get();
 
     // Build StreamClient. on_audio callback pushes into the jitter buffer.
-    const std::string tenant_id =
-        req->has_header() ? req->header().tenant_id() : std::string{};
+    const std::string tenant_id = req->has_header() ? req->header().tenant_id() : std::string{};
 
     osw::media::StreamConfig sc;
     sc.channel_uuid = req->channel_uuid();
@@ -156,12 +150,10 @@ grpc::Status HandleStartTts(
     }
 
     osw::media::StreamCallbacks cbs;
-    cbs.on_audio = [buf_raw](osw::media::AudioFrame f) noexcept {
-        buf_raw->Push(std::move(f));
-    };
+    cbs.on_audio = [buf_raw](osw::media::AudioFrame f) noexcept { buf_raw->Push(std::move(f)); };
 
-    auto channel = grpc::CreateChannel(req->upstream_endpoint(),
-                                       grpc::InsecureChannelCredentials());
+    auto channel =
+        grpc::CreateChannel(req->upstream_endpoint(), grpc::InsecureChannelCredentials());
     auto client = std::make_unique<osw::media::StreamClient>(
         std::move(channel), std::move(sc), std::move(cbs));
 
@@ -185,8 +177,10 @@ grpc::Status HandleStartTts(
     auto attach = bug_mgr->Attach(sg.get(), bug_cfg);
     if (!attach.ok) {
         client->Close();
-        osw::log::Warn(kSubsystem, "StartTts: Attach failed channel=%s: %s",
-                       req->channel_uuid().c_str(), attach.error.c_str());
+        osw::log::Warn(kSubsystem,
+                       "StartTts: Attach failed channel=%s: %s",
+                       req->channel_uuid().c_str(),
+                       attach.error.c_str());
         return grpc::Status(attach.status_code, attach.error);
     }
 
@@ -197,9 +191,8 @@ grpc::Status HandleStartTts(
     write_ctx->buffer = buffer.get();
 
     const std::uint64_t bug_id = osw::media::MediaBugManager::BugId(attach.handle);
-    bug_mgr->SetBugCallback(bug_id,
-                            reinterpret_cast<void*>(OswStreamingWriteReplace),
-                            write_ctx.get());
+    bug_mgr->SetBugCallback(
+        bug_id, reinterpret_cast<void*>(OswStreamingWriteReplace), write_ctx.get());
 
     // Mint stream_id and register.
     const std::string stream_id = osw::events::GenerateUuidV7();
@@ -225,12 +218,12 @@ grpc::Status HandleStartTts(
     resp->set_negotiated_codec(open_switch::media::v1::AudioCodec::PCM_S16LE);
     resp->set_negotiated_sample_rate_hz(rate);
 
-    osw::audit::Emit("control.media.start",
-                     {{"channel_uuid", req->channel_uuid()},
-                      {"purpose", std::string(osw::media::PurposeName(
-                                      osw::media::Purpose::kTtsPlayback))},
-                      {"stream_id", stream_id},
-                      {"tenant_id", tenant_id}});
+    osw::audit::Emit(
+        "control.media.start",
+        {{"channel_uuid", req->channel_uuid()},
+         {"purpose", std::string(osw::media::PurposeName(osw::media::Purpose::kTtsPlayback))},
+         {"stream_id", stream_id},
+         {"tenant_id", tenant_id}});
 
     osw::log::Info(kSubsystem,
                    "StartTts OK: channel=%s stream_id=%s ep=%s rate=%u",
@@ -252,7 +245,9 @@ grpc::Status osw::control::ControlServiceSkeleton::StartTts(
     const open_switch::control::v1::StartTtsRequest* req,
     open_switch::control::v1::StartTtsResponse* resp) {
     return osw::control::handlers::HandleStartTts(
-        ctx, req, resp,
+        ctx,
+        req,
+        resp,
         bug_mgr_.load(std::memory_order_acquire),
         active_media_streams_.load(std::memory_order_acquire),
         *config_);

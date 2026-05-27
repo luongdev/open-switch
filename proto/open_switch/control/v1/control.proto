@@ -355,10 +355,10 @@ message TtsBufferOverride {
 message StartTtsRequest {
   RequestHeader header = 1;
   string channel_uuid = 2;
-  string upstream_endpoint = 3;  // gRPC URL of TTS service
-  uint32 sample_rate_hz = 4;     // 8000 or 16000; default 16000
-  string start_message = 5;      // optional opening utterance
-  map<string, string> variables = 10;  // passed through to TTS service
+  string upstream_endpoint = 3; // gRPC URL of TTS service
+  uint32 sample_rate_hz = 4; // 8000 or 16000; default 16000
+  string start_message = 5; // optional opening utterance
+  map<string, string> variables = 10; // passed through to TTS service
 
   // Per-call jitter-buffer override. Either field set to 0 means
   // "use the module-level Config defaults"; non-zero values are
@@ -367,7 +367,7 @@ message StartTtsRequest {
 }
 
 message StartTtsResponse {
-  string stream_id = 1;  // UUIDv7 minted by handler
+  string stream_id = 1; // UUIDv7 minted by handler
   open_switch.media.v1.AudioCodec negotiated_codec = 2;
   uint32 negotiated_sample_rate_hz = 3;
   ErrorDetail error = 99;
@@ -377,8 +377,8 @@ message StartSttRequest {
   RequestHeader header = 1;
   string channel_uuid = 2;
   string upstream_endpoint = 3;
-  uint32 sample_rate_hz = 4;     // default 16000
-  string language = 5;           // BCP-47, e.g. "vi-VN"
+  uint32 sample_rate_hz = 4; // default 16000
+  string language = 5; // BCP-47, e.g. "vi-VN"
   bool interim_results = 6;
   repeated string vocabulary_hints = 7;
   map<string, string> variables = 10;
@@ -395,7 +395,7 @@ message StartVoicebotRequest {
   RequestHeader header = 1;
   string channel_uuid = 2;
   string upstream_endpoint = 3;
-  uint32 sample_rate_hz = 4;     // default 16000
+  uint32 sample_rate_hz = 4; // default 16000
   string start_message = 5;
   map<string, string> variables = 10;
 
@@ -422,7 +422,7 @@ message StopMediaStreamRequest {
 }
 
 message StopMediaStreamResponse {
-  bool was_active = 1;  // false if stream_id wasn't found (idempotent OK)
+  bool was_active = 1; // false if stream_id wasn't found (idempotent OK)
   ErrorDetail error = 99;
 }
 

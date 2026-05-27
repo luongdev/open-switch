@@ -1007,8 +1007,7 @@ inline switch_frame_t* MediaBugGetWriteReplaceFrame(switch_media_bug_t* bug) noe
     return m.next_write_replace_frame;
 }
 
-inline void MediaBugSetWriteReplaceFrame(switch_media_bug_t* bug,
-                                         switch_frame_t* frame) noexcept {
+inline void MediaBugSetWriteReplaceFrame(switch_media_bug_t* bug, switch_frame_t* frame) noexcept {
     auto& m = Mock();
     m.media_bug_set_write_replace_frame_calls.fetch_add(1, std::memory_order_relaxed);
     {

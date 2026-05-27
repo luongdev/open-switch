@@ -23,7 +23,9 @@
 
 // Forward-declare for W6C setter implementations. Full definition in
 // osw/media/bug_manager.h but that pulls in FS types we avoid here.
-namespace osw::media { class MediaBugManager; }
+namespace osw::media {
+class MediaBugManager;
+}
 
 #include "src/control/control_service_skeleton.h"
 
@@ -105,8 +107,7 @@ void ControlServiceSkeleton::SetEventPlane(events::Broadcaster* broadcaster,
     broadcaster_.store(broadcaster, std::memory_order_release);
 }
 
-void ControlServiceSkeleton::SetMediaBugManager(
-    osw::media::MediaBugManager* mgr) noexcept {
+void ControlServiceSkeleton::SetMediaBugManager(osw::media::MediaBugManager* mgr) noexcept {
     bug_mgr_.store(mgr, std::memory_order_release);
 }
 

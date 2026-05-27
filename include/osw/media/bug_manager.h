@@ -115,9 +115,7 @@ class MediaBugManager {
     /// to switch_media_bug_callback_t internally.
     /// `user_data` is a non-owning pointer to handler-owned state.
     /// Returns false if bug_id is not found.
-    bool SetBugCallback(std::uint64_t bug_id,
-                        void* user_cb,
-                        void* user_data) noexcept;
+    bool SetBugCallback(std::uint64_t bug_id, void* user_cb, void* user_data) noexcept;
 
     /// Expose the bug_id from a BugHandle (needed by Track C to call
     /// SetBugCallback without exposing bug_id as a public BugHandle field).

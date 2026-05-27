@@ -7,12 +7,13 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
+#include "osw/control/handlers/stop_media_stream_handler.h"
+
 #include <grpcpp/grpcpp.h>
 
 #include "open_switch/control/v1/control.pb.h"
 
 #include "osw/control/active_media_streams.h"
-#include "osw/control/handlers/stop_media_stream_handler.h"
 #include "osw/observability/audit.h"
 #include "osw/observability/log.h"
 
@@ -24,12 +25,10 @@ namespace {
 constexpr const char* kSubsystem = "control.stop_media_stream";
 }  // namespace
 
-grpc::Status HandleStopMediaStream(
-    grpc::ServerContext* /*ctx*/,
-    const open_switch::control::v1::StopMediaStreamRequest* req,
-    open_switch::control::v1::StopMediaStreamResponse* resp,
-    osw::control::ActiveMediaStreams* streams) {
-
+grpc::Status HandleStopMediaStream(grpc::ServerContext* /*ctx*/,
+                                   const open_switch::control::v1::StopMediaStreamRequest* req,
+                                   open_switch::control::v1::StopMediaStreamResponse* resp,
+                                   osw::control::ActiveMediaStreams* streams) {
     if (!req || !resp) {
         return grpc::Status(grpc::StatusCode::INTERNAL, "null request or response");
     }
@@ -44,8 +43,7 @@ grpc::Status HandleStopMediaStream(
     resp->set_was_active(was_active);
 
     if (was_active) {
-        const std::string tenant_id =
-            req->has_header() ? req->header().tenant_id() : std::string{};
+        const std::string tenant_id = req->has_header() ? req->header().tenant_id() : std::string{};
         osw::audit::Emit("control.media.stop",
                          {{"channel_uuid", req->channel_uuid()},
                           {"stream_id", req->stream_id()},
@@ -70,6 +68,5 @@ grpc::Status osw::control::ControlServiceSkeleton::StopMediaStream(
     const open_switch::control::v1::StopMediaStreamRequest* req,
     open_switch::control::v1::StopMediaStreamResponse* resp) {
     return osw::control::handlers::HandleStopMediaStream(
-        ctx, req, resp,
-        active_media_streams_.load(std::memory_order_acquire));
+        ctx, req, resp, active_media_streams_.load(std::memory_order_acquire));
 }

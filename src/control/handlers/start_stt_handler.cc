@@ -7,7 +7,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-#include "osw/raii/fs_api.h"
+#include "osw/control/handlers/start_stt_handler.h"
 
 #include <memory>
 #include <string>
@@ -18,7 +18,6 @@
 #include "open_switch/media/v1/media.pb.h"
 
 #include "osw/control/active_media_streams.h"
-#include "osw/control/handlers/start_stt_handler.h"
 #include "osw/control/session_guard.h"
 #include "osw/core/config.h"
 #include "osw/events/envelope.h"
@@ -27,6 +26,7 @@
 #include "osw/media/stream_client.h"
 #include "osw/observability/audit.h"
 #include "osw/observability/log.h"
+#include "osw/raii/fs_api.h"
 
 #include "src/control/control_service_skeleton.h"
 #include "src/control/handlers/media_bug_callbacks.h"
@@ -42,14 +42,12 @@ constexpr std::uint32_t kReadStreamFlag = static_cast<std::uint32_t>(SMBF_READ_S
 
 }  // namespace
 
-grpc::Status HandleStartStt(
-    grpc::ServerContext* /*ctx*/,
-    const open_switch::control::v1::StartSttRequest* req,
-    open_switch::control::v1::StartSttResponse* resp,
-    osw::media::MediaBugManager* bug_mgr,
-    osw::control::ActiveMediaStreams* streams,
-    const osw::Config& /*config*/) {
-
+grpc::Status HandleStartStt(grpc::ServerContext* /*ctx*/,
+                            const open_switch::control::v1::StartSttRequest* req,
+                            open_switch::control::v1::StartSttResponse* resp,
+                            osw::media::MediaBugManager* bug_mgr,
+                            osw::control::ActiveMediaStreams* streams,
+                            const osw::Config& /*config*/) {
     if (!req || !resp) {
         return grpc::Status(grpc::StatusCode::INTERNAL, "null request or response");
     }
@@ -74,8 +72,7 @@ grpc::Status HandleStartStt(
         return grpc::Status(grpc::StatusCode::NOT_FOUND, "channel not found");
     }
 
-    const std::string tenant_id =
-        req->has_header() ? req->header().tenant_id() : std::string{};
+    const std::string tenant_id = req->has_header() ? req->header().tenant_id() : std::string{};
 
     osw::media::StreamConfig sc;
     sc.channel_uuid = req->channel_uuid();
@@ -90,8 +87,7 @@ grpc::Status HandleStartStt(
     if (!req->language().empty()) {
         sc.variables["language"] = req->language();
     }
-    sc.variables["interim_results"] =
-        req->interim_results() ? "true" : "false";
+    sc.variables["interim_results"] = req->interim_results() ? "true" : "false";
     for (const auto& hint : req->vocabulary_hints()) {
         // Append hints as comma-separated in a single variable.
         if (!sc.variables["vocabulary_hints"].empty()) {
@@ -113,8 +109,8 @@ grpc::Status HandleStartStt(
                           {"confidence", std::to_string(t.confidence())}});
     };
 
-    auto channel = grpc::CreateChannel(req->upstream_endpoint(),
-                                       grpc::InsecureChannelCredentials());
+    auto channel =
+        grpc::CreateChannel(req->upstream_endpoint(), grpc::InsecureChannelCredentials());
     auto client = std::make_unique<osw::media::StreamClient>(
         std::move(channel), std::move(sc), std::move(cbs));
 
@@ -137,16 +133,16 @@ grpc::Status HandleStartStt(
     auto attach = bug_mgr->Attach(sg.get(), bug_cfg);
     if (!attach.ok) {
         client->Close();
-        osw::log::Warn(kSubsystem, "StartStt: Attach failed channel=%s: %s",
-                       req->channel_uuid().c_str(), attach.error.c_str());
+        osw::log::Warn(kSubsystem,
+                       "StartStt: Attach failed channel=%s: %s",
+                       req->channel_uuid().c_str(),
+                       attach.error.c_str());
         return grpc::Status(attach.status_code, attach.error);
     }
 
     // Wire read-tap callback: user_data is the StreamClient*.
     const std::uint64_t bug_id = osw::media::MediaBugManager::BugId(attach.handle);
-    bug_mgr->SetBugCallback(bug_id,
-                            reinterpret_cast<void*>(OswStreamingReadTap),
-                            client.get());
+    bug_mgr->SetBugCallback(bug_id, reinterpret_cast<void*>(OswStreamingReadTap), client.get());
 
     const std::string stream_id = osw::events::GenerateUuidV7();
 
@@ -166,12 +162,12 @@ grpc::Status HandleStartStt(
     resp->set_negotiated_codec(open_switch::media::v1::AudioCodec::PCM_S16LE);
     resp->set_negotiated_sample_rate_hz(rate);
 
-    osw::audit::Emit("control.media.start",
-                     {{"channel_uuid", req->channel_uuid()},
-                      {"purpose", std::string(osw::media::PurposeName(
-                                      osw::media::Purpose::kSttTranscribe))},
-                      {"stream_id", stream_id},
-                      {"tenant_id", tenant_id}});
+    osw::audit::Emit(
+        "control.media.start",
+        {{"channel_uuid", req->channel_uuid()},
+         {"purpose", std::string(osw::media::PurposeName(osw::media::Purpose::kSttTranscribe))},
+         {"stream_id", stream_id},
+         {"tenant_id", tenant_id}});
 
     osw::log::Info(kSubsystem,
                    "StartStt OK: channel=%s stream_id=%s ep=%s rate=%u",
@@ -189,7 +185,9 @@ grpc::Status osw::control::ControlServiceSkeleton::StartStt(
     const open_switch::control::v1::StartSttRequest* req,
     open_switch::control::v1::StartSttResponse* resp) {
     return osw::control::handlers::HandleStartStt(
-        ctx, req, resp,
+        ctx,
+        req,
+        resp,
         bug_mgr_.load(std::memory_order_acquire),
         active_media_streams_.load(std::memory_order_acquire),
         *config_);

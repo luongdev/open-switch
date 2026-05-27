@@ -31,13 +31,12 @@ struct Config;
 
 namespace osw::control::handlers {
 
-grpc::Status HandleStartVoicebot(
-    grpc::ServerContext* ctx,
-    const open_switch::control::v1::StartVoicebotRequest* req,
-    open_switch::control::v1::StartVoicebotResponse* resp,
-    osw::media::MediaBugManager* bug_mgr,
-    osw::control::ActiveMediaStreams* streams,
-    const osw::Config& config);
+grpc::Status HandleStartVoicebot(grpc::ServerContext* ctx,
+                                 const open_switch::control::v1::StartVoicebotRequest* req,
+                                 open_switch::control::v1::StartVoicebotResponse* resp,
+                                 osw::media::MediaBugManager* bug_mgr,
+                                 osw::control::ActiveMediaStreams* streams,
+                                 const osw::Config& config);
 
 }  // namespace osw::control::handlers
 

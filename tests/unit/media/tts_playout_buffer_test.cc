@@ -45,8 +45,11 @@ constexpr std::uint32_t kPtime20ms = kRate / 50;
 /// Build a PCM-S16LE AudioFrame filled with a repeated sample value.
 AudioFrame MakeFrame(std::int16_t fill_value, std::uint32_t samples = kPtime20ms) {
     std::vector<std::int16_t> pcm(samples, fill_value);
-    return AudioFrame(std::move(pcm), kRate, /*channels=*/1,
-                      /*seq=*/0, /*timestamp_samples=*/0);
+    return AudioFrame(std::move(pcm),
+                      kRate,
+                      /*channels=*/1,
+                      /*seq=*/0,
+                      /*timestamp_samples=*/0);
 }
 
 /// Build a minimal TtsPlayoutBuffer with preroll=200ms, target=400ms, high=600ms.
@@ -79,7 +82,7 @@ TEST(TtsPlayoutBufferTest, PrerollReachedAfterEnoughFrames) {
     auto buf = MakeBuffer(200);
     for (int i = 0; i < 9; ++i) {
         buf.Push(MakeFrame(1));
-        EXPECT_FALSE(buf.PrerollReached()) << "should not be reached after " << i+1 << " frames";
+        EXPECT_FALSE(buf.PrerollReached()) << "should not be reached after " << i + 1 << " frames";
     }
     buf.Push(MakeFrame(1));  // 10th frame → 200ms
     EXPECT_TRUE(buf.PrerollReached());

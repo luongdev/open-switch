@@ -30,7 +30,9 @@
 // Forward-declare MediaBugManager for the W6C setter pass-throughs.
 // Full definition is in osw/media/bug_manager.h; server.cc only holds
 // and passes pointers, so the forward-decl is sufficient.
-namespace osw::media { class MediaBugManager; }
+namespace osw::media {
+class MediaBugManager;
+}
 
 #include "src/control/control_service_skeleton.h"
 
@@ -245,8 +247,7 @@ void GrpcServer::SetMediaBugManager(osw::media::MediaBugManager* mgr) noexcept {
     }
 }
 
-void GrpcServer::SetActiveMediaStreams(
-    osw::control::ActiveMediaStreams* streams) noexcept {
+void GrpcServer::SetActiveMediaStreams(osw::control::ActiveMediaStreams* streams) noexcept {
     pending_streams_ = streams;
     if (service_) {
         service_->SetActiveMediaStreams(streams);

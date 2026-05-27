@@ -18,10 +18,9 @@
 
 // Include FS headers or mock seam before any FS-type-using declarations.
 // Uses the canonical fs_api.h seam (same as all other FS-dependent handlers).
-#include "osw/raii/fs_api.h"
-
 #include "osw/media/stream_client.h"
 #include "osw/media/tts_playout_buffer.h"
+#include "osw/raii/fs_api.h"
 
 namespace osw::control::handlers {
 

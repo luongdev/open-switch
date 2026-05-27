@@ -41,17 +41,17 @@ namespace osw::media {
 class TtsPlayoutBuffer {
   public:
     enum class UnderrunPolicy {
-        kSilence,    ///< default — emit zeroed samples
-        kRepeatLast, ///< copy the last 20 ms frame; better for music
+        kSilence,     ///< default — emit zeroed samples
+        kRepeatLast,  ///< copy the last 20 ms frame; better for music
     };
 
     struct Config {
-        std::chrono::milliseconds target_ms;     ///< target buffer depth, e.g. 1000
-        std::chrono::milliseconds preroll_ms;    ///< wait until this depth before playing
-        std::chrono::milliseconds high_water_ms; ///< drop oldest when depth exceeds this
+        std::chrono::milliseconds target_ms;      ///< target buffer depth, e.g. 1000
+        std::chrono::milliseconds preroll_ms;     ///< wait until this depth before playing
+        std::chrono::milliseconds high_water_ms;  ///< drop oldest when depth exceeds this
         UnderrunPolicy underrun = UnderrunPolicy::kSilence;
-        std::uint32_t channel_sample_rate_hz;    ///< 8000 or 16000 (matches channel)
-        std::uint32_t channels = 1;              ///< 1 (mono) for V1
+        std::uint32_t channel_sample_rate_hz;  ///< 8000 or 16000 (matches channel)
+        std::uint32_t channels = 1;            ///< 1 (mono) for V1
     };
 
     explicit TtsPlayoutBuffer(Config cfg) noexcept;

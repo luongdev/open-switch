@@ -154,9 +154,9 @@ class GrpcServer {
     control::IdempotencyCache* pending_cache_ =
         nullptr;  // staged before Start; applied during Start
     // W6C: staged before Start; applied during Start (same pattern as pending_cache_).
-    osw::media::MediaBugManager*       pending_bug_mgr_   = nullptr;
-    osw::control::ActiveMediaStreams*  pending_streams_   = nullptr;
-    const osw::Config*                 pending_media_cfg_ = nullptr;
+    osw::media::MediaBugManager* pending_bug_mgr_ = nullptr;
+    osw::control::ActiveMediaStreams* pending_streams_ = nullptr;
+    const osw::Config* pending_media_cfg_ = nullptr;
 };
 
 }  // namespace control

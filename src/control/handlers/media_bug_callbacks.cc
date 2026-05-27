@@ -12,7 +12,7 @@
  */
 
 // Include FS headers or mock seam first via the canonical seam.
-#include "osw/raii/fs_api.h"
+#include "src/control/handlers/media_bug_callbacks.h"
 
 #include <cstring>
 
@@ -22,8 +22,6 @@
 #include "osw/media/tts_playout_buffer.h"
 #include "osw/raii/fs_api.h"
 
-#include "src/control/handlers/media_bug_callbacks.h"
-
 // ---------------------------------------------------------------------------
 // ABC type constants (not defined by fs_mock.h; define here for both paths).
 // ---------------------------------------------------------------------------
@@ -31,9 +29,9 @@
 namespace {
 
 #if defined(OSW_TEST_FS_MOCK)
-constexpr int kAbcTypeRead = 1;        // SWITCH_ABC_TYPE_READ
-constexpr int kAbcTypeReadPing = 5;    // SWITCH_ABC_TYPE_READ_PING
-constexpr int kAbcTypeWriteReplace = 3; // SWITCH_ABC_TYPE_WRITE_REPLACE
+constexpr int kAbcTypeRead = 1;          // SWITCH_ABC_TYPE_READ
+constexpr int kAbcTypeReadPing = 5;      // SWITCH_ABC_TYPE_READ_PING
+constexpr int kAbcTypeWriteReplace = 3;  // SWITCH_ABC_TYPE_WRITE_REPLACE
 constexpr int kAbcTypeInit = 0;
 constexpr int kAbcTypeClose = 8;
 #else
@@ -54,14 +52,6 @@ struct BugCallbackContextFwd {
     switch_media_bug_callback_t user_cb;
 };
 
-// Helper: compute next sequence number. We use a per-bug monotonic counter
-// stored in a field we add to WriteCallbackCtx for STT, or the AudioFrame
-// seq field directly. For read tap, we track seq on the client side via a
-// simple atomic in the callback context.
-static std::uint64_t IncrementSeq(std::atomic<std::uint64_t>& seq) noexcept {
-    return seq.fetch_add(1, std::memory_order_relaxed);
-}
-
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -77,8 +67,8 @@ struct OswReadTapCtx {
 // OswStreamingReadTap --------------------------------------------------------
 
 extern "C" switch_bool_t OswStreamingReadTap(switch_media_bug_t* bug,
-                                              void* user_data,
-                                              switch_abc_type_t type) noexcept {
+                                             void* user_data,
+                                             switch_abc_type_t type) noexcept {
     const int t = static_cast<int>(type);
     if (t == kAbcTypeInit || t == kAbcTypeClose) {
         return SWITCH_TRUE;
@@ -112,7 +102,8 @@ extern "C" switch_bool_t OswStreamingReadTap(switch_media_bug_t* bug,
     const auto* src = static_cast<const std::int16_t*>(frame->data);
     const std::uint32_t n_samples = frame->datalen / sizeof(std::int16_t);
     const std::uint32_t rate = frame->rate;
-    const std::uint32_t ch = (frame->channels > 0) ? static_cast<std::uint32_t>(frame->channels) : 1;
+    const std::uint32_t ch =
+        (frame->channels > 0) ? static_cast<std::uint32_t>(frame->channels) : 1;
 
     std::vector<std::int16_t> samples(src, src + n_samples);
 
@@ -137,8 +128,8 @@ extern "C" switch_bool_t OswStreamingReadTap(switch_media_bug_t* bug,
 // OswStreamingWriteReplace ---------------------------------------------------
 
 extern "C" switch_bool_t OswStreamingWriteReplace(switch_media_bug_t* bug,
-                                                   void* user_data,
-                                                   switch_abc_type_t type) noexcept {
+                                                  void* user_data,
+                                                  switch_abc_type_t type) noexcept {
     const int t = static_cast<int>(type);
     if (t == kAbcTypeInit || t == kAbcTypeClose) {
         return SWITCH_TRUE;

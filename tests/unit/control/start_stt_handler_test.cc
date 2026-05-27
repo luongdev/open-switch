@@ -28,6 +28,7 @@
 #include <string>
 
 #include <gtest/gtest.h>
+
 #include <grpcpp/grpcpp.h>
 
 #include "open_switch/control/v1/control.pb.h"

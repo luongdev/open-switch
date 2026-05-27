@@ -31,13 +31,12 @@ struct Config;
 
 namespace osw::control::handlers {
 
-grpc::Status HandleStartStt(
-    grpc::ServerContext* ctx,
-    const open_switch::control::v1::StartSttRequest* req,
-    open_switch::control::v1::StartSttResponse* resp,
-    osw::media::MediaBugManager* bug_mgr,
-    osw::control::ActiveMediaStreams* streams,
-    const osw::Config& config);
+grpc::Status HandleStartStt(grpc::ServerContext* ctx,
+                            const open_switch::control::v1::StartSttRequest* req,
+                            open_switch::control::v1::StartSttResponse* resp,
+                            osw::media::MediaBugManager* bug_mgr,
+                            osw::control::ActiveMediaStreams* streams,
+                            const osw::Config& config);
 
 }  // namespace osw::control::handlers
 

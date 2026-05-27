@@ -23,11 +23,10 @@ class ActiveMediaStreams;
 
 namespace osw::control::handlers {
 
-grpc::Status HandleStopMediaStream(
-    grpc::ServerContext* ctx,
-    const open_switch::control::v1::StopMediaStreamRequest* req,
-    open_switch::control::v1::StopMediaStreamResponse* resp,
-    osw::control::ActiveMediaStreams* streams);
+grpc::Status HandleStopMediaStream(grpc::ServerContext* ctx,
+                                   const open_switch::control::v1::StopMediaStreamRequest* req,
+                                   open_switch::control::v1::StopMediaStreamResponse* resp,
+                                   osw::control::ActiveMediaStreams* streams);
 
 }  // namespace osw::control::handlers
 

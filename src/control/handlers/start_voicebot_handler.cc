@@ -12,7 +12,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-#include "osw/raii/fs_api.h"
+#include "osw/control/handlers/start_voicebot_handler.h"
 
 #include <algorithm>
 #include <chrono>
@@ -25,7 +25,6 @@
 #include "open_switch/media/v1/media.pb.h"
 
 #include "osw/control/active_media_streams.h"
-#include "osw/control/handlers/start_voicebot_handler.h"
 #include "osw/control/session_guard.h"
 #include "osw/core/config.h"
 #include "osw/events/envelope.h"
@@ -35,6 +34,7 @@
 #include "osw/media/tts_playout_buffer.h"
 #include "osw/observability/audit.h"
 #include "osw/observability/log.h"
+#include "osw/raii/fs_api.h"
 
 #include "src/control/control_service_skeleton.h"
 #include "src/control/handlers/media_bug_callbacks.h"
@@ -46,12 +46,11 @@ namespace {
 constexpr const char* kSubsystem = "control.start_voicebot";
 constexpr std::uint32_t kDefaultSampleRateHz = 16000;
 
-constexpr std::uint32_t kReadStreamFlag   = static_cast<std::uint32_t>(SMBF_READ_STREAM);
+constexpr std::uint32_t kReadStreamFlag = static_cast<std::uint32_t>(SMBF_READ_STREAM);
 constexpr std::uint32_t kWriteReplaceFlag = static_cast<std::uint32_t>(SMBF_WRITE_REPLACE);
 
-std::uint32_t ResolveBufferMs(
-    const open_switch::control::v1::TtsBufferOverride& ov,
-    const osw::Config& cfg) noexcept {
+std::uint32_t ResolveBufferMs(const open_switch::control::v1::TtsBufferOverride& ov,
+                              const osw::Config& cfg) noexcept {
     if (ov.jitter_buffer_ms() == 0) {
         return cfg.tts_jitter_buffer_ms;
     }
@@ -67,10 +66,9 @@ std::uint32_t ResolveBufferMs(
     return clamped;
 }
 
-std::uint32_t ResolvePrerollMs(
-    const open_switch::control::v1::TtsBufferOverride& ov,
-    const osw::Config& cfg,
-    std::uint32_t jitter_ms) noexcept {
+std::uint32_t ResolvePrerollMs(const open_switch::control::v1::TtsBufferOverride& ov,
+                               const osw::Config& cfg,
+                               std::uint32_t jitter_ms) noexcept {
     if (ov.preroll_ms() == 0) {
         return std::min(cfg.tts_preroll_ms, jitter_ms);
     }
@@ -85,8 +83,7 @@ std::uint32_t ResolvePrerollMs(
     return clamped;
 }
 
-osw::media::TtsPlayoutBuffer::UnderrunPolicy ParseUnderrunPolicy(
-    const std::string& s) noexcept {
+osw::media::TtsPlayoutBuffer::UnderrunPolicy ParseUnderrunPolicy(const std::string& s) noexcept {
     if (s == "repeat_last") {
         return osw::media::TtsPlayoutBuffer::UnderrunPolicy::kRepeatLast;
     }
@@ -95,14 +92,12 @@ osw::media::TtsPlayoutBuffer::UnderrunPolicy ParseUnderrunPolicy(
 
 }  // namespace
 
-grpc::Status HandleStartVoicebot(
-    grpc::ServerContext* /*ctx*/,
-    const open_switch::control::v1::StartVoicebotRequest* req,
-    open_switch::control::v1::StartVoicebotResponse* resp,
-    osw::media::MediaBugManager* bug_mgr,
-    osw::control::ActiveMediaStreams* streams,
-    const osw::Config& config) {
-
+grpc::Status HandleStartVoicebot(grpc::ServerContext* /*ctx*/,
+                                 const open_switch::control::v1::StartVoicebotRequest* req,
+                                 open_switch::control::v1::StartVoicebotResponse* resp,
+                                 osw::media::MediaBugManager* bug_mgr,
+                                 osw::control::ActiveMediaStreams* streams,
+                                 const osw::Config& config) {
     if (!req || !resp) {
         return grpc::Status(grpc::StatusCode::INTERNAL, "null request or response");
     }
@@ -127,8 +122,7 @@ grpc::Status HandleStartVoicebot(
         return grpc::Status(grpc::StatusCode::NOT_FOUND, "channel not found");
     }
 
-    const std::string tenant_id =
-        req->has_header() ? req->header().tenant_id() : std::string{};
+    const std::string tenant_id = req->has_header() ? req->header().tenant_id() : std::string{};
 
     // -----------------------------------------------------------------------
     // Build TtsPlayoutBuffer for the write (bot→caller) side.
@@ -166,12 +160,10 @@ grpc::Status HandleStartVoicebot(
     }
 
     osw::media::StreamCallbacks cbs;
-    cbs.on_audio = [buf_raw](osw::media::AudioFrame f) noexcept {
-        buf_raw->Push(std::move(f));
-    };
+    cbs.on_audio = [buf_raw](osw::media::AudioFrame f) noexcept { buf_raw->Push(std::move(f)); };
 
-    auto channel = grpc::CreateChannel(req->upstream_endpoint(),
-                                       grpc::InsecureChannelCredentials());
+    auto channel =
+        grpc::CreateChannel(req->upstream_endpoint(), grpc::InsecureChannelCredentials());
     auto client = std::make_unique<osw::media::StreamClient>(
         std::move(channel), std::move(sc), std::move(cbs));
 
@@ -199,16 +191,15 @@ grpc::Status HandleStartVoicebot(
         client->Close();
         osw::log::Warn(kSubsystem,
                        "StartVoicebot: Attach(read) failed channel=%s: %s",
-                       req->channel_uuid().c_str(), read_attach.error.c_str());
+                       req->channel_uuid().c_str(),
+                       read_attach.error.c_str());
         return grpc::Status(read_attach.status_code, read_attach.error);
     }
 
-    const std::uint64_t read_bug_id =
-        osw::media::MediaBugManager::BugId(read_attach.handle);
+    const std::uint64_t read_bug_id = osw::media::MediaBugManager::BugId(read_attach.handle);
     // user_data for read tap is the StreamClient* (same pattern as STT).
-    bug_mgr->SetBugCallback(read_bug_id,
-                            reinterpret_cast<void*>(OswStreamingReadTap),
-                            client.get());
+    bug_mgr->SetBugCallback(
+        read_bug_id, reinterpret_cast<void*>(OswStreamingReadTap), client.get());
 
     // -----------------------------------------------------------------------
     // Bug 2: write replace (INJECT, SMBF_WRITE_REPLACE).
@@ -226,7 +217,8 @@ grpc::Status HandleStartVoicebot(
         client->Close();
         osw::log::Warn(kSubsystem,
                        "StartVoicebot: Attach(write) failed channel=%s: %s",
-                       req->channel_uuid().c_str(), write_attach.error.c_str());
+                       req->channel_uuid().c_str(),
+                       write_attach.error.c_str());
         return grpc::Status(write_attach.status_code, write_attach.error);
     }
 
@@ -234,11 +226,9 @@ grpc::Status HandleStartVoicebot(
     write_ctx->client = client.get();
     write_ctx->buffer = buffer.get();
 
-    const std::uint64_t write_bug_id =
-        osw::media::MediaBugManager::BugId(write_attach.handle);
-    bug_mgr->SetBugCallback(write_bug_id,
-                            reinterpret_cast<void*>(OswStreamingWriteReplace),
-                            write_ctx.get());
+    const std::uint64_t write_bug_id = osw::media::MediaBugManager::BugId(write_attach.handle);
+    bug_mgr->SetBugCallback(
+        write_bug_id, reinterpret_cast<void*>(OswStreamingWriteReplace), write_ctx.get());
 
     // -----------------------------------------------------------------------
     // Mint stream_id and register.
@@ -257,8 +247,7 @@ grpc::Status HandleStartVoicebot(
     stream->bugs.push_back(std::move(write_attach.handle));
     stream->client = std::move(client);
     stream->tts_buffer = std::move(buffer);
-    stream->write_ctx =
-        std::unique_ptr<void, osw::control::WriteCtxDeleter>(write_ctx.release());
+    stream->write_ctx = std::unique_ptr<void, osw::control::WriteCtxDeleter>(write_ctx.release());
 
     if (!streams->Insert(std::move(stream))) {
         return grpc::Status(grpc::StatusCode::INTERNAL, "stream_id collision");
@@ -268,12 +257,13 @@ grpc::Status HandleStartVoicebot(
     resp->set_negotiated_codec(open_switch::media::v1::AudioCodec::PCM_S16LE);
     resp->set_negotiated_sample_rate_hz(rate);
 
-    osw::audit::Emit("control.media.start",
-                     {{"channel_uuid", req->channel_uuid()},
-                      {"purpose", std::string(osw::media::PurposeName(
-                                      osw::media::Purpose::kVoicebotDuplexRead))},
-                      {"stream_id", stream_id},
-                      {"tenant_id", tenant_id}});
+    osw::audit::Emit(
+        "control.media.start",
+        {{"channel_uuid", req->channel_uuid()},
+         {"purpose",
+          std::string(osw::media::PurposeName(osw::media::Purpose::kVoicebotDuplexRead))},
+         {"stream_id", stream_id},
+         {"tenant_id", tenant_id}});
 
     osw::log::Info(kSubsystem,
                    "StartVoicebot OK: channel=%s stream_id=%s ep=%s rate=%u",
@@ -291,7 +281,9 @@ grpc::Status osw::control::ControlServiceSkeleton::StartVoicebot(
     const open_switch::control::v1::StartVoicebotRequest* req,
     open_switch::control::v1::StartVoicebotResponse* resp) {
     return osw::control::handlers::HandleStartVoicebot(
-        ctx, req, resp,
+        ctx,
+        req,
+        resp,
         bug_mgr_.load(std::memory_order_acquire),
         active_media_streams_.load(std::memory_order_acquire),
         *config_);

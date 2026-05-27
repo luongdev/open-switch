@@ -165,15 +165,13 @@ class ControlServiceSkeleton final : public open_switch::control::v1::ControlSer
                           const open_switch::control::v1::StartSttRequest* req,
                           open_switch::control::v1::StartSttResponse* resp) override;
 
-    grpc::Status StartVoicebot(
-        grpc::ServerContext* ctx,
-        const open_switch::control::v1::StartVoicebotRequest* req,
-        open_switch::control::v1::StartVoicebotResponse* resp) override;
+    grpc::Status StartVoicebot(grpc::ServerContext* ctx,
+                               const open_switch::control::v1::StartVoicebotRequest* req,
+                               open_switch::control::v1::StartVoicebotResponse* resp) override;
 
-    grpc::Status StopMediaStream(
-        grpc::ServerContext* ctx,
-        const open_switch::control::v1::StopMediaStreamRequest* req,
-        open_switch::control::v1::StopMediaStreamResponse* resp) override;
+    grpc::Status StopMediaStream(grpc::ServerContext* ctx,
+                                 const open_switch::control::v1::StopMediaStreamRequest* req,
+                                 open_switch::control::v1::StopMediaStreamResponse* resp) override;
 
   private:
     osw::Health* health_;
