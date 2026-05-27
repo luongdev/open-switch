@@ -310,8 +310,8 @@ struct MockState {
     struct CapturedSessionTransfer {
         switch_core_session_t* session = nullptr;
         std::string extension;
-        std::string dialplan;   // empty string when NULL was passed
-        std::string context;    // empty string when NULL was passed
+        std::string dialplan;  // empty string when NULL was passed
+        std::string context;   // empty string when NULL was passed
         bool dialplan_was_null = false;
         bool context_was_null = false;
     };
@@ -867,9 +867,7 @@ inline uint32_t ChannelTestFlag(switch_channel_t* /*channel*/,
 //
 // Records the invocation and returns next_hold_uuid_status.
 
-inline switch_status_t HoldUuid(const char* uuid,
-                                const char* message,
-                                switch_bool_t moh) noexcept {
+inline switch_status_t HoldUuid(const char* uuid, const char* message, switch_bool_t moh) noexcept {
     auto& m = Mock();
     m.hold_uuid_calls.fetch_add(1, std::memory_order_relaxed);
     {

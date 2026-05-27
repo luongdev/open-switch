@@ -86,10 +86,7 @@ grpc::Status ControlServiceSkeleton::BlindTransfer(
     const char* context_ptr = OptionalStringToPtr(context);
 
     const switch_status_t rc =
-        osw::raii::fs::SessionTransfer(guard.get(),
-                                       destination.c_str(),
-                                       dialplan_ptr,
-                                       context_ptr);
+        osw::raii::fs::SessionTransfer(guard.get(), destination.c_str(), dialplan_ptr, context_ptr);
 
     if (rc != SWITCH_STATUS_SUCCESS) {
         osw::log::Warn(kSubsystem,

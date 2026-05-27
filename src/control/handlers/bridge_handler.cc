@@ -64,10 +64,9 @@ constexpr const char* kSubsystem = "control.bridge";
 
 }  // namespace
 
-grpc::Status ControlServiceSkeleton::Bridge(
-    grpc::ServerContext* /*ctx*/,
-    const open_switch::control::v1::BridgeRequest* req,
-    open_switch::control::v1::BridgeResponse* resp) {
+grpc::Status ControlServiceSkeleton::Bridge(grpc::ServerContext* /*ctx*/,
+                                            const open_switch::control::v1::BridgeRequest* req,
+                                            open_switch::control::v1::BridgeResponse* resp) {
     if (req == nullptr || resp == nullptr) {
         return grpc::Status(grpc::StatusCode::INTERNAL, "null request or response");
     }
@@ -95,15 +94,13 @@ grpc::Status ControlServiceSkeleton::Bridge(
     auto first_guard = osw::control::SessionGuard::Locate(first_uuid);
     if (!first_guard.Valid()) {
         osw::log::Debug(kSubsystem, "Bridge NOT_FOUND: uuid=%s", first_uuid.c_str());
-        return grpc::Status(grpc::StatusCode::NOT_FOUND,
-                            "session not found: uuid=" + first_uuid);
+        return grpc::Status(grpc::StatusCode::NOT_FOUND, "session not found: uuid=" + first_uuid);
     }
 
     auto second_guard = osw::control::SessionGuard::Locate(second_uuid);
     if (!second_guard.Valid()) {
         osw::log::Debug(kSubsystem, "Bridge NOT_FOUND: uuid=%s", second_uuid.c_str());
-        return grpc::Status(grpc::StatusCode::NOT_FOUND,
-                            "session not found: uuid=" + second_uuid);
+        return grpc::Status(grpc::StatusCode::NOT_FOUND, "session not found: uuid=" + second_uuid);
     }
 
     // Validate that both channels are in a bridgeable state.
@@ -140,19 +137,15 @@ grpc::Status ControlServiceSkeleton::Bridge(
     const switch_status_t rc = osw::raii::fs::UuidBridge(a_uuid.c_str(), b_uuid.c_str());
 
     if (rc != SWITCH_STATUS_SUCCESS) {
-        osw::log::Warn(kSubsystem,
-                       "Bridge FS failure: rc=%d a=%s b=%s",
-                       rc,
-                       a_uuid.c_str(),
-                       b_uuid.c_str());
+        osw::log::Warn(
+            kSubsystem, "Bridge FS failure: rc=%d a=%s b=%s", rc, a_uuid.c_str(), b_uuid.c_str());
         return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
                             "switch_ivr_uuid_bridge failed: rc=" + std::to_string(rc));
     }
 
     // Guards release here (end of scope) — correct per FF-023.
 
-    osw::audit::Emit("osw.control.bridge",
-                     {{"a_uuid", a_uuid}, {"b_uuid", b_uuid}});
+    osw::audit::Emit("osw.control.bridge", {{"a_uuid", a_uuid}, {"b_uuid", b_uuid}});
 
     osw::log::Info(kSubsystem, "Bridge OK: a=%s b=%s", a_uuid.c_str(), b_uuid.c_str());
 

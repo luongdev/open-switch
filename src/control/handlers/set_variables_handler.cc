@@ -83,8 +83,7 @@ grpc::Status ControlServiceSkeleton::SetVariables(
 
     const auto& vars = req->variables();
     if (vars.empty()) {
-        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                            "variables map must not be empty");
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "variables map must not be empty");
     }
 
     if (static_cast<int>(vars.size()) > kMaxVariables) {
@@ -100,9 +99,9 @@ grpc::Status ControlServiceSkeleton::SetVariables(
                             "SetVariables INVALID_ARGUMENT: bad var name '%s' for uuid=%s",
                             name.c_str(),
                             uuid.c_str());
-            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                                "invalid variable name: '" + name +
-                                    "' (must match [A-Za-z0-9_-]+)");
+            return grpc::Status(
+                grpc::StatusCode::INVALID_ARGUMENT,
+                "invalid variable name: '" + name + "' (must match [A-Za-z0-9_-]+)");
         }
     }
 
@@ -137,10 +136,7 @@ grpc::Status ControlServiceSkeleton::SetVariables(
     osw::audit::Emit("osw.control.set_variables",
                      {{"uuid", uuid}, {"var_count", std::to_string(count)}});
 
-    osw::log::Info(kSubsystem,
-                   "SetVariables OK: uuid=%s count=%d",
-                   uuid.c_str(),
-                   count);
+    osw::log::Info(kSubsystem, "SetVariables OK: uuid=%s count=%d", uuid.c_str(), count);
 
     return grpc::Status::OK;
 }

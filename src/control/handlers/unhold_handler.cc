@@ -53,15 +53,13 @@ grpc::Status ControlServiceSkeleton::Unhold(grpc::ServerContext* /*ctx*/,
 
     for (const std::string& uuid : req->uuids()) {
         if (uuid.empty()) {
-            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                                "uuid must not be empty");
+            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "uuid must not be empty");
         }
 
         auto guard = osw::control::SessionGuard::Locate(uuid);
         if (!guard.Valid()) {
             osw::log::Debug(kSubsystem, "Unhold NOT_FOUND: uuid=%s", uuid.c_str());
-            return grpc::Status(grpc::StatusCode::NOT_FOUND,
-                                "session not found: uuid=" + uuid);
+            return grpc::Status(grpc::StatusCode::NOT_FOUND, "session not found: uuid=" + uuid);
         }
 
         switch_channel_t* const ch = guard.Channel();
@@ -81,12 +79,9 @@ grpc::Status ControlServiceSkeleton::Unhold(grpc::ServerContext* /*ctx*/,
 
         const switch_status_t rc = osw::raii::fs::UnholdUuid(uuid.c_str());
         if (rc != SWITCH_STATUS_SUCCESS) {
-            osw::log::Warn(kSubsystem,
-                           "Unhold: UnholdUuid returned rc=%d for uuid=%s",
-                           rc,
-                           uuid.c_str());
-            return grpc::Status(grpc::StatusCode::INTERNAL,
-                                "UnholdUuid failed for uuid=" + uuid);
+            osw::log::Warn(
+                kSubsystem, "Unhold: UnholdUuid returned rc=%d for uuid=%s", rc, uuid.c_str());
+            return grpc::Status(grpc::StatusCode::INTERNAL, "UnholdUuid failed for uuid=" + uuid);
         }
 
         resp->add_unheld_uuids(uuid);

@@ -355,8 +355,7 @@ inline switch_status_t ChannelSetVariable(switch_channel_t* channel,
 // NOTE: Track B also exposes a `ChannelGetState` wrapper above; ordering
 // is fine since both are inline and free-standing.
 
-inline uint32_t ChannelTestFlag(switch_channel_t* channel,
-                                switch_channel_flag_t flag) noexcept {
+inline uint32_t ChannelTestFlag(switch_channel_t* channel, switch_channel_flag_t flag) noexcept {
     return switch_channel_test_flag(channel, flag);
 }
 
@@ -367,9 +366,7 @@ inline uint32_t ChannelTestFlag(switch_channel_t* channel,
 // `moh = SWITCH_TRUE` instructs FS to play music-on-hold.
 // Returns SWITCH_STATUS_SUCCESS when FS accepts the request.
 
-inline switch_status_t HoldUuid(const char* uuid,
-                                const char* message,
-                                switch_bool_t moh) noexcept {
+inline switch_status_t HoldUuid(const char* uuid, const char* message, switch_bool_t moh) noexcept {
     return switch_ivr_hold_uuid(uuid, message, moh);
 }
 

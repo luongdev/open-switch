@@ -84,18 +84,20 @@ const std::unordered_set<std::string>& AllowedApps() noexcept {
     }
     // Match <keyword>=<value> where value runs to whitespace or end of string.
     // We intentionally over-redact on boundary cases (conservative).
-    static const std::regex kRedactPattern(
-        R"((?i)(password|token|secret)=(\S+))",
-        std::regex::icase);
+    //
+    // NOTE: do NOT prefix the pattern with `(?i)` — GCC's libstdc++ implements
+    // ECMAScript regex grammar which does NOT recognise inline mode flags,
+    // throwing std::regex_error at construction. Case-insensitivity is
+    // expressed via std::regex::icase passed to the constructor.
+    static const std::regex kRedactPattern(R"((password|token|secret)=(\S+))", std::regex::icase);
     return std::regex_replace(args, kRedactPattern, "$1=[REDACTED]");
 }
 
 }  // namespace
 
-grpc::Status ControlServiceSkeleton::Execute(
-    grpc::ServerContext* /*ctx*/,
-    const open_switch::control::v1::ExecuteRequest* req,
-    open_switch::control::v1::ExecuteResponse* resp) {
+grpc::Status ControlServiceSkeleton::Execute(grpc::ServerContext* /*ctx*/,
+                                             const open_switch::control::v1::ExecuteRequest* req,
+                                             open_switch::control::v1::ExecuteResponse* resp) {
     if (req == nullptr || resp == nullptr) {
         return grpc::Status(grpc::StatusCode::INTERNAL, "null request or response");
     }
@@ -111,8 +113,8 @@ grpc::Status ControlServiceSkeleton::Execute(
         return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "app must not be empty");
     }
     if (!IsAppAllowed(app)) {
-        osw::log::Debug(kSubsystem, "Execute INVALID_ARGUMENT: app='%s' not in allow-list",
-                        app.c_str());
+        osw::log::Debug(
+            kSubsystem, "Execute INVALID_ARGUMENT: app='%s' not in allow-list", app.c_str());
         return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                             "app '" + app + "' is not in the V1 allow-list");
     }
@@ -147,11 +149,8 @@ grpc::Status ControlServiceSkeleton::Execute(
         osw::raii::fs::ExecuteApplication(guard.get(), app.c_str(), args_cstr);
 
     if (rc != SWITCH_STATUS_SUCCESS) {
-        osw::log::Warn(kSubsystem,
-                       "Execute FS failure: rc=%d uuid=%s app=%s",
-                       rc,
-                       uuid.c_str(),
-                       app.c_str());
+        osw::log::Warn(
+            kSubsystem, "Execute FS failure: rc=%d uuid=%s app=%s", rc, uuid.c_str(), app.c_str());
         return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
                             "execute_application failed: rc=" + std::to_string(rc));
     }
@@ -161,10 +160,7 @@ grpc::Status ControlServiceSkeleton::Execute(
     osw::audit::Emit("osw.control.execute",
                      {{"uuid", uuid}, {"app", app}, {"args_redacted", args_redacted}});
 
-    osw::log::Info(kSubsystem,
-                   "Execute OK: uuid=%s app=%s",
-                   uuid.c_str(),
-                   app.c_str());
+    osw::log::Info(kSubsystem, "Execute OK: uuid=%s app=%s", uuid.c_str(), app.c_str());
 
     return grpc::Status::OK;
 }

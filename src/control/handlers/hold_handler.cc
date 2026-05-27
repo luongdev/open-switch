@@ -73,15 +73,13 @@ grpc::Status ControlServiceSkeleton::Hold(grpc::ServerContext* /*ctx*/,
 
     for (const std::string& uuid : req->uuids()) {
         if (uuid.empty()) {
-            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                                "uuid must not be empty");
+            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "uuid must not be empty");
         }
 
         auto guard = osw::control::SessionGuard::Locate(uuid);
         if (!guard.Valid()) {
             osw::log::Debug(kSubsystem, "Hold NOT_FOUND: uuid=%s", uuid.c_str());
-            return grpc::Status(grpc::StatusCode::NOT_FOUND,
-                                "session not found: uuid=" + uuid);
+            return grpc::Status(grpc::StatusCode::NOT_FOUND, "session not found: uuid=" + uuid);
         }
 
         switch_channel_t* const ch = guard.Channel();
@@ -92,9 +90,8 @@ grpc::Status ControlServiceSkeleton::Hold(grpc::ServerContext* /*ctx*/,
 
         // FF-027: Hold only answered channels; CF_ANSWERED must be set.
         if (!osw::raii::fs::ChannelTestFlag(ch, CF_ANSWERED)) {
-            osw::log::Debug(kSubsystem,
-                            "Hold FAILED_PRECONDITION: channel not answered uuid=%s",
-                            uuid.c_str());
+            osw::log::Debug(
+                kSubsystem, "Hold FAILED_PRECONDITION: channel not answered uuid=%s", uuid.c_str());
             return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
                                 "channel not in answered state: uuid=" + uuid);
         }
@@ -114,12 +111,9 @@ grpc::Status ControlServiceSkeleton::Hold(grpc::ServerContext* /*ctx*/,
         // Always pass moh=SWITCH_TRUE.
         const switch_status_t rc = osw::raii::fs::HoldUuid(uuid.c_str(), nullptr, SWITCH_TRUE);
         if (rc != SWITCH_STATUS_SUCCESS) {
-            osw::log::Warn(kSubsystem,
-                           "Hold: HoldUuid returned rc=%d for uuid=%s",
-                           rc,
-                           uuid.c_str());
-            return grpc::Status(grpc::StatusCode::INTERNAL,
-                                "HoldUuid failed for uuid=" + uuid);
+            osw::log::Warn(
+                kSubsystem, "Hold: HoldUuid returned rc=%d for uuid=%s", rc, uuid.c_str());
+            return grpc::Status(grpc::StatusCode::INTERNAL, "HoldUuid failed for uuid=" + uuid);
         }
 
         resp->add_held_uuids(uuid);
