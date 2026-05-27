@@ -261,6 +261,44 @@ struct MockState {
     std::string next_bleg_uuid;
     switch_channel_state_t next_channel_hangup_state = CS_HANGUP;
 
+    // W3 Track B — Bridge / Execute / BlindTransfer (FF-023..FF-025).
+    std::atomic<int> uuid_bridge_calls{0};
+    std::atomic<int> execute_application_calls{0};
+    std::atomic<int> session_transfer_calls{0};
+    std::atomic<int> channel_get_state_calls{0};
+
+    switch_status_t next_uuid_bridge_status = SWITCH_STATUS_SUCCESS;
+    switch_status_t next_execute_application_status = SWITCH_STATUS_SUCCESS;
+    switch_status_t next_session_transfer_status = SWITCH_STATUS_SUCCESS;
+    // Returned by ChannelGetState. Tests set this to drive state checks.
+    switch_channel_state_t next_channel_get_state = CS_EXECUTE;
+
+    // Captured Bridge invocations (FF-023).
+    struct CapturedUuidBridge {
+        std::string originator_uuid;
+        std::string originatee_uuid;
+    };
+    std::vector<CapturedUuidBridge> uuid_bridge_invocations;
+
+    // Captured ExecuteApplication invocations (FF-024).
+    struct CapturedExecuteApplication {
+        switch_core_session_t* session = nullptr;
+        std::string app;
+        std::string args;
+    };
+    std::vector<CapturedExecuteApplication> execute_application_invocations;
+
+    // Captured SessionTransfer invocations (FF-025).
+    struct CapturedSessionTransfer {
+        switch_core_session_t* session = nullptr;
+        std::string extension;
+        std::string dialplan;   // empty string when NULL was passed
+        std::string context;    // empty string when NULL was passed
+        bool dialplan_was_null = false;
+        bool context_was_null = false;
+    };
+    std::vector<CapturedSessionTransfer> session_transfer_invocations;
+
     // Captured artefacts for verification. Tests read these under
     // capture_mu (which is locked by the shim layer when writing).
     std::mutex capture_mu;
@@ -344,12 +382,24 @@ inline void MockReset() {
     m.next_originate_cause = SWITCH_CAUSE_NORMAL_CLEARING;
     m.next_bleg_uuid.clear();
     m.next_channel_hangup_state = CS_HANGUP;
+    // W3 Track B resets.
+    m.uuid_bridge_calls = 0;
+    m.execute_application_calls = 0;
+    m.session_transfer_calls = 0;
+    m.channel_get_state_calls = 0;
+    m.next_uuid_bridge_status = SWITCH_STATUS_SUCCESS;
+    m.next_execute_application_status = SWITCH_STATUS_SUCCESS;
+    m.next_session_transfer_status = SWITCH_STATUS_SUCCESS;
+    m.next_channel_get_state = CS_EXECUTE;
     {
         std::lock_guard<std::mutex> g(m.capture_mu);
         m.events_by_ptr.clear();
         m.bindings.clear();
         m.originate_invocations.clear();
         m.hangup_invocations.clear();
+        m.uuid_bridge_invocations.clear();
+        m.execute_application_invocations.clear();
+        m.session_transfer_invocations.clear();
     }
 }
 
@@ -644,6 +694,85 @@ inline const char* SessionGetUuid(switch_core_session_t* session) noexcept {
     }
     const auto& uuid = Mock().next_bleg_uuid;
     return uuid.empty() ? nullptr : uuid.c_str();
+}
+
+// --- switch_channel_get_state wrapper (FF-023) -----------------------
+//
+// Returns the current channel state. Used by Bridge to validate that
+// both channels are in CS_ROUTING or CS_EXECUTE before bridging.
+
+inline switch_channel_state_t ChannelGetState(switch_channel_t* channel) noexcept {
+    if (!channel) {
+        return CS_HANGUP;
+    }
+    Mock().channel_get_state_calls.fetch_add(1, std::memory_order_relaxed);
+    return Mock().next_channel_get_state;
+}
+
+// --- switch_ivr_uuid_bridge wrapper (FF-023) -------------------------
+//
+// Records the call, increments the counter, and returns
+// next_uuid_bridge_status. Does NOT model the blocking-bridge
+// semantics — tests assert on invocations and status return only.
+
+inline switch_status_t UuidBridge(const char* originator_uuid,
+                                  const char* originatee_uuid) noexcept {
+    auto& m = Mock();
+    m.uuid_bridge_calls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        MockState::CapturedUuidBridge cap;
+        cap.originator_uuid = originator_uuid ? originator_uuid : "";
+        cap.originatee_uuid = originatee_uuid ? originatee_uuid : "";
+        m.uuid_bridge_invocations.push_back(std::move(cap));
+    }
+    return m.next_uuid_bridge_status;
+}
+
+// --- switch_core_session_execute_application wrapper (FF-024) --------
+//
+// Records the call and returns next_execute_application_status. The
+// blocking semantics are not modelled — tests inject status directly.
+
+inline switch_status_t ExecuteApplication(switch_core_session_t* session,
+                                          const char* app,
+                                          const char* arg) noexcept {
+    auto& m = Mock();
+    m.execute_application_calls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        MockState::CapturedExecuteApplication cap;
+        cap.session = session;
+        cap.app = app ? app : "";
+        cap.args = arg ? arg : "";
+        m.execute_application_invocations.push_back(std::move(cap));
+    }
+    return m.next_execute_application_status;
+}
+
+// --- switch_ivr_session_transfer wrapper (FF-025) --------------------
+//
+// Records the call (including NULL-ness of optional dialplan/context)
+// and returns next_session_transfer_status.
+
+inline switch_status_t SessionTransfer(switch_core_session_t* session,
+                                       const char* extension,
+                                       const char* dialplan,
+                                       const char* context) noexcept {
+    auto& m = Mock();
+    m.session_transfer_calls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        MockState::CapturedSessionTransfer cap;
+        cap.session = session;
+        cap.extension = extension ? extension : "";
+        cap.dialplan_was_null = (dialplan == nullptr);
+        cap.context_was_null = (context == nullptr);
+        cap.dialplan = dialplan ? dialplan : "";
+        cap.context = context ? context : "";
+        m.session_transfer_invocations.push_back(std::move(cap));
+    }
+    return m.next_session_transfer_status;
 }
 
 }  // namespace osw::raii::fs

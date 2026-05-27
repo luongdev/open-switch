@@ -47,6 +47,10 @@ add_library(osw_control_fs STATIC
     handlers/originate_handler.cc
     handlers/hangup_handler.cc
     handlers/hangup_many_handler.cc
+    # W3 Track B — connect/execute RPCs
+    handlers/bridge_handler.cc
+    handlers/execute_handler.cc
+    handlers/blind_transfer_handler.cc
 )
 target_include_directories(osw_control_fs
     PUBLIC
@@ -103,6 +107,45 @@ if(OSW_BUILD_TESTS)
         OSW_TEST_FS_MOCK=1
     )
     target_compile_options(osw_control_w3a_test_helpers PRIVATE
+        -Wno-error
+    )
+
+    # --- osw_control_w3b_test_helpers (FS-mock seam for W3 Track B tests) --
+    #
+    # Extends the W3A helpers with the Track B handlers (bridge, execute,
+    # blind_transfer). Uses the same OSW_TEST_FS_MOCK seam.
+    add_library(osw_control_w3b_test_helpers STATIC
+        call_cause.cc
+        session_guard.cc
+        originate_options.cc
+        handlers/originate_handler.cc
+        handlers/hangup_handler.cc
+        handlers/hangup_many_handler.cc
+        handlers/bridge_handler.cc
+        handlers/execute_handler.cc
+        handlers/blind_transfer_handler.cc
+        # Stub for SubscribeEvents (same rationale as w3a helpers).
+        handlers/subscribe_events_stub.cc
+    )
+    target_include_directories(osw_control_w3b_test_helpers PUBLIC
+        ${CMAKE_SOURCE_DIR}/include
+    )
+    target_include_directories(osw_control_w3b_test_helpers PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${OSW_PROTO_GEN_DIR}
+    )
+    target_compile_features(osw_control_w3b_test_helpers PUBLIC cxx_std_20)
+    target_link_libraries(osw_control_w3b_test_helpers PUBLIC
+        osw_control
+        osw_observability
+        osw_audit_test_helpers
+        osw_proto
+        Threads::Threads
+    )
+    target_compile_definitions(osw_control_w3b_test_helpers PUBLIC
+        OSW_TEST_FS_MOCK=1
+    )
+    target_compile_options(osw_control_w3b_test_helpers PRIVATE
         -Wno-error
     )
 endif()
