@@ -25,10 +25,18 @@
 #include "osw/media/stream_client.h"
 
 #include <chrono>
+#include <future>
 
 #include "osw/observability/log.h"
 
 namespace osw::media {
+
+namespace {
+// W6.5 P1-006 fix: bound on how long Close() will wait for the peer to
+// half-close after we send WritesDone before forcefully cancelling the
+// stream via context_->TryCancel().
+constexpr std::chrono::milliseconds kDrainTimeout{2000};
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Constructor / Destructor
@@ -58,21 +66,26 @@ grpc::Status StreamClient::Open(int open_deadline_ms) noexcept {
         }
     }
 
+    // W6.5 P1-005 fix: do NOT set ClientContext::set_deadline on the
+    // long-lived context.  The previous code set a 5-second deadline on
+    // the shared context, which fired ~5 seconds after Open returned and
+    // cancelled the long-lived stream, so every TTS/STT/voicebot session
+    // died at the 5-second mark in production.
+    //
+    // Instead: enforce the handshake deadline via a watchdog future that
+    // calls context_->TryCancel() if the StreamStart+StreamReady exchange
+    // doesn't complete within open_deadline_ms.  Once the handshake
+    // completes, we cancel the watchdog and the long-lived stream
+    // continues without any deadline.
     context_ = std::make_unique<grpc::ClientContext>();
-
-    // Apply deadline for the Open handshake (StreamStart + StreamReady).
-    // Once the reader thread is running the deadline must be cancelled to
-    // avoid timing out the long-lived stream.
-    const auto deadline =
-        std::chrono::system_clock::now() + std::chrono::milliseconds(open_deadline_ms);
-    context_->set_deadline(deadline);
 
     stream_ = stub_->Stream(context_.get());
     if (!stream_) {
+        context_.reset();
         return grpc::Status(grpc::StatusCode::INTERNAL, "stub->Stream returned null");
     }
 
-    // Send StreamStart.
+    // Build StreamStart.
     open_switch::media::v1::FromModule start_msg;
     auto* ss = start_msg.mutable_start();
     ss->set_channel_uuid(config_.channel_uuid);
@@ -87,31 +100,54 @@ grpc::Status StreamClient::Open(int open_deadline_ms) noexcept {
         (*ss->mutable_variables())[k] = v;
     }
 
-    if (!stream_->Write(start_msg)) {
-        const grpc::Status s = stream_->Finish();
-        stream_.reset();
-        context_.reset();
-        return s.ok() ? grpc::Status(grpc::StatusCode::UNAVAILABLE, "Write(StreamStart) failed")
-                      : s;
-    }
-
-    // Block waiting for StreamReady.
+    // Run the handshake in a future so we can wait_for with the deadline.
+    // Capture by reference so the future can update the local state.
+    std::promise<grpc::Status> handshake_promise;
+    auto handshake_future = handshake_promise.get_future();
     open_switch::media::v1::FromService resp;
-    if (!stream_->Read(&resp)) {
-        const grpc::Status s = stream_->Finish();
-        stream_.reset();
-        context_.reset();
-        // Check if this was a deadline exceeded.
-        if (s.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED) {
-            return s;
+    std::thread handshake_thread([this, &start_msg, &resp,
+                                   p = std::move(handshake_promise)]() mutable {
+        if (!stream_->Write(start_msg)) {
+            const grpc::Status s = stream_->Finish();
+            p.set_value(s.ok() ? grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                                              "Write(StreamStart) failed")
+                               : s);
+            return;
         }
-        return s.ok() ? grpc::Status(grpc::StatusCode::UNAVAILABLE, "no StreamReady received") : s;
-    }
+        if (!stream_->Read(&resp)) {
+            const grpc::Status s = stream_->Finish();
+            p.set_value(s.ok() ? grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                                              "no StreamReady received")
+                               : s);
+            return;
+        }
+        if (!resp.has_ready()) {
+            p.set_value(grpc::Status(grpc::StatusCode::INTERNAL,
+                                     "first server message was not StreamReady"));
+            return;
+        }
+        p.set_value(grpc::Status::OK);
+    });
 
-    if (!resp.has_ready()) {
+    grpc::Status handshake_status;
+    if (handshake_future.wait_for(std::chrono::milliseconds(open_deadline_ms))
+        == std::future_status::timeout) {
+        // Force-cancel the stream so Write/Read return and handshake_thread can join.
+        context_->TryCancel();
+        handshake_status = handshake_future.get();
+        if (handshake_status.ok()) {
+            handshake_status = grpc::Status(grpc::StatusCode::DEADLINE_EXCEEDED,
+                                            "Open handshake exceeded open_deadline_ms");
+        }
+    } else {
+        handshake_status = handshake_future.get();
+    }
+    handshake_thread.join();
+
+    if (!handshake_status.ok()) {
         stream_.reset();
         context_.reset();
-        return grpc::Status(grpc::StatusCode::INTERNAL, "first server message was not StreamReady");
+        return handshake_status;
     }
 
     agreed_sample_rate_hz_ = resp.ready().sample_rate_hz();
@@ -123,18 +159,6 @@ grpc::Status StreamClient::Open(int open_deadline_ms) noexcept {
                    resp.ready().server_stream_id().c_str(),
                    agreed_sample_rate_hz_,
                    agreed_channels_);
-
-    // Cancel the handshake deadline — the stream is now long-lived.
-    // We do this by detaching the deadline concept: unfortunately gRPC C++
-    // does not have a "cancel deadline" API. Instead we leave the context as-is
-    // (the deadline has likely not triggered yet for a fast server) and rely on
-    // the fact that the reader/writer threads will observe cancellation via
-    // Write/Read returning false if the deadline fires during the stream.
-    // For production use the caller should set a generous deadline or use
-    // context_->set_deadline with a far-future time. The StreamReady handshake
-    // is complete; the reader loop below will continue even after deadline on
-    // many gRPC implementations, but to be safe the orchestrator should pass
-    // open_deadline_ms = 5000 (default) which is ample for LAN deployments.
 
     // Mark open before spawning threads.
     {
@@ -225,7 +249,7 @@ grpc::Status StreamClient::Close() noexcept {
         open_ = false;
     }
 
-    // Signal writer to drain and exit.
+    // Signal writer to drain and exit (will exit once ring is closed+empty).
     {
         std::lock_guard<std::mutex> lock(ring_mu_);
         ring_closed_ = true;
@@ -241,8 +265,37 @@ grpc::Status StreamClient::Close() noexcept {
         stream_->WritesDone();
     }
 
+    // W6.5 P1-006 fix: bounded drain on the reader thread.
+    //
+    // The previous code did `reader_thread_.join()` unbounded; if the peer
+    // never half-closed in response to WritesDone(), the reader stayed
+    // blocked on Read() forever and Close() (and module shutdown by
+    // extension) hung indefinitely.  The codex review identified this as a
+    // ship-stopping issue.
+    //
+    // Fix: spawn a tiny supervisor future that waits for the reader to
+    // exit naturally within kDrainTimeout.  If the timeout elapses,
+    // forcefully cancel the stream via context_->TryCancel(); Read() will
+    // return false within a single network round-trip and the reader will
+    // exit cleanly.  Only then do we join.
+    //
+    // Note: ReaderLoop owns the single Finish() call (line ~388).  Close()
+    // intentionally does NOT call Finish() (per gRPC C++ docs, Finish must
+    // be called exactly once).
     if (reader_thread_.joinable()) {
-        reader_thread_.join();
+        auto reader_join = std::async(std::launch::async, [this]() {
+            reader_thread_.join();
+        });
+        if (reader_join.wait_for(kDrainTimeout) == std::future_status::timeout) {
+            osw::log::Warn("media",
+                           "StreamClient::Close: drain timeout (%lldms) — "
+                           "TryCancel on context",
+                           static_cast<long long>(kDrainTimeout.count()));
+            if (context_) {
+                context_->TryCancel();
+            }
+            reader_join.wait();  // now bounded — TryCancel unblocks Read()
+        }
     }
 
     // Destroy stream before context (FF-034 lifetime contract).
