@@ -171,9 +171,10 @@ std::shared_ptr<grpc::ServerCredentials> MakeServerCreds(const Config& config) {
     cfg.cert_path = config.grpc_tls_cert_path;
     cfg.key_path = config.grpc_tls_key_path;
     cfg.ca_path = config.grpc_tls_ca_path;
-    // Infer require_client_cert from whether a CA path was provided.
-    // An explicit <tls> block param added in future can override this.
-    cfg.require_client_cert = !config.grpc_tls_ca_path.empty();
+    // Use the explicit flag if set, otherwise infer from ca_path presence.
+    // OQ-1: mTLS-CN preferred; only enabled when operator provides CA bundle.
+    cfg.require_client_cert = config.grpc_tls_require_client_cert ||
+                              !config.grpc_tls_ca_path.empty();
     return BuildServerCredentials(cfg);
 }
 

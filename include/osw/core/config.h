@@ -72,6 +72,11 @@ struct Config {
     /// Path to PEM-encoded CA bundle for client-cert verification.
     /// Empty leaves mTLS off.
     std::string grpc_tls_ca_path;
+    /// When true, client certificate is required and verified against
+    /// grpc_tls_ca_path (mTLS). Automatically inferred as true when
+    /// grpc_tls_ca_path is set, but operators can set this explicitly
+    /// to override the heuristic. OQ-1 resolution: mTLS-CN preferred.
+    bool grpc_tls_require_client_cert = false;
 
     // --- Event plane (W2 owns; defaults stored here for the schema)
     std::uint32_t event_ring_capacity_tier1 = 16384;

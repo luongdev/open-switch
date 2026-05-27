@@ -18,6 +18,7 @@
 add_library(osw_control STATIC
     server.cc
     tls.cc
+    config_tls.cc
     handlers/health_handler.cc
     handlers/unimplemented.cc
 )
