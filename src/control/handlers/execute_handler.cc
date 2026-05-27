@@ -43,6 +43,7 @@
 #include "open_switch/control/v1/control.pb.h"
 
 #include "osw/control/session_guard.h"
+#include "osw/control/var_denylist.h"
 #include "osw/observability/audit.h"
 #include "osw/observability/log.h"
 #include "osw/raii/fs_api.h"
@@ -56,16 +57,15 @@ namespace {
 constexpr const char* kSubsystem = "control.execute";
 
 // V1 fixed allow-list of dialplan applications that may be executed via RPC.
-// Extend only after security review.
+// Removed: bridge, transfer, play_and_get_digits — callers must use the
+// dedicated Bridge/BlindTransfer RPCs; play_and_get_digits is deferred to
+// a typed V2 RPC. Extend only after security review.
 const std::unordered_set<std::string>& AllowedApps() noexcept {
     static const std::unordered_set<std::string> kApps{
         "playback",
-        "bridge",
-        "transfer",
         "set",
         "hangup",
         "answer",
-        "play_and_get_digits",
     };
     return kApps;
 }
@@ -82,14 +82,19 @@ const std::unordered_set<std::string>& AllowedApps() noexcept {
     if (args.empty()) {
         return args;
     }
-    // Match <keyword>=<value> where value runs to whitespace or end of string.
-    // We intentionally over-redact on boundary cases (conservative).
+    // Match <key>=<value> where the key CONTAINS "password", "token", or
+    // "secret" as a substring (not just an exact word). This covers compound
+    // keys like api_secret_key=... or password_hash=..., not only bare
+    // "password=..." or "token=...". Value runs to whitespace or end of string.
+    //
+    // Pattern: \S*?(?:password|token|secret)\S* — any non-ws chars on either
+    // side of the keyword, non-greedy prefix. Still icase via std::regex::icase.
     //
     // NOTE: do NOT prefix the pattern with `(?i)` — GCC's libstdc++ implements
     // ECMAScript regex grammar which does NOT recognise inline mode flags,
-    // throwing std::regex_error at construction. Case-insensitivity is
-    // expressed via std::regex::icase passed to the constructor.
-    static const std::regex kRedactPattern(R"((password|token|secret)=(\S+))", std::regex::icase);
+    // throwing std::regex_error at construction.
+    static const std::regex kRedactPattern(R"((\S*?(?:password|token|secret)\S*)=(\S+))",
+                                           std::regex::icase);
     return std::regex_replace(args, kRedactPattern, "$1=[REDACTED]");
 }
 
@@ -140,6 +145,22 @@ grpc::Status ControlServiceSkeleton::Execute(grpc::ServerContext* /*ctx*/,
                         static_cast<int>(state));
         return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
                             "channel already hung up: uuid=" + uuid);
+    }
+
+    // When app == "set", the args string is "name=value". Apply the same
+    // reserved-var denylist as SetVariables to prevent Execute from being
+    // used as a backdoor to set sip_h_*, exec_*, api_on_*, etc.
+    if (app == "set" && !args.empty()) {
+        const auto eq = args.find('=');
+        const std::string var_name = (eq != std::string::npos) ? args.substr(0, eq) : args;
+        if (osw::control::IsReservedVar(var_name)) {
+            osw::log::Debug(kSubsystem,
+                            "Execute INVALID_ARGUMENT: set with reserved var '%s' uuid=%s",
+                            var_name.c_str(),
+                            uuid.c_str());
+            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                                "variable name is reserved: '" + var_name + "'");
+        }
     }
 
     // FF-024: execute_application blocks the gRPC thread until the app

@@ -30,6 +30,7 @@
 
 #include "osw/control/call_cause.h"
 #include "osw/control/session_guard.h"
+#include "osw/control/var_denylist.h"
 #include "osw/observability/audit.h"
 #include "osw/observability/log.h"
 #include "osw/raii/fs_api.h"
@@ -72,25 +73,38 @@ grpc::Status ControlServiceSkeleton::Hangup(grpc::ServerContext* /*ctx*/,
     // Resolve the cause code (empty / missing → NORMAL_CLEARING).
     const switch_call_cause_t cause = osw::control::CallCause::FromString(req->cause());
 
-    // FF-022: switch_channel_hangup is idempotent. If the channel is
-    // already >= CS_HANGUP, the call returns CS_HANGUP without side
-    // effects. We check the RETURNED state — if it was already hanging
-    // before we called (i.e. the return value is CS_HANGUP AND our call
-    // was a no-op), we surface FAILED_PRECONDITION. However, distinguishing
-    // "already dead" from "just now killed" via return value alone is not
-    // fully reliable; the returned state reflects the channel's state at
-    // the time of the call. If the channel was already CS_HANGUP the
-    // OCF_HANGUP gate in FS returns early; the state will be CS_HANGUP
-    // either way. We accept that the FAILED_PRECONDITION path is a best-
-    // effort check rather than a hard guarantee.
-    const auto state_before = osw::raii::fs::ChannelHangup(ch, cause);
-
-    if (state_before >= CS_HANGUP) {
+    // FF-022: pre-read state BEFORE calling hangup. If the channel is
+    // already >= CS_HANGUP we must not call hangup (it would be a no-op
+    // and we can't distinguish "just killed" from "already dead" from the
+    // return value of switch_channel_perform_hangup — the returned state
+    // is the NEW state after the transition, not the state before; on a
+    // live channel the returned state is CS_HANGUP, which is
+    // indistinguishable from an already-dead channel).
+    const auto pre_state = osw::raii::fs::ChannelGetState(ch);
+    if (pre_state >= CS_HANGUP) {
         osw::log::Debug(
             kSubsystem, "Hangup FAILED_PRECONDITION: channel already dead uuid=%s", uuid.c_str());
         return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
                             "channel already hung up: uuid=" + uuid);
     }
+
+    // P2-9: apply caller-supplied variables BEFORE hangup so they are
+    // included in the on_reporting / CDR event FS emits at hangup.
+    // Apply the same reserved-name denylist as SetVariables to prevent
+    // Hangup being used as a backdoor to set sip_h_*, api_on_*, etc.
+    for (const auto& [k, v] : req->variables()) {
+        if (osw::control::IsReservedVar(k)) {
+            osw::log::Debug(kSubsystem,
+                            "Hangup INVALID_ARGUMENT: reserved var '%s' for uuid=%s",
+                            k.c_str(),
+                            uuid.c_str());
+            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                                "variable name is reserved: '" + k + "'");
+        }
+        osw::raii::fs::ChannelSetVariable(ch, k.c_str(), v.c_str());
+    }
+
+    osw::raii::fs::ChannelHangup(ch, cause);
 
     osw::audit::Emit(
         "osw.control.hangup",

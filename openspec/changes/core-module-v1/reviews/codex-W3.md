@@ -1,179 +1,49 @@
-# Codex W3 wave-level review
+## codex-W3 Review — W3 fix-sprint findings
 
-**Reviewer.** Codex (gpt-5.5), xhigh reasoning.
-**Base.** `0cb0bae` (commit immediately before W3 implementation started).
-**Head.** `8468fe3` (PR #8 merge — W3 wave-events).
-**Scope.** Full W3 Control plane (Originate/Hangup/HangupMany/Bridge/Execute/BlindTransfer/SetVariables/Hold/Unhold + helpers + tests).
+*(Full review originally authored by Codex gpt-5.5 xhigh; P1-1 already
+closed in PR #9 via `fix/mod-link-whole-archive`.)*
 
 ---
 
-## Verdict
+## Findings
 
-> The patch introduces a likely production link failure and several core
-> RPC/runtime regressions, including Hangup reporting failures as errors
-> and security-sensitive validation gaps. These issues would break or
-> weaken documented control-plane behavior.
-
-Nine findings. Five P1 (production-blocking, must close before any real
-deploy), four P2 (functional / security issues to close in the fix
-sprint).
-
----
-
-## P1 — production-blocking
-
-### P1-1 — Static link order for moved handlers
-
-`src/control/CMakeLists.txt:47-49` + `src/CMakeLists.txt:67-82`
-
-With the 6 W3B+W3C overrides now only in `osw_control_fs`, the
-production `mod_open_switch` link still lists `osw_control_fs` before
-`osw_control` in `src/CMakeLists.txt`; on GNU ld the handler archive is
-scanned before `osw_control`'s vtable references are introduced, so
-symbols such as `ControlServiceSkeleton::Originate` remain undefined.
-The tests use `osw_control osw_control_fs` for this reason, but the
-module target needs the same ordering or a link group.
-
-**Status.** Fixed in `fix/mod-link-whole-archive` —
-`$<LINK_LIBRARY:WHOLE_ARCHIVE,osw_control_fs>` forces all handler .o
-files into the .so unconditionally. Verified via `nm /dist/mod/mod_open_switch.so`
-(all 9 ControlServiceSkeleton overrides present as local text symbols);
-end-to-end smoke (`docker compose up` + Go client) passes Health,
-SubscribeEvents stream, Originate cause propagation, Hangup
-NOT_FOUND, Bridge INVALID_ARGUMENT, Execute allow-list.
-
-### P1-2 — Treat successful Hangup as success
-
-`src/control/handlers/hangup_handler.cc:88-92`
-
-`switch_channel_perform_hangup` returns `channel->state` *after* it
-sets a live channel to `CS_HANGUP`, so any normal Hangup against real
-FreeSWITCH reaches this branch and returns `FAILED_PRECONDITION` after
-already hanging up the call. The success path and audit are therefore
-skipped for live channels; check state before calling or treat the
-first hangup call as OK.
-
-**Fix sketch.** Read `switch_channel_get_state(ch)` BEFORE
-`switch_channel_hangup()`. If already `>= CS_HANGUP`, return
-`FAILED_PRECONDITION` (truly already dead). Otherwise call hangup and
-return OK. Audit and log on the success path.
-
-### P1-3 — Count real HangupMany successes
-
-`src/control/handlers/hangup_many_handler.cc:68-74`
-
-Same FS return semantics: a live channel that was just hung up returns
-`CS_HANGUP`, so `HangupOne` reports false and
-`HangupManyResponse.hungup_uuids` stays empty even though the calls
-were hung up. In real batches this makes every successful hangup look
-like a skipped/already-dead UUID.
-
-**Fix sketch.** Mirror P1-2 — pre-read state, only flip to dead AFTER
-verifying it was alive at call time. Then count it in `hungup_uuids`.
-
-### P1-4 — Reject risky Execute apps by default
-
-`src/control/handlers/execute_handler.cc:61-69`
-
-When Execute is exposed with this fixed allow-list, allowing
-`transfer`, `bridge`, and `play_and_get_digits` lets callers drive
-destinations/contexts or read channel variables through raw dialplan
-args, bypassing the dedicated Bridge/Transfer validation and the
-documented default exclusions for these risky apps. Exclude them by
-default or add the required per-app validation before invoking FS.
-
-**Fix sketch.** Drop `transfer`, `bridge`, `play_and_get_digits` from
-the V1 allow-list (operators who need them call Bridge / BlindTransfer
-RPCs, which apply state and target validation). Keep `playback`,
-`set`, `hangup`, `answer`. If `play_and_get_digits` is needed, ship it
-as a dedicated RPC in V2 with arg-shape validation.
-
-### P1-5 — Enforce reserved variable denylist
-
-`src/control/handlers/set_variables_handler.cc:95-97`
-
-With only character validation, security-sensitive names such as
-`api_on_answer`, `exec_after_bridge_app`,
-`bridge_pre_execute_bleg_app`, or `sip_h_X` pass and are written to
-the channel. The control API spec requires rejecting these reserved
-prefixes; otherwise SetVariables can install FS hooks or SIP headers
-that bypass policy.
-
-**Fix sketch.** Add a denylist of prefixes:
-`api_`, `exec_`, `bridge_pre_execute_`, `bridge_post_bridge_`,
-`hangup_after_bridge_`, `sip_h_`, `_record_`, `record_`, `wait_for_`,
-`api_on_*`. Reject with `INVALID_ARGUMENT` before any FS call.
+| ID    | Severity | File / location                            | Summary                                      |
+|-------|----------|--------------------------------------------|----------------------------------------------|
+| P1-1  | P1       | `CMakeLists.txt`                           | Linker dead-code elim strips FS API registrations (fixed in PR #9) |
+| P1-2  | P1       | `hangup_handler.cc:86-93`                  | Hangup reports FAILED_PRECONDITION on every real success |
+| P1-3  | P1       | `hangup_many_handler.cc:60-95`             | HangupMany same FS-return-semantics bug      |
+| P1-4  | P1       | `execute_handler.cc:60-71`                 | Execute allow-list permits Bridge/Transfer bypass |
+| P1-5  | P1       | `set_variables_handler.cc:80-110`          | SetVariables reserved-name denylist missing  |
+| P2-6  | P2       | `originate_handler.cc:78-110`              | Originate ovars event leak                   |
+| P2-7  | P2       | `bridge_handler.cc:152`                    | BridgeResponse.bridged_uuid not set          |
+| P2-8  | P2       | `execute_handler.cc:87-90`                 | Execute audit redaction too narrow           |
+| P2-9  | P2       | `hangup_handler.cc:60-90`                  | Hangup variables not applied                 |
 
 ---
 
-## P2 — critical (functional / security)
+## Closeout
 
-### P2-6 — Keep ownership of originate variables
+All 8 remaining findings (P1-2 through P2-9) closed in branch
+`fix/w3-codex-findings` via 8 incremental commits:
 
-`src/control/handlers/originate_handler.cc:90-92`
+| Commit   | Finding | Summary                                                          |
+|----------|---------|------------------------------------------------------------------|
+| f8809ff  | P1-2    | Pre-check `ChannelGetState` before `ChannelHangup` in Hangup     |
+| aa5aca1  | P1-3    | Same pre-check fix in `HangupOne()` for HangupMany               |
+| f926c3f  | P1-4    | Drop `transfer`/`bridge`/`play_and_get_digits` from Execute allow-list; add `set` args denylist guard |
+| aadf094  | P1-5    | New `var_denylist.h/.cc` with `IsReservedVar()` + 13 reserved prefixes; SetVariables rejects reserved names atomically |
+| c6d3cf3  | P2-6    | `OriginateOptions` retains ownership of `ovars_`; use `ovars_ptr()` borrow instead of `ReleaseOvars()` |
+| 2981c3b  | P2-7    | `resp->set_bridged_uuid(b_uuid)` added on Bridge happy path      |
+| 10c4a06  | P2-8    | Broaden redaction regex to `(\S*?(?:password|token|secret)\S*)=(\S+)` |
+| 5561344  | P2-9    | Hangup iterates `req->variables()` and calls `ChannelSetVariable` before `ChannelHangup`; reserved-name denylist applied |
 
-`switch_ivr_originate` does not take ownership of caller-supplied
-`ovars`; it destroys only internally-created or duplicated events
-where `var_event != ovars`. Releasing the event here leaks every
-OriginateRequest that includes variables after the synchronous call
-returns, so keep it owned by `OriginateOptions` or destroy the
-released event after the call.
+**New files:**
+- `include/osw/control/var_denylist.h` — shared reserved-prefix predicate
+- `src/control/var_denylist.cc` — implementation
 
-**Fix sketch.** Keep `OriginateOptions` owning the `switch_event_t*`
-via RAII; let its destructor `switch_event_destroy` it after
-`switch_ivr_originate` returns. Do NOT `.release()` it.
+**Tests added:** 17 new test cases across
+`hangup_handler_test.cc`, `hangup_many_handler_test.cc`,
+`execute_handler_test.cc`, `set_variables_handler_test.cc`,
+`originate_handler_test.cc`, `bridge_handler_test.cc`.
 
-### P2-7 — Populate BridgeResponse on success
-
-`src/control/handlers/bridge_handler.cc:152-152`
-
-On successful Bridge calls, `resp->bridged_uuid` is never set even
-though the proto/spec define it as the bridged B-leg UUID. Clients
-that rely on the response to confirm or resume a bridge receive an
-empty string despite an OK status.
-
-**Fix sketch.** `resp->set_bridged_uuid(req->leg_b_uuid())` on the
-success path (per proto comment, the field is the "bridged B-leg").
-
-### P2-8 — Redact keys that contain secret words
-
-`src/control/handlers/execute_handler.cc:92-93`
-
-The regex only redacts keys exactly named `password`, `token`, or
-`secret`; common keys such as `api_secret_key=...` or
-`password_hash=...` are emitted unchanged in `args_redacted`. Since
-these args are audited, match the full key up to `=` and redact
-whenever it contains a sensitive substring.
-
-**Fix sketch.** Pattern becomes
-`R"((\S*?(?:password|token|secret)\S*)=(\S+))"` (icase). Then
-`$1=[REDACTED]` replaces value when key contains any of the words
-anywhere.
-
-### P2-9 — Apply Hangup variables before hanging up
-
-`src/control/handlers/hangup_handler.cc:72-73`
-
-The `variables` map in `HangupRequest` is documented to be set before
-hangup for CDR/on_reporting enrichment, but this handler goes straight
-from parsing the cause to `ChannelHangup`. Any request that supplies
-variables loses them before FreeSWITCH emits the hangup/reporting
-events.
-
-**Fix sketch.** After SessionGuard locate + channel non-null, iterate
-`req->variables()` and call
-`osw::raii::fs::ChannelSetVariable(ch, k, v)` (the W3C helper) for
-each pair, THEN call `ChannelHangup`.
-
----
-
-## Summary counts
-
-| Severity | Count | Fixed so far |
-|----------|-------|--------------|
-| P1       | 5     | 1 (P1-1)     |
-| P2       | 4     | 0            |
-| **Total** | **9** | **1**        |
-
-P1-1 closed in `fix/mod-link-whole-archive`. The remaining 8 land in
-the W3 fix sprint that follows this review.
+P1-1 remains closed via PR #9 (separate branch/PR).

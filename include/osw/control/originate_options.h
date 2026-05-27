@@ -100,14 +100,23 @@ class OriginateOptions {
 
     /// The channel-variable event passed as `ovars` to
     /// switch_ivr_originate. Null if no variables were set.
-    /// Ownership: still held by this object until ReleaseOvars() is
-    /// called (or the dtor runs).
+    /// Ownership: held by this object for its full lifetime; the dtor
+    /// calls switch_event_destroy on a non-null pointer.
     [[nodiscard]] switch_event_t* ovars() const noexcept { return ovars_; }
+
+    /// Borrow the raw ovars pointer for passing to switch_ivr_originate.
+    /// Ownership is NOT transferred — this object's dtor still destroys
+    /// the event. Do NOT call switch_event_destroy on the returned pointer.
+    ///
+    /// NOTE: switch_ivr_originate does not universally consume or destroy
+    /// the caller-supplied ovars (behaviour varies by FS version and call
+    /// path). We retain ownership here to guarantee no double-destroy or
+    /// leak regardless of FS internals.
+    [[nodiscard]] switch_event_t* ovars_ptr() const noexcept { return ovars_; }
 
     /// Transfer ownership of ovars_ to the caller. After this call
     /// ovars() returns nullptr and the dtor will not destroy the event.
-    /// Used to pass ownership to switch_ivr_originate (which consumes
-    /// it via switch_event_destroy internally on FF-021).
+    /// Kept for compatibility; prefer ovars_ptr() to avoid ownership ambiguity.
     switch_event_t* ReleaseOvars() noexcept {
         switch_event_t* ev = ovars_;
         ovars_ = nullptr;

@@ -53,6 +53,7 @@ add_library(osw_control_fs STATIC
     call_cause.cc
     session_guard.cc
     originate_options.cc
+    var_denylist.cc
     handlers/originate_handler.cc
     handlers/hangup_handler.cc
     handlers/hangup_many_handler.cc
@@ -100,6 +101,7 @@ if(OSW_BUILD_TESTS)
         call_cause.cc
         session_guard.cc
         originate_options.cc
+        var_denylist.cc
         handlers/originate_handler.cc
         handlers/hangup_handler.cc
         handlers/hangup_many_handler.cc
@@ -150,6 +152,7 @@ if(OSW_BUILD_TESTS)
         call_cause.cc
         session_guard.cc
         originate_options.cc
+        var_denylist.cc
         handlers/originate_handler.cc
         handlers/hangup_handler.cc
         handlers/hangup_many_handler.cc
