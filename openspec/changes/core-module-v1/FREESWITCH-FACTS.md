@@ -2830,6 +2830,75 @@ class Interceptor {
 
 ---
 
+## FF-031 — `switch_core_media_bug_add` signature + ownership
+
+Signature (FS 1.10.12, `src/include/switch_core.h:290-295`):
+```c
+switch_status_t switch_core_media_bug_add(
+    switch_core_session_t *session,
+    const char *function,
+    const char *target,
+    switch_media_bug_callback_t callback,
+    void *user_data,
+    time_t stop_time,
+    switch_media_bug_flag_t flags,
+    switch_media_bug_t **new_bug);
+```
+
+- `function` is the function-name string (used by `_remove_callback`
+  filter — see FF-008). We use `kFunctionName = "mod_open_switch"`.
+- `target` is opaque metadata; pass a short identifier (e.g. purpose
+  name from `PurposeName(cfg.purpose)`) for log clarity.
+- `user_data` is caller-owned. Must outlive the bug — the manager
+  allocates a `BugCallbackContext` on the heap, stores it in `by_id_`
+  on success, and frees it in `Detach` / `DetachAll`.
+- `*new_bug` is FS-owned; do NOT delete. We retain a non-owning ptr
+  in `BugRecord.fs_bug` for log / debug only.
+- `stop_time = 0` means run until manually removed.
+- `switch_media_bug_callback_t` signature (from
+  `src/include/switch_types.h:2407`):
+  `switch_bool_t cb(switch_media_bug_t*, void*, switch_abc_type_t)`
+- `SMBF_FIRST = (1 << 26)` — prepends the bug to the chain head
+  (verified at `src/include/switch_types.h:1920`).
+
+**Source.** `src/include/switch_core.h:290` in v1.10.12.
+
+**Permalink.**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_core.h#L290>
+
+---
+
+## FF-032 — Channel state handler `CS_DESTROY` ordering
+
+Register via `switch_core_event_hook_add_state_change` (macro-generated
+from `switch_core_event_hook.h:245`):
+```c
+switch_status_t switch_core_event_hook_add_state_change(
+    switch_core_session_t *session,
+    switch_state_change_hook_t state_change);
+```
+where `switch_state_change_hook_t = switch_status_t (*)(switch_core_session_t *)`.
+
+The callback fires for EVERY channel state transition. Filter on
+`switch_channel_get_state(channel) == CS_DESTROY` and return
+`SWITCH_STATUS_SUCCESS`.
+
+`CS_DESTROY` (enum value 12, `switch_types.h:1404`) runs AFTER the
+channel's bugs have been closed by FS-side hangup processing, but
+BEFORE the session is freed — so `DetachAll` here is a defensive
+cleanup that drops any `BugHandle` records the manager still tracks.
+The bug pointers stored in `BugRecord.fs_bug` are no longer valid at
+this point; do NOT call `switch_core_media_bug_remove_callback` from
+`DetachAll` on the `CS_DESTROY` path — only erase records.
+
+**Source.** `src/include/switch_core_event_hook.h:64,151,198,245`
+in v1.10.12.
+
+**Permalink.**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_core_event_hook.h#L64>
+
+---
+
 ## FF-033 — `switch_audio_resampler_t` lifecycle (stateful across frames)
 
 **Source verified**: `/usr/local/include/switch_resample.h` in base image

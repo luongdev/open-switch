@@ -1,0 +1,519 @@
+/*
+ * src/media/bug_manager.cc — MediaBugManager implementation.
+ *
+ * Referenced FACTs:
+ *   FF-031 — switch_core_media_bug_add signature + user_data ownership.
+ *             function = kFunctionName ("mod_open_switch").
+ *             target   = PurposeName(purpose) for log clarity.
+ *             user_data is caller-owned; BugCallbackContext* allocated on
+ *             heap and stored in by_id_ (as void*) on success.
+ *             *new_bug is FS-owned; we store a non-owning ptr.
+ *   FF-032 — Channel state handler registered via
+ *             switch_core_event_hook_add_state_change.
+ *             CS_DESTROY fires AFTER FS-side bug chain cleanup; we erase
+ *             BugRecord entries only (do NOT call
+ *             switch_core_media_bug_remove_callback at this point).
+ *
+ * Lock discipline:
+ *   mu_ is acquired for all registry reads/writes.
+ *   It is released BEFORE calling switch_core_media_bug_add (FS may
+ *   block briefly on its own locks; nested-lock danger).
+ *   The bug trampoline callback runs on FS threads and does NOT touch
+ *   mu_.
+ *
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ */
+
+// Include FS headers (or the mock seam) BEFORE anything else so that
+// the FS type definitions are visible to all subsequent includes.
+#if defined(OSW_TEST_FS_MOCK)
+#include "osw/raii/fs_mock.h"
+#else
+#include <switch_channel.h>
+#include <switch_core.h>
+#include <switch_core_event_hook.h>
+#include <switch_types.h>
+
+#include <switch.h>
+#endif
+
+#include <algorithm>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "osw/media/bug_handle.h"
+#include "osw/media/bug_manager.h"
+#include "osw/media/purpose.h"
+
+// ---------------------------------------------------------------------------
+// FS constants and type aliases used in this TU only.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// SMBF_FIRST value (switch_types.h:1920 in v1.10.12).
+#if defined(OSW_TEST_FS_MOCK)
+// fs_mock.h defines SMBF_FIRST as (1u << 26).
+constexpr std::uint32_t kSmbfFirst = static_cast<std::uint32_t>(SMBF_FIRST);
+// CS_DESTROY is defined in fs_mock.h as 12.
+constexpr int kCsDestroy = static_cast<int>(CS_DESTROY);
+#else
+constexpr std::uint32_t kSmbfFirst = static_cast<std::uint32_t>(SMBF_FIRST);
+constexpr int kCsDestroy = static_cast<int>(CS_DESTROY);
+#endif
+
+// ABC types (switch_types.h in v1.10.12).
+#if defined(OSW_TEST_FS_MOCK)
+// The mock does not define SWITCH_ABC_TYPE_* constants; provide them here.
+constexpr int kAbcTypeInit = 0;   // SWITCH_ABC_TYPE_INIT
+constexpr int kAbcTypeClose = 8;  // SWITCH_ABC_TYPE_CLOSE
+#else
+constexpr int kAbcTypeInit = static_cast<int>(SWITCH_ABC_TYPE_INIT);
+constexpr int kAbcTypeClose = static_cast<int>(SWITCH_ABC_TYPE_CLOSE);
+#endif
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// Internal data types (defined in .cc so FS types stay out of the header).
+// ---------------------------------------------------------------------------
+
+namespace osw::media {
+
+/// Per-bug user_data passed to OswMediaBugTrampoline.
+/// Track A creates it with manager + bug_id; Track C populates user_cb.
+struct BugCallbackContext {
+    MediaBugManager* manager;
+    std::uint64_t bug_id;
+    void* user_data;                      // Track C populates: StreamClient*
+    switch_media_bug_callback_t user_cb;  // Track C populates: handler callback
+};
+
+/// Internal registry record.
+struct BugRecord {
+    std::uint64_t id;  // monotonic; unique within process
+    Purpose purpose;
+    std::string channel_uuid;
+    switch_media_bug_t* fs_bug;  // FS-owned; non-owning ptr (log/debug only)
+    BugConfig config;
+    BugCallbackContext* ctx;  // heap-allocated; owned by this record
+};
+
+}  // namespace osw::media
+
+// ---------------------------------------------------------------------------
+// FS API shim — routes through the mock seam in tests, real FS in production.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+inline switch_status_t FsMediaBugAdd(switch_core_session_t* session,
+                                     const char* function_name,
+                                     const char* target,
+                                     switch_media_bug_callback_t callback,
+                                     void* user_data,
+                                     time_t stop_time,
+                                     std::uint32_t flags,
+                                     switch_media_bug_t** new_bug) noexcept {
+#if defined(OSW_TEST_FS_MOCK)
+    return osw::raii::fs::MediaBugAdd(
+        session, function_name, target, callback, user_data, stop_time, flags, new_bug);
+#else
+    return switch_core_media_bug_add(session,
+                                     function_name,
+                                     target,
+                                     callback,
+                                     user_data,
+                                     stop_time,
+                                     static_cast<switch_media_bug_flag_t>(flags),
+                                     new_bug);
+#endif
+}
+
+inline switch_status_t FsMediaBugRemoveCallback(switch_core_session_t* session,
+                                                switch_media_bug_callback_t callback) noexcept {
+#if defined(OSW_TEST_FS_MOCK)
+    return osw::raii::fs::MediaBugRemoveCallback(session, callback);
+#else
+    return switch_core_media_bug_remove_callback(session, callback);
+#endif
+}
+
+inline const char* FsSessionGetUuid(switch_core_session_t* session) noexcept {
+#if defined(OSW_TEST_FS_MOCK)
+    return osw::raii::fs::SessionGetUuid(session);
+#else
+    return switch_core_session_get_uuid(session);
+#endif
+}
+
+inline switch_channel_state_t FsChannelGetState(switch_channel_t* channel) noexcept {
+#if defined(OSW_TEST_FS_MOCK)
+    return osw::raii::fs::ChannelGetState(channel);
+#else
+    return switch_channel_get_state(channel);
+#endif
+}
+
+inline switch_channel_t* FsSessionGetChannel(switch_core_session_t* session) noexcept {
+#if defined(OSW_TEST_FS_MOCK)
+    return osw::raii::fs::SessionGetChannel(session);
+#else
+    return switch_core_session_get_channel(session);
+#endif
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// File-static trampolines (extern "C" for FS callback registration).
+// ---------------------------------------------------------------------------
+
+extern "C" switch_bool_t OswMediaBugTrampoline(switch_media_bug_t* /*bug*/,
+                                               void* user_data,
+                                               switch_abc_type_t type) noexcept {
+    if (!user_data) {
+        return SWITCH_TRUE;
+    }
+    auto* ctx = static_cast<osw::media::BugCallbackContext*>(user_data);
+
+    const int itype = static_cast<int>(type);
+
+    if (itype == kAbcTypeInit) {
+        // No-op for Track A; Track C may do stream Open here via user_cb.
+        if (ctx->user_cb) {
+            return ctx->user_cb(nullptr, ctx->user_data, type);
+        }
+        return SWITCH_TRUE;
+    }
+
+    if (itype == kAbcTypeClose) {
+        // FS is closing the bug: remove our registry record.
+        if (ctx->manager) {
+            ctx->manager->Detach(ctx->bug_id);
+        }
+        if (ctx->user_cb) {
+            return ctx->user_cb(nullptr, ctx->user_data, type);
+        }
+        return SWITCH_TRUE;
+    }
+
+    // All other callback types.
+    if (ctx->user_cb) {
+        return ctx->user_cb(nullptr, ctx->user_data, type);
+    }
+    return SWITCH_TRUE;
+}
+
+extern "C" switch_status_t OswMediaChannelDestroy(switch_core_session_t* session) noexcept {
+    if (!session) {
+        return SWITCH_STATUS_SUCCESS;
+    }
+
+    // Filter: only act on CS_DESTROY.
+    switch_channel_t* channel = FsSessionGetChannel(session);
+    if (channel) {
+        const int state = static_cast<int>(FsChannelGetState(channel));
+        if (state != kCsDestroy) {
+            return SWITCH_STATUS_SUCCESS;
+        }
+    }
+
+    const char* uuid_cstr = FsSessionGetUuid(session);
+    if (!uuid_cstr || uuid_cstr[0] == '\0') {
+        return SWITCH_STATUS_SUCCESS;
+    }
+
+    // FF-032: at CS_DESTROY the FS-side bug chain is already cleaned up.
+    // DetachAll must NOT call switch_core_media_bug_remove_callback.
+    osw::media::MediaBugManager::Instance().DetachAll(uuid_cstr);
+    return SWITCH_STATUS_SUCCESS;
+}
+
+// ---------------------------------------------------------------------------
+// MediaBugManager — implementation.
+// ---------------------------------------------------------------------------
+
+namespace osw::media {
+
+// Convenience: cast void* back to BugRecord* safely.
+static BugRecord* ToRecord(void* p) noexcept {
+    return static_cast<BugRecord*>(p);
+}
+
+// ---------------------------------------------------------------------------
+// Singleton.
+// ---------------------------------------------------------------------------
+
+MediaBugManager& MediaBugManager::Instance() noexcept {
+    static MediaBugManager instance;
+    return instance;
+}
+
+// ---------------------------------------------------------------------------
+// Constructor / destructor.
+// ---------------------------------------------------------------------------
+
+MediaBugManager::MediaBugManager() noexcept = default;
+
+MediaBugManager::~MediaBugManager() noexcept {
+    // Defensive: drain all records.  Normally Module::Shutdown has already
+    // called DetachAll per channel; this handles abnormal teardown.
+    std::lock_guard<std::mutex> lk(mu_);
+    for (auto& [id, raw_ptr] : by_id_) {
+        delete ToRecord(raw_ptr);
+    }
+    by_id_.clear();
+    by_channel_.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Attach.
+// ---------------------------------------------------------------------------
+
+MediaBugManager::AttachResult MediaBugManager::Attach(switch_core_session_t* session,
+                                                      BugConfig cfg) noexcept {
+    const char* uuid_cstr = FsSessionGetUuid(session);
+    if (!uuid_cstr || uuid_cstr[0] == '\0') {
+        return AttachResult{
+            false, grpc::StatusCode::INVALID_ARGUMENT, "session has no UUID", BugHandle{}};
+    }
+    const std::string uuid(uuid_cstr);
+
+    // --- Phase 1: validate + compute flags (mu_ held) --------------------
+    std::uint64_t assigned_id = 0;
+    std::uint32_t effective_flags = cfg.fs_flags;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+
+        // Duplicate purpose check.
+        if (HasPurpose(uuid, cfg.purpose)) {
+            return AttachResult{
+                false,
+                grpc::StatusCode::ALREADY_EXISTS,
+                std::string("purpose already attached: ") + std::string(PurposeName(cfg.purpose)),
+                BugHandle{}};
+        }
+
+        // Stage-rank enforcement.
+        const std::uint32_t this_rank = StageRank(cfg.purpose);
+        const std::uint32_t max_rank = MaxRankForChannel(uuid);
+
+        if (cfg.purpose == Purpose::kVadBargeIn) {
+            // VAD always gets SMBF_FIRST regardless of attach order.
+            effective_flags |= kSmbfFirst;
+        } else if (this_rank < max_rank) {
+            // Out-of-order attach.  Allowed only if caller already set
+            // SMBF_FIRST in cfg.fs_flags.
+            if ((cfg.fs_flags & kSmbfFirst) == 0) {
+                return AttachResult{false,
+                                    grpc::StatusCode::FAILED_PRECONDITION,
+                                    std::string("out-of-order attach: purpose=") +
+                                        std::string(PurposeName(cfg.purpose)) +
+                                        " rank=" + std::to_string(this_rank) +
+                                        " already-attached max-rank=" + std::to_string(max_rank),
+                                    BugHandle{}};
+            }
+        }
+
+        assigned_id = next_id_++;
+    }
+    // mu_ released — safe to call FS now.
+
+    // --- Phase 2: allocate callback context (before calling FS) ----------
+    auto* ctx = new (std::nothrow) BugCallbackContext{this, assigned_id, nullptr, nullptr};
+    if (!ctx) {
+        return AttachResult{false,
+                            grpc::StatusCode::RESOURCE_EXHAUSTED,
+                            "failed to allocate BugCallbackContext",
+                            BugHandle{}};
+    }
+
+    // Capture purpose before moving cfg into BugRecord.
+    const Purpose purpose_copy = cfg.purpose;
+
+    // --- Phase 3: call switch_core_media_bug_add -------------------------
+    switch_media_bug_t* fs_bug = nullptr;
+    const auto rc = FsMediaBugAdd(session,
+                                  kFunctionName,
+                                  std::string(PurposeName(purpose_copy)).c_str(),
+                                  OswMediaBugTrampoline,
+                                  ctx,
+                                  0,
+                                  effective_flags,
+                                  &fs_bug);
+
+    if (rc != SWITCH_STATUS_SUCCESS) {
+        delete ctx;
+        return AttachResult{
+            false,
+            grpc::StatusCode::INTERNAL,
+            std::string("switch_core_media_bug_add failed: rc=") + std::to_string(rc),
+            BugHandle{}};
+    }
+
+    // --- Phase 4: register in maps (mu_ re-acquired) ----------------------
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+
+        auto* rec = new (std::nothrow) BugRecord{};
+        if (!rec) {
+            // Allocation failure after FS add: best-effort remove.
+            delete ctx;
+            return AttachResult{false,
+                                grpc::StatusCode::RESOURCE_EXHAUSTED,
+                                "failed to allocate BugRecord",
+                                BugHandle{}};
+        }
+
+        rec->id = assigned_id;
+        rec->purpose = purpose_copy;
+        rec->channel_uuid = uuid;
+        rec->fs_bug = fs_bug;
+        rec->config = std::move(cfg);
+        rec->config.fs_flags = effective_flags;
+        rec->ctx = ctx;
+
+        by_id_.emplace(assigned_id, static_cast<void*>(rec));
+        by_channel_[uuid].push_back(assigned_id);
+    }
+
+    BugHandle handle(this, assigned_id, purpose_copy, uuid);
+    return AttachResult{true, grpc::StatusCode::OK, "", std::move(handle)};
+}
+
+// ---------------------------------------------------------------------------
+// Detach.
+// ---------------------------------------------------------------------------
+
+void MediaBugManager::Detach(std::uint64_t bug_id) noexcept {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = by_id_.find(bug_id);
+    if (it == by_id_.end()) {
+        return;  // already gone or unknown — idempotent
+    }
+    BugRecord* rec = ToRecord(it->second);
+    const std::string& channel_uuid = rec->channel_uuid;
+
+    // Erase from by_channel_ index.
+    auto cit = by_channel_.find(channel_uuid);
+    if (cit != by_channel_.end()) {
+        auto& vec = cit->second;
+        vec.erase(std::remove(vec.begin(), vec.end(), bug_id), vec.end());
+        if (vec.empty()) {
+            by_channel_.erase(cit);
+        }
+    }
+
+    delete rec;
+    by_id_.erase(it);
+    // Note: we do not call FsMediaBugRemoveCallback here because we don't
+    // have a valid session pointer at this point (the session may already be
+    // freed by the time BugHandle destructor runs after channel hangup).
+    // The canonical removal path is via the SWITCH_ABC_TYPE_CLOSE callback
+    // in OswMediaBugTrampoline (which FS fires during hangup/remove).
+    // Track C can override this by storing the session pointer and calling
+    // FsMediaBugRemoveCallback before releasing the BugHandle.
+}
+
+void MediaBugManager::DetachAll(std::string_view channel_uuid) noexcept {
+    const std::string uuid(channel_uuid);
+    std::vector<std::uint64_t> ids;
+
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto cit = by_channel_.find(uuid);
+        if (cit == by_channel_.end()) {
+            return;  // already clean — idempotent
+        }
+        ids = cit->second;  // copy the id list
+    }
+
+    // FF-032: during CS_DESTROY do NOT call remove_callback.
+    // Erase records only.
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        for (std::uint64_t id : ids) {
+            auto it = by_id_.find(id);
+            if (it != by_id_.end()) {
+                delete ToRecord(it->second);
+                by_id_.erase(it);
+            }
+        }
+        by_channel_.erase(uuid);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Counters.
+// ---------------------------------------------------------------------------
+
+std::size_t MediaBugManager::ActiveBugCount(std::string_view channel_uuid) const noexcept {
+    const std::string uuid(channel_uuid);
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = by_channel_.find(uuid);
+    if (it == by_channel_.end()) {
+        return 0;
+    }
+    return it->second.size();
+}
+
+std::size_t MediaBugManager::TotalActiveBugCount() const noexcept {
+    std::lock_guard<std::mutex> lk(mu_);
+    return by_id_.size();
+}
+
+// ---------------------------------------------------------------------------
+// State handler registration.
+// ---------------------------------------------------------------------------
+
+void MediaBugManager::RegisterStateHandlers() noexcept {
+    // Placeholder.  Track C wires switch_core_event_hook_add_state_change
+    // with OswMediaChannelDestroy.  Track A only provides the handler
+    // implementation and this stub so Module::Load can call it.
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers (called with mu_ held).
+// ---------------------------------------------------------------------------
+
+std::uint32_t MediaBugManager::MaxRankForChannel(const std::string& uuid) const noexcept {
+    auto cit = by_channel_.find(uuid);
+    if (cit == by_channel_.end()) {
+        return 0;
+    }
+    std::uint32_t max_rank = 0;
+    for (std::uint64_t id : cit->second) {
+        auto it = by_id_.find(id);
+        if (it != by_id_.end()) {
+            const BugRecord* rec = static_cast<const BugRecord*>(it->second);
+            const std::uint32_t r = StageRank(rec->purpose);
+            if (r > max_rank) {
+                max_rank = r;
+            }
+        }
+    }
+    return max_rank;
+}
+
+bool MediaBugManager::HasPurpose(const std::string& uuid, Purpose p) const noexcept {
+    auto cit = by_channel_.find(uuid);
+    if (cit == by_channel_.end()) {
+        return false;
+    }
+    for (std::uint64_t id : cit->second) {
+        auto it = by_id_.find(id);
+        if (it != by_id_.end()) {
+            const BugRecord* rec = static_cast<const BugRecord*>(it->second);
+            if (rec->purpose == p) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+}  // namespace osw::media
