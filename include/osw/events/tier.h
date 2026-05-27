@@ -6,17 +6,26 @@
  * Tier classification routes a FreeSWITCH event into one of three
  * in-memory rings:
  *
- *   Tier 1 — critical/billing-grade. Must persist; subscribers run in
- *            HA pairs. Default mappings: CHANNEL_HANGUP_COMPLETE,
- *            CHANNEL_BRIDGE, CHANNEL_UNBRIDGE, CDR_REPORT, RECORD_START,
+ *   Tier 1 — critical/billing-grade plus full channel lifecycle. Must
+ *            persist; subscribers run in HA pairs. Default mappings:
+ *            CHANNEL_CREATE, CHANNEL_PROGRESS, CHANNEL_ANSWER,
+ *            CHANNEL_BRIDGE, CHANNEL_UNBRIDGE, CHANNEL_DESTROY,
+ *            CHANNEL_HANGUP_COMPLETE, CDR_REPORT, RECORD_START,
  *            RECORD_STOP, CUSTOM/osw.audit.* (the module's own audit
- *            channel — see osw::audit).
+ *            channel — see osw::audit). Rationale: subscribers
+ *            reconstructing call state from the event stream need every
+ *            lifecycle transition; the original W2 defaults left
+ *            CREATE/PROGRESS/ANSWER/DESTROY in Tier 2 which leaks
+ *            partial state if Tier 2 dropped under load. Operators
+ *            who want a tighter Tier-1 set can downgrade CREATE +
+ *            PROGRESS via the `tier1-events` config override; see
+ *            designs/event-tiers.md for the trade-off note on ring
+ *            sizing at high call volume.
  *
- *   Tier 2 — call-state. Important but eventually-consistent OK. Default
- *            mappings: CHANNEL_CREATE, CHANNEL_DESTROY, CHANNEL_ANSWER,
- *            CHANNEL_PROGRESS, CHANNEL_CALLSTATE, CHANNEL_HOLD,
- *            CHANNEL_UNHOLD, DTMF, CUSTOM/sofia::register,
- *            CUSTOM/sofia::unregister.
+ *   Tier 2 — call-state (non-lifecycle). Important but eventually-
+ *            consistent OK. Default mappings: CHANNEL_CALLSTATE,
+ *            CHANNEL_HOLD, CHANNEL_UNHOLD, DTMF,
+ *            CUSTOM/sofia::register, CUSTOM/sofia::unregister.
  *
  *   Tier 3 — ephemeral. Best-effort. Default mappings: HEARTBEAT,
  *            RE_SCHEDULE, SESSION_HEARTBEAT, MEDIA_BUG_START,
