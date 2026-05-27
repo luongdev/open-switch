@@ -47,6 +47,10 @@ add_library(osw_control_fs STATIC
     handlers/originate_handler.cc
     handlers/hangup_handler.cc
     handlers/hangup_many_handler.cc
+    # W3 Track C — channel mutators (FF-026..027)
+    handlers/set_variables_handler.cc
+    handlers/hold_handler.cc
+    handlers/unhold_handler.cc
 )
 target_include_directories(osw_control_fs
     PUBLIC
@@ -80,6 +84,10 @@ if(OSW_BUILD_TESTS)
         handlers/originate_handler.cc
         handlers/hangup_handler.cc
         handlers/hangup_many_handler.cc
+        # W3 Track C — channel mutators (FF-026..027)
+        handlers/set_variables_handler.cc
+        handlers/hold_handler.cc
+        handlers/unhold_handler.cc
         # Stub for SubscribeEvents so the test binary vtable is complete
         # without pulling in the real FS-dependent subscribe_events_handler.cc.
         handlers/subscribe_events_stub.cc
