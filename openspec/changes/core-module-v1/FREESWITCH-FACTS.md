@@ -2830,6 +2830,156 @@ class Interceptor {
 
 ---
 
+## FF-033 — `switch_audio_resampler_t` lifecycle (stateful across frames)
+
+**Source verified**: `/usr/local/include/switch_resample.h` in base image
+`simplefs/open-switch-base:1.10.12-trixie` (confirmed by `docker run`).
+
+**Struct layout** (exact fields from switch_resample.h):
+
+```c
+typedef struct {
+    void     *resampler;   // opaque spandsp handle
+    int       from_rate;
+    int       to_rate;
+    double    factor;
+    double    rfactor;
+    int16_t  *to;          // output sample buffer (heap-allocated by FS)
+    uint32_t  to_len;      // number of valid samples currently in `to`
+    uint32_t  to_size;     // total allocated capacity of `to`
+    int       channels;
+} switch_audio_resampler_t;
+```
+
+**Allocation**:
+
+```c
+// Macro expands to switch_resample_perform_create with __FILE__ / __LINE__.
+switch_status_t switch_resample_create(
+    switch_audio_resampler_t **new_resampler,
+    uint32_t from_rate,
+    uint32_t to_rate,
+    uint32_t to_size,       // capacity in samples for the output buffer
+    int quality,            // SWITCH_RESAMPLE_QUALITY == 2
+    uint32_t channels);
+```
+
+Returns `SWITCH_STATUS_SUCCESS` on success; `*new_resampler` is
+heap-allocated by FS. Caller must not free it manually.
+
+**Processing**:
+
+```c
+uint32_t switch_resample_process(
+    switch_audio_resampler_t *resampler,
+    int16_t *src,           // input buffer (non-const — FS has not const-corrected it)
+    uint32_t srclen);       // number of input samples
+```
+
+After the call `resampler->to` contains the output samples and
+`resampler->to_len` is the count. The function also returns `to_len`.
+
+**Lifetime rule (CRITICAL)**: The internal FIR filter state (in
+`resampler->resampler`) is preserved across calls. DO NOT destroy and
+re-create the handle between frames — doing so resets the filter state
+and causes audible discontinuities at every frame boundary. Create once
+per stream; reuse for all frames on that stream.
+
+**Destruction**:
+
+```c
+void switch_resample_destroy(switch_audio_resampler_t **resampler);
+// Takes **resampler (double-pointer); nulls *resampler after freeing.
+```
+
+**V1 module policy**: `osw::media::Resampler` wraps this API and
+enforces the allowed pair restriction (8 kHz ↔ 16 kHz only). Other
+pairs return nullptr from `Resampler::Create()` — the FS API itself
+accepts any rate; the restriction is module policy.
+
+---
+
+## FF-034 — gRPC 1.74 `ClientReaderWriter` bidi stream semantics
+
+**Source**: gRPC C++ API documentation + source for gRPC 1.74 as used in
+`simplefs/open-switch-base:1.10.12-trixie`. Key facts for the
+`MediaBridge::Stream` bidi stream (`StreamClient` in Track B).
+
+**Stub method signature**:
+
+```cpp
+// For: service MediaBridge { rpc Stream(stream FromModule) returns (stream FromService); }
+std::unique_ptr<grpc::ClientReaderWriter<FromModule, FromService>>
+    MediaBridge::Stub::Stream(grpc::ClientContext* ctx);
+```
+
+`ClientContext*` is caller-owned and MUST outlive the stream object.
+
+**Write behaviour**:
+
+- `Write(msg)` is blocking; returns `false` when the send side is
+  shut down OR the call is cancelled. A `false` return means the
+  stream is broken; do not retry.
+- After `Write` returns `false` the stream object must still be
+  kept alive until `Finish()` is called.
+
+**Read behaviour**:
+
+- `Read(msg)` is blocking; returns `false` when the peer has
+  half-closed its send side (i.e. the server called `WritesDone()`
+  or `Finish()`) OR the call is cancelled.
+- After `Read` returns `false` call `Finish()` to retrieve the
+  final status.
+
+**Half-close (client send side)**:
+
+- `WritesDone()` signals to the server that the client is done
+  sending. The server's `Read` will return the final pending
+  messages then return `false`. `WritesDone` is non-blocking (it
+  sends a half-close message on the wire).
+
+**Finish**:
+
+- `Finish()` waits for the server to finish and returns the final
+  `grpc::Status`. MUST be called exactly once after `Read` returns
+  `false`. Calling `Finish()` on a still-open stream blocks until
+  the server finishes.
+
+**Cancellation**:
+
+- `ClientContext::TryCancel()` is async and sticky. Once cancelled:
+  - Subsequent `Read` calls return `false`.
+  - Subsequent `Write` calls return `false`.
+  - `Finish` returns `grpc::Status::CANCELLED`.
+- There is no "un-cancel"; cancellation is terminal.
+
+**Lifetime contract**:
+
+```
+stream_  MUST be destroyed BEFORE context_.
+```
+
+Destroying the stream while the context is alive is safe. Accessing
+the stream after the context is destroyed is undefined behaviour
+(use-after-free in gRPC internals).
+
+`osw::media::StreamClient` owns both as `unique_ptr` and resets
+`stream_` first in `Close()`:
+
+```cpp
+stream_.reset();    // destroy stream first
+context_.reset();   // then context
+```
+
+**Thread safety**: `Read` and `Write` are independently thread-safe
+in gRPC 1.74 (one thread may call `Read` concurrently with another
+calling `Write`). However, two concurrent `Write` calls or two
+concurrent `Read` calls on the same stream are NOT safe — the
+`StreamClient` enforces this by having a single writer thread and a
+single reader thread.
+
+---
+
 ## How to add a new FF entry
 
 If you find a previously-undocumented FreeSWITCH behaviour that

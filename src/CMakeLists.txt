@@ -23,6 +23,7 @@ add_subdirectory(observability)
 add_subdirectory(control)
 add_subdirectory(core)
 add_subdirectory(events)
+add_subdirectory(media)
 
 # --- The module .so ---------------------------------------------------
 
@@ -95,6 +96,8 @@ target_link_libraries(mod_open_switch
         osw_control
         "$<LINK_LIBRARY:WHOLE_ARCHIVE,osw_observability_fs>"
         osw_observability
+        osw_media_fs
+        osw_media
         osw_proto
         Threads::Threads
         OpenSSL::SSL
