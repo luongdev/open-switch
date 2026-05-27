@@ -47,8 +47,9 @@ typedef struct switch_loadable_module_interface switch_loadable_module_interface
 namespace osw {
 
 namespace control {
-class GrpcServer;  // forward; defined in osw/control/server.h
-class RpcMetrics;  // forward; defined in osw/control/rpc_metrics.h
+class GrpcServer;        // forward; defined in osw/control/server.h
+class IdempotencyCache;  // forward; defined in osw/control/idempotency_cache.h
+class RpcMetrics;        // forward; defined in osw/control/rpc_metrics.h
 }  // namespace control
 
 namespace events {
@@ -115,6 +116,10 @@ class Module {
     std::unique_ptr<observability::HealthMetrics> health_metrics_;
     std::unique_ptr<control::RpcMetrics> rpc_metrics_;
     std::unique_ptr<observability::MetricsServer> metrics_server_;
+
+    // W5B idempotency cache. Constructed from config in Module::Load and
+    // injected into ControlServiceSkeleton via GrpcServer::SetIdempotencyCache.
+    std::unique_ptr<control::IdempotencyCache> idempotency_cache_;
 
     // W2 event-plane subsystems. Construction order in Module::Load:
     //   1. classifier_  (FS-agnostic; built from tier rules)

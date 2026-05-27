@@ -62,6 +62,7 @@
 
 #include <switch.h>  // FF-014 environment, switch_version_*
 
+#include "osw/control/idempotency_cache.h"
 #include "osw/control/rpc_metrics.h"
 #include "osw/control/server.h"
 #include "osw/core/config_fs.h"
@@ -219,6 +220,16 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
             grpc_server_.reset();
             return false;
         }
+
+        // 6.5. Construct and inject the W5B idempotency cache.
+        //      Must happen after Start() so the skeleton exists, and
+        //      before TransitionToServing() so no RPC sees a null cache
+        //      while the module is in SERVING state.
+        idempotency_cache_ = std::make_unique<control::IdempotencyCache>(
+            static_cast<std::size_t>(config_.idempotency_cache_capacity),
+            std::chrono::seconds(config_.idempotency_ttl_seconds),
+            std::chrono::seconds(config_.idempotency_in_flight_max_wait_seconds));
+        grpc_server_->SetIdempotencyCache(idempotency_cache_.get());
 
         // 7. Wire the W2 event plane. Order matters:
         //   classifier → rings → binder.Init() → broadcaster.Start()
@@ -429,9 +440,15 @@ bool Module::Shutdown() noexcept {
         rings_.reset();
         classifier_.reset();
 
+        // 7.5. Tear down idempotency cache. The gRPC server was already
+        //      drained in step 5 (no more handler threads accessing the
+        //      cache), so this is safe.
+        idempotency_cache_.reset();
+
         // 8. Tear down the observability plane. rpc_metrics_ and
         //    health_metrics_ hold raw pointers into prometheus_registry_;
         //    reset them before dropping the registry.
+        //    (metrics_server_ was already stopped + reset in step 5.)
         rpc_metrics_.reset();
         health_metrics_.reset();
         prometheus_registry_.reset();

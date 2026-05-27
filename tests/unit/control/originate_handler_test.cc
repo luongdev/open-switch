@@ -27,6 +27,7 @@
 
 #include "open_switch/control/v1/control.pb.h"
 
+#include "osw/control/idempotency_cache.h"
 #include "osw/observability/health.h"
 #include "osw/raii/fs_mock.h"
 
@@ -332,6 +333,87 @@ TEST_F(OriginateHandlerTest, OvarsEventDestroyedByOptionsOwnerNotLeak) {
 
     // The OriginateOptions dtor must have called EventDestroy on the ovars ptr.
     EXPECT_GE(m.event_destroy_calls.load(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// W5 Track B — idempotency dedup (IdempotencyCache wired into handler)
+// ---------------------------------------------------------------------------
+
+TEST_F(OriginateHandlerTest, SameRequestIdDeduplicatesOriginateCall) {
+    // Inject a real IdempotencyCache into the skeleton.
+    auto cache = std::make_unique<osw::control::IdempotencyCache>(
+        /*capacity=*/16,
+        /*ttl=*/std::chrono::seconds(300),
+        /*in_flight_max_wait=*/std::chrono::seconds(5));
+    svc_->SetIdempotencyCache(cache.get());
+
+    auto& m = osw::raii::fs::Mock();
+    m.next_originate_status = SWITCH_STATUS_SUCCESS;
+    m.next_originate_bleg = kBlegSession;
+    m.next_bleg_uuid = kTestUuid;
+    m.next_event = kOvarsEvent;
+    m.next_event_create_status = SWITCH_STATUS_SUCCESS;
+    m.next_event_create_subclass_status = SWITCH_STATUS_SUCCESS;
+
+    // First request: identical request_id.
+    open_switch::control::v1::OriginateRequest req;
+    req.mutable_header()->set_request_id("dedup-test-req-001");
+    AddEndpoint(req, "sofia/gateway/gw1/+441234567890");
+    open_switch::control::v1::OriginateResponse resp1;
+    grpc::ServerContext ctx1;
+
+    const grpc::Status s1 = svc_->Originate(&ctx1, &req, &resp1);
+    ASSERT_TRUE(s1.ok()) << s1.error_message();
+    EXPECT_EQ(resp1.channel_uuid(), kTestUuid);
+
+    // originate_calls must be exactly 1 after first call.
+    EXPECT_EQ(m.originate_calls.load(), 1);
+
+    // Second request: same request_id, same endpoint (mock NOT re-primed —
+    // the handler must NOT call switch_ivr_originate again).
+    open_switch::control::v1::OriginateResponse resp2;
+    grpc::ServerContext ctx2;
+    const grpc::Status s2 = svc_->Originate(&ctx2, &req, &resp2);
+
+    ASSERT_TRUE(s2.ok()) << s2.error_message();
+    // Response must be the cached one.
+    EXPECT_EQ(resp2.channel_uuid(), kTestUuid);
+    // FS originate must NOT have been called a second time.
+    EXPECT_EQ(m.originate_calls.load(), 1) << "switch_ivr_originate called more than once!";
+}
+
+TEST_F(OriginateHandlerTest, EmptyRequestIdBypassesCache) {
+    // When request_id is empty, the handler should always execute FS originate.
+    auto cache = std::make_unique<osw::control::IdempotencyCache>(
+        /*capacity=*/16,
+        /*ttl=*/std::chrono::seconds(300),
+        /*in_flight_max_wait=*/std::chrono::seconds(5));
+    svc_->SetIdempotencyCache(cache.get());
+
+    auto& m = osw::raii::fs::Mock();
+
+    // Prime the mock for two calls.
+    m.next_originate_status = SWITCH_STATUS_SUCCESS;
+    m.next_originate_bleg = kBlegSession;
+    m.next_bleg_uuid = kTestUuid;
+    m.next_event = kOvarsEvent;
+    m.next_event_create_status = SWITCH_STATUS_SUCCESS;
+    m.next_event_create_subclass_status = SWITCH_STATUS_SUCCESS;
+
+    open_switch::control::v1::OriginateRequest req;
+    // header set with empty request_id (default proto value) — no dedup.
+    AddEndpoint(req, "sofia/gateway/gw1/+441234567890");
+
+    open_switch::control::v1::OriginateResponse resp1;
+    grpc::ServerContext ctx1;
+    svc_->Originate(&ctx1, &req, &resp1);
+
+    open_switch::control::v1::OriginateResponse resp2;
+    grpc::ServerContext ctx2;
+    svc_->Originate(&ctx2, &req, &resp2);
+
+    // Both calls must have gone to FS.
+    EXPECT_EQ(m.originate_calls.load(), 2);
 }
 
 }  // namespace

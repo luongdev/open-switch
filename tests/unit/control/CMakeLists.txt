@@ -162,3 +162,16 @@ osw_add_unit_test(
     SOURCES rpc_metrics_test.cc
     LIBS    osw_control osw_observability
 )
+
+# W5 Track B — IdempotencyCache unit test.
+#
+# Links osw_control (which includes idempotency_cache.cc as of W5B).
+# No FS dependency; no FS-mock seam required.
+# The concurrent stress test is designed to be TSAN-clean; CI runs the
+# "control;unit" label under TSAN to verify.
+osw_add_unit_test(
+    NAME    idempotency_cache_test
+    LABEL   "control;unit;w5b"
+    SOURCES idempotency_cache_test.cc
+    LIBS    osw_control
+)

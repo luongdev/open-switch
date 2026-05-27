@@ -23,6 +23,9 @@ add_library(osw_control STATIC
     tls_reloader.cc
     # W4 Track C — RPC metrics collector + interceptor
     rpc_metrics.cc
+    # W5 Track B — idempotency cache (FS-agnostic; lives in osw_control so
+    # tests can link it without pulling in the FS-dependent handlers library)
+    idempotency_cache.cc
     handlers/health_handler.cc
     handlers/unimplemented.cc
 )
