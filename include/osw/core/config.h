@@ -72,6 +72,11 @@ struct Config {
     /// Path to PEM-encoded CA bundle for client-cert verification.
     /// Empty leaves mTLS off.
     std::string grpc_tls_ca_path;
+    /// When true, client certificate is required and verified against
+    /// grpc_tls_ca_path (mTLS). Automatically inferred as true when
+    /// grpc_tls_ca_path is set, but operators can set this explicitly
+    /// to override the heuristic. OQ-1 resolution: mTLS-CN preferred.
+    bool grpc_tls_require_client_cert = false;
 
     // --- Event plane (W2 owns; defaults stored here for the schema)
     std::uint32_t event_ring_capacity_tier1 = 16384;
@@ -117,6 +122,15 @@ struct Config {
     // --- Observability --------------------------------------------------
     /// Log level threshold ("trace","debug","info","warn","error","crit").
     std::string log_level = "info";
+
+    // --- Metrics (W4 Track C) -------------------------------------------
+    /// Enable the Prometheus /metrics HTTP endpoint.
+    bool metrics_enabled = true;
+    /// Bind address for the metrics HTTP server.
+    /// Default: 127.0.0.1 (loopback only). Operators expose via reverse proxy.
+    std::string metrics_bind_address = "127.0.0.1";
+    /// TCP port for the metrics HTTP server.
+    std::uint16_t metrics_port = 9090;
 };
 
 /// Validates the config. Returns Ok() or Fail(detail).

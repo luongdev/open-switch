@@ -19,6 +19,7 @@
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/server_builder.h>
 
+#include "osw/control/rpc_metrics.h"
 #include "osw/control/tls.h"
 #include "osw/core/config.h"
 #include "osw/observability/health.h"
@@ -92,6 +93,20 @@ bool GrpcServer::Start(const Config& config) {
     int bound_port = 0;
     builder.AddListeningPort(config.grpc_listen_address, creds_, &bound_port);
     builder.RegisterService(service_.get());
+
+    // Register the RpcMetrics interceptor (W4C) when a collector was injected
+    // via SetRpcMetrics. mod_open_switch is an internal control plane for the
+    // tts/stt ecosystem — clients are trusted peers on the private network, so
+    // there is no auth/RBAC interceptor here. Network-layer controls (firewall,
+    // VPN, docker network isolation) are the boundary; mTLS is available via
+    // BuildServerCredentials when operators want zero-trust between hosts.
+    if (rpc_metrics_) {
+        std::vector<std::unique_ptr<grpc::experimental::ServerInterceptorFactoryInterface>>
+            creators;
+        creators.push_back(rpc_metrics_->MakeFactory());
+        builder.experimental().SetInterceptorCreators(std::move(creators));
+        osw::log::Info("control", "RpcMetrics interceptor registered");
+    }
     // Note: bound_port is filled in by BuildAndStart() (the resolver
     // runs there, not at AddListeningPort registration). We capture
     // it into the member after BuildAndStart succeeds.
@@ -164,6 +179,10 @@ std::string GrpcServer::BoundAddress() const noexcept {
 
 int GrpcServer::BoundPort() const noexcept {
     return bound_port_;
+}
+
+void GrpcServer::SetRpcMetrics(control::RpcMetrics* metrics) noexcept {
+    rpc_metrics_ = metrics;
 }
 
 void GrpcServer::SetEventPlane(events::Broadcaster* broadcaster,

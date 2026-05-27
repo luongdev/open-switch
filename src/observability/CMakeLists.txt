@@ -14,6 +14,9 @@
 add_library(osw_observability STATIC
     log.cc
     health.cc
+    prometheus.cc
+    metrics_server.cc
+    health_metrics.cc
 )
 target_include_directories(osw_observability PUBLIC
     ${CMAKE_SOURCE_DIR}/include
