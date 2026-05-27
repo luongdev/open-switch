@@ -37,6 +37,7 @@
 #include "open_switch/control/v1/control.pb.h"
 
 #include "osw/control/session_guard.h"
+#include "osw/control/var_denylist.h"
 #include "osw/observability/audit.h"
 #include "osw/observability/log.h"
 #include "osw/raii/fs_api.h"
@@ -93,6 +94,12 @@ grpc::Status ControlServiceSkeleton::SetVariables(
     }
 
     // Validate all names up-front (before any FS call).
+    // Two checks in a single pass:
+    //   1. Character-set: [A-Za-z0-9_-]+ only.
+    //   2. Reserved-prefix denylist: names that gate FS hooks or inject SIP
+    //      headers are rejected regardless of character validity (atomic
+    //      semantics — if ANY var is reserved the entire request is rejected
+    //      with no partial application).
     for (const auto& [name, value] : vars) {
         if (!IsValidVarName(name)) {
             osw::log::Debug(kSubsystem,
@@ -102,6 +109,14 @@ grpc::Status ControlServiceSkeleton::SetVariables(
             return grpc::Status(
                 grpc::StatusCode::INVALID_ARGUMENT,
                 "invalid variable name: '" + name + "' (must match [A-Za-z0-9_-]+)");
+        }
+        if (osw::control::IsReservedVar(name)) {
+            osw::log::Debug(kSubsystem,
+                            "SetVariables INVALID_ARGUMENT: reserved var '%s' for uuid=%s",
+                            name.c_str(),
+                            uuid.c_str());
+            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                                "variable name is reserved: '" + name + "'");
         }
     }
 

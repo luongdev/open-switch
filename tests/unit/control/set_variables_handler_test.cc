@@ -264,6 +264,68 @@ TEST_F(SetVariablesHandlerTest, ValidNamesAccepted) {
 }
 
 // ---------------------------------------------------------------------------
+// INVALID_ARGUMENT — reserved variable name prefixes (P1-5)
+// ---------------------------------------------------------------------------
+
+TEST_F(SetVariablesHandlerTest, ReservedPrefixReturnsInvalidArgument) {
+    // Each reserved prefix must be rejected before any FS call.
+    const std::vector<std::string> reserved_names{
+        "sip_h_Custom",
+        "api_on_answer",
+        "exec_after_bridge",
+        "execute_on_hangup",
+        "bridge_pre_execute_foo",
+        "bridge_post_bridge_foo",
+        "hangup_after_bridge_foo",
+        "record_session",
+        "_record_foo",
+        "wait_for_silence",
+        "transfer_after_bridge",
+        "session_in_hangup_hook",
+        // Case-insensitive variants.
+        "SIP_H_X-Custom",
+        "API_ON_HANGUP",
+        "EXECUTE_ON_ANSWER",
+    };
+    for (const auto& var_name : reserved_names) {
+        osw::raii::fs::MockReset();
+        open_switch::control::v1::SetVariablesRequest req;
+        req.set_uuid("uuid-1234");
+        (*req.mutable_variables())[var_name] = "value";
+        open_switch::control::v1::SetVariablesResponse resp;
+        grpc::ServerContext ctx;
+
+        const grpc::Status status = svc_->SetVariables(&ctx, &req, &resp);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT)
+            << "Reserved var '" << var_name << "' was not rejected";
+
+        auto& m = osw::raii::fs::Mock();
+        EXPECT_EQ(m.session_locate_calls.load(), 0)
+            << "Reserved var '" << var_name << "' triggered a session locate";
+        EXPECT_EQ(m.channel_set_variable_calls.load(), 0)
+            << "Reserved var '" << var_name << "' reached FS set_variable";
+    }
+}
+
+TEST_F(SetVariablesHandlerTest, SafeVarsNotRejectedByDenylist) {
+    PrimeAliveSession();
+
+    open_switch::control::v1::SetVariablesRequest req;
+    req.set_uuid("uuid-1234");
+    (*req.mutable_variables())["tenant_id"] = "acme";
+    (*req.mutable_variables())["cdr_tag"] = "campaign-1";
+    (*req.mutable_variables())["agent"] = "alice";
+    open_switch::control::v1::SetVariablesResponse resp;
+    grpc::ServerContext ctx;
+
+    const grpc::Status status = svc_->SetVariables(&ctx, &req, &resp);
+    ASSERT_TRUE(status.ok()) << status.error_message();
+
+    auto& m = osw::raii::fs::Mock();
+    EXPECT_EQ(m.channel_set_variable_calls.load(), 3);
+}
+
+// ---------------------------------------------------------------------------
 // NOT_FOUND
 // ---------------------------------------------------------------------------
 
