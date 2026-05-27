@@ -65,15 +65,20 @@ bool HangupOne(const std::string& uuid, switch_call_cause_t cause) noexcept {
         return false;
     }
 
-    const auto state_before = osw::raii::fs::ChannelHangup(ch, cause);
-    if (state_before >= CS_HANGUP) {
+    // Pre-read state before calling hangup (same rationale as Hangup P1-2):
+    // switch_channel_perform_hangup returns the NEW state, not the pre-call
+    // state, so checking the return value cannot distinguish "just killed"
+    // from "already dead". Read ChannelGetState first.
+    const auto pre_state = osw::raii::fs::ChannelGetState(ch);
+    if (pre_state >= CS_HANGUP) {
         osw::log::Debug(kSubsystem,
-                        "HangupMany: uuid=%s already dead (state=%d)",
+                        "HangupMany: uuid=%s already dead (pre_state=%d)",
                         uuid.c_str(),
-                        static_cast<int>(state_before));
+                        static_cast<int>(pre_state));
         return false;
     }
 
+    osw::raii::fs::ChannelHangup(ch, cause);
     return true;
 }
 

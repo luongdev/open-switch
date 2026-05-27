@@ -56,7 +56,8 @@ class HangupManyHandlerTest : public ::testing::Test {
         auto& m = osw::raii::fs::Mock();
         m.next_session = kSession;
         m.next_channel = kChannel;
-        m.next_channel_hangup_state = CS_EXECUTE;
+        // Pre-check sees channels alive (CS_EXECUTE).
+        m.next_channel_get_state = CS_EXECUTE;
         m.next_event = kAuditEvent;
         m.next_event_create_subclass_status = SWITCH_STATUS_SUCCESS;
     }
@@ -160,8 +161,8 @@ TEST_F(HangupManyHandlerTest, AlreadyDeadChannelExcludedFromResponse) {
     auto& m = osw::raii::fs::Mock();
     m.next_session = kSession;
     m.next_channel = kChannel;
-    // channel_hangup returns CS_HANGUP (already dead).
-    m.next_channel_hangup_state = CS_HANGUP;
+    // Pre-check: ChannelGetState returns CS_HANGUP → already dead.
+    m.next_channel_get_state = CS_HANGUP;
 
     open_switch::control::v1::HangupManyRequest req;
     req.add_uuids("dead-uuid");
@@ -171,6 +172,8 @@ TEST_F(HangupManyHandlerTest, AlreadyDeadChannelExcludedFromResponse) {
     const grpc::Status status = svc_->HangupMany(&ctx, &req, &resp);
     ASSERT_TRUE(status.ok());
     EXPECT_EQ(resp.hungup_uuids_size(), 0);
+    // ChannelHangup NOT called (pre-check fires first).
+    EXPECT_EQ(m.channel_hangup_calls.load(), 0);
     // Audit NOT emitted (channel was already dead).
     EXPECT_EQ(m.event_fire_calls.load(), 0);
 }
