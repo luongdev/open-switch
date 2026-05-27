@@ -858,6 +858,41 @@ designs/recording-with-bot.md + designs/media-bridge.md:
 
 No `Co-Authored-By:` line. Author / committer is `@luongdev`.
 
+## Interaction with W7 Track D (`StartBot` multi-target)
+
+The recording relay (this Track B) and the multi-target bot
+(Track D) compose naturally:
+
+- **FS-native `record_session`**: when an operator dials
+  `record_session` BEFORE `StartBot`, the recording bug observes
+  pre-injection frames (per `recording-with-bot.md` §"Tension:
+  record from answer vs bot in recording"). Track B's
+  `warn_record_before_inject` audit fires when the bot attaches —
+  the warning is unchanged by the multi-target pattern (only the
+  bot RPC name differs).
+- **Module-owned `RECORDING_RELAY`**: when `StartRecordingRelay`
+  is called AFTER `StartBot`, the LATE-stage gate requires ≥ 1
+  INJECT bug. Track D's bot bugs ARE INJECT-stage
+  (`kVoicebotDuplexWrite` purpose for the WRITE_REPLACE half), so
+  the gate accepts the relay attach. Recording captures the
+  post-injection (bot-audible) frames. Works for both single-
+  target and multi-target bots.
+- **Stereo split**: L=caller mic (READ_STREAM), R=post-injection
+  write (WRITE_STREAM after Track D's WRITE_REPLACE in chain
+  order). When the bot is silent (passthrough per FF-036), R
+  captures whatever flows through — bridge audio in a 3-way
+  scenario, silence_stream output on a parked channel.
+- **Multi-target recording**: this Track B records ONE target
+  channel per `StartRecordingRelay`. To record both KH and Agent
+  in a 3-way bot scenario, the orchestrator issues two
+  `StartRecordingRelay` calls (one per leg). The relays are
+  independent — same bot, different recording streams.
+
+The `kRecordingRelay` stage rank (LATE) remains AFTER the
+`kVoicebotDuplexWrite` INJECT rank, so Track D's bugs always
+attach before Track B's. Operators who reverse the order get
+`FAILED_PRECONDITION` from the MediaBugManager.
+
 ## Out of scope (for Track B explicitly)
 
 - Eavesdrop policy (Track A).

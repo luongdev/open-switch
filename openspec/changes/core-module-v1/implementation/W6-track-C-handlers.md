@@ -681,3 +681,55 @@ Commit message (no AI co-author trailers — contributor is @luongdev):
 > `feat(control,media): StartTts + StartStt + StartVoicebot + StopMediaStream handlers`
 
 Push: `git push -u origin implementation/wave6-track-c-handlers`.
+
+---
+
+## Legacy / Deprecation (added post-W6 architectural review)
+
+The 4 RPCs introduced in this Track (`StartTts`, `StartStt`,
+`StartVoicebot`, `StopMediaStream`) ship in V1 with single-target
+semantics (one channel per call). After the W6.5 wave-level review,
+the V1 architectural decision (logged in
+[`../tasks.md`](../tasks.md) §"V1 scope confirmed") chose
+**multi-target bug attachment** as the canonical bot-attach pattern
+(W7 Track D — `StartBot` / `StopBot`).
+
+### Status in V1
+
+| RPC | Status | Notes |
+|---|---|---|
+| `StartTts` | **Legacy** | Single-target IVR-style mode. Ships. New code SHOULD use `StartBot(purpose=TTS_BROADCAST)`. |
+| `StartStt` | **Legacy** | Same — use `StartBot(purpose=STT_LISTEN)`. |
+| `StartVoicebot` | **Legacy** | Same — use `StartBot(purpose=VOICEBOT_DUPLEX)`. |
+| `StopMediaStream` | **Legacy** | Stops legacy streams only. `StopBot` stops W7 Track D streams. |
+
+### Migration matrix
+
+| Legacy call | Equivalent `StartBot` call |
+|---|---|
+| `StartTts{channel_uuid=X, upstream_endpoint=E, sample_rate_hz=R, start_message=M}` | `StartBot{target_channel_uuids=[X], upstream_endpoint=E, purpose=TTS_BROADCAST, sample_rate_hz=R, start_message=M}` |
+| `StartStt{channel_uuid=X, upstream_endpoint=E, sample_rate_hz=R, language=L, ...}` | `StartBot{target_channel_uuids=[X], upstream_endpoint=E, purpose=STT_LISTEN, sample_rate_hz=R, variables={"language": L, ...}}` |
+| `StartVoicebot{channel_uuid=X, upstream_endpoint=E, sample_rate_hz=R, start_message=M}` | `StartBot{target_channel_uuids=[X], upstream_endpoint=E, purpose=VOICEBOT_DUPLEX, sample_rate_hz=R, start_message=M}` |
+| `StopMediaStream{channel_uuid=X, stream_id=S}` | `StopBot{bot_id=B}` (orchestrator must store the mapping from stream_id → bot_id) |
+
+### What W6 Track C will NOT receive
+
+The W6 RPCs are frozen — no new features land on them. Specifically:
+
+- **No multi-target extension** — extending `StartTts` to accept N
+  channels would re-create the design that `StartBot` already
+  delivers. Operators with multi-target needs MUST switch to
+  `StartBot`.
+- **No whisper support** — same.
+- **No `UpdateBot`-equivalent** — `StartTts` does not gain dynamic
+  channel update; stop + restart only.
+- **No new audit subclasses** — `osw.media.tts.*` set is closed at
+  W6 ship. New subclasses (`osw.media.bot.*`) belong to W7 Track D.
+
+### Possible V2 removal
+
+V2 may remove the legacy RPCs entirely. The proto comments mark them
+`reserved for legacy single-target IVR use`. Operators must migrate
+before the V2 cutover. The W7 Track D acceptance gate includes a
+"feature parity" check confirming every legacy RPC use case maps to
+a `StartBot` invocation.
