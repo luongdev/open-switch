@@ -10,15 +10,20 @@
  *      EXCEPT:
  *        - Health (real impl lives in health_handler.cc)
  *        - SubscribeEvents (real impl lives in subscribe_events_handler.cc)
- *        - Originate (real impl lives in originate_handler.cc)       [W3A]
- *        - Hangup (real impl lives in hangup_handler.cc)             [W3A]
- *        - HangupMany (real impl lives in hangup_many_handler.cc)    [W3A]
- *        - Bridge (real impl lives in bridge_handler.cc)             [W3B]
- *        - Execute (real impl lives in execute_handler.cc)           [W3B]
- *        - BlindTransfer (real impl lives in blind_transfer_handler.cc) [W3B]
+ *        - Originate (real impl lives in originate_handler.cc)             [W3A]
+ *        - Hangup (real impl lives in hangup_handler.cc)                   [W3A]
+ *        - HangupMany (real impl lives in hangup_many_handler.cc)          [W3A]
+ *        - Bridge (real impl lives in bridge_handler.cc)                   [W3B]
+ *        - Execute (real impl lives in execute_handler.cc)                 [W3B]
+ *        - BlindTransfer (real impl lives in blind_transfer_handler.cc)    [W3B]
+ *        - SetVariables (real impl lives in set_variables_handler.cc)      [W3C]
+ *        - Hold (real impl lives in hold_handler.cc)                       [W3C]
+ *        - Unhold (real impl lives in unhold_handler.cc)                   [W3C]
  *
- * Wave mapping for remaining stubs:
- *   SetVariables, Hold, Unhold → W3 Track C
+ * After W3 (A+B+C) lands, this TU carries ONLY the Unimplemented() helper.
+ * No stub method bodies remain. Future RPCs added to ControlServiceSkeleton
+ * (V2 node lifecycle, etc.) can be stubbed here until their real handler
+ * lands.
  *
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
@@ -49,29 +54,8 @@ grpc::Status Unimplemented(std::string_view method, std::string_view wave) {
 
 }  // namespace osw::control::handlers
 
-namespace osw::control {
-
-// --- W3 Track C stubs (not yet implemented) ------------------------------
-
-grpc::Status ControlServiceSkeleton::SetVariables(
-    grpc::ServerContext*,
-    const open_switch::control::v1::SetVariablesRequest*,
-    open_switch::control::v1::SetVariablesResponse*) {
-    return handlers::Unimplemented("SetVariables", "W3");
-}
-
-grpc::Status ControlServiceSkeleton::Hold(grpc::ServerContext*,
-                                          const open_switch::control::v1::HoldRequest*,
-                                          open_switch::control::v1::HoldResponse*) {
-    return handlers::Unimplemented("Hold", "W3");
-}
-
-grpc::Status ControlServiceSkeleton::Unhold(grpc::ServerContext*,
-                                            const open_switch::control::v1::UnholdRequest*,
-                                            open_switch::control::v1::UnholdResponse*) {
-    return handlers::Unimplemented("Unhold", "W3");
-}
-
-// W2-bound `SubscribeEvents` lives in subscribe_events_handler.cc.
-
-}  // namespace osw::control
+// No stub method bodies remain after W3. Bridge/Execute/BlindTransfer
+// (W3B) and SetVariables/Hold/Unhold (W3C) all moved to their dedicated
+// handler TUs; SubscribeEvents (W2) lives in subscribe_events_handler.cc;
+// Originate/Hangup/HangupMany (W3A) in their dedicated TUs; Health (W1)
+// in health_handler.cc.

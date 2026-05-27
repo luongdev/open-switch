@@ -271,6 +271,8 @@ inline switch_channel_state_t ChannelHangup(switch_channel_t* channel,
     return switch_channel_hangup(channel, cause);
 }
 
+// W3 Track B — Bridge / Execute / BlindTransfer (FF-023..025) ---------
+
 // --- switch_channel_get_state ----------------------------------------
 //
 // Returns the current call state of a channel. Used by Bridge to
@@ -324,6 +326,60 @@ inline switch_status_t SessionTransfer(switch_core_session_t* session,
                                        const char* dialplan,
                                        const char* context) noexcept {
     return switch_ivr_session_transfer(session, extension, dialplan, context);
+}
+
+// W3 Track C — SetVariables / Hold / Unhold (FF-026..027) -------------
+
+// --- switch_channel_set_variable (FF-026) ----------------------------
+//
+// FF-026: switch_channel_set_variable is a macro that expands to
+// switch_channel_set_variable_var_check(..., SWITCH_TRUE).
+// FS copies both name and value into the channel's APR pool. Caller's
+// buffers can be freed immediately after. Safe from any thread that
+// holds the session read-lock (FF-016).
+// Returns SWITCH_STATUS_SUCCESS on success, SWITCH_STATUS_FALSE if the
+// channel is null or var_check fails.
+
+inline switch_status_t ChannelSetVariable(switch_channel_t* channel,
+                                          const char* name,
+                                          const char* value) noexcept {
+    return switch_channel_set_variable(channel, name, value);
+}
+
+// --- switch_channel_test_flag (FF-027) --------------------------------
+//
+// FF-027: switch_channel_test_flag returns non-zero if `flag` is set.
+// Used to gate Hold (CF_ANSWERED) and Unhold (CF_HOLD) operations.
+// Caller MUST hold the session read-lock (FF-016).
+//
+// NOTE: Track B also exposes a `ChannelGetState` wrapper above; ordering
+// is fine since both are inline and free-standing.
+
+inline uint32_t ChannelTestFlag(switch_channel_t* channel,
+                                switch_channel_flag_t flag) noexcept {
+    return switch_channel_test_flag(channel, flag);
+}
+
+// --- switch_ivr_hold_uuid (FF-027) ------------------------------------
+//
+// FF-027: switch_ivr_hold_uuid(uuid, message, moh).
+// `message` is a display string / MoH class name (NULL = FS default).
+// `moh = SWITCH_TRUE` instructs FS to play music-on-hold.
+// Returns SWITCH_STATUS_SUCCESS when FS accepts the request.
+
+inline switch_status_t HoldUuid(const char* uuid,
+                                const char* message,
+                                switch_bool_t moh) noexcept {
+    return switch_ivr_hold_uuid(uuid, message, moh);
+}
+
+// --- switch_ivr_unhold_uuid (FF-027) ----------------------------------
+//
+// FF-027: switch_ivr_unhold_uuid(uuid).
+// Returns SWITCH_STATUS_SUCCESS when FS accepts the request.
+
+inline switch_status_t UnholdUuid(const char* uuid) noexcept {
+    return switch_ivr_unhold_uuid(uuid);
 }
 
 }  // namespace osw::raii::fs
