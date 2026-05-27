@@ -30,6 +30,7 @@ COPY modules.conf.xml /usr/local/etc/freeswitch/autoload_configs/modules.conf.xm
 COPY open_switch.conf.xml /usr/local/etc/freeswitch/autoload_configs/open_switch.conf.xml
 COPY event_socket.conf.xml /usr/local/etc/freeswitch/autoload_configs/event_socket.conf.xml
 COPY dialplan/default.xml /usr/local/etc/freeswitch/dialplan/default.xml
+COPY dialplan/public/00_osw_e2e.xml /usr/local/etc/freeswitch/dialplan/public/00_osw_e2e.xml
 
 # 3. gRPC listen port from open_switch.conf.xml.
 EXPOSE 50061
