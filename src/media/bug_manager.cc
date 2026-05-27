@@ -143,6 +143,20 @@ inline switch_status_t FsMediaBugRemoveCallback(switch_core_session_t* session,
 #endif
 }
 
+// W6.5 P1-004 fix: per-bug pointer-based remove. All module-owned bugs
+// share OswMediaBugTrampoline as their callback function, so the
+// callback-based remove API removes ALL of them at once — wrong for
+// multi-stream calls. Using switch_core_media_bug_remove(session, &bug)
+// removes exactly one bug.
+inline switch_status_t FsMediaBugRemove(switch_core_session_t* session,
+                                        switch_media_bug_t** bug) noexcept {
+#if defined(OSW_TEST_FS_MOCK)
+    return osw::raii::fs::MediaBugRemove(session, bug);
+#else
+    return switch_core_media_bug_remove(session, bug);
+#endif
+}
+
 inline const char* FsSessionGetUuid(switch_core_session_t* session) noexcept {
 #if defined(OSW_TEST_FS_MOCK)
     return osw::raii::fs::SessionGetUuid(session);
@@ -173,7 +187,7 @@ inline switch_channel_t* FsSessionGetChannel(switch_core_session_t* session) noe
 // File-static trampolines (extern "C" for FS callback registration).
 // ---------------------------------------------------------------------------
 
-extern "C" switch_bool_t OswMediaBugTrampoline(switch_media_bug_t* /*bug*/,
+extern "C" switch_bool_t OswMediaBugTrampoline(switch_media_bug_t* bug,
                                                void* user_data,
                                                switch_abc_type_t type) noexcept {
     if (!user_data) {
@@ -184,9 +198,11 @@ extern "C" switch_bool_t OswMediaBugTrampoline(switch_media_bug_t* /*bug*/,
     const int itype = static_cast<int>(type);
 
     if (itype == kAbcTypeInit) {
-        // No-op for Track A; Track C may do stream Open here via user_cb.
+        // W6.5 P1-001 fix: forward the real `bug` ptr (was `nullptr`).
+        // Track C callbacks call switch_core_media_bug_{get,set}_*_frame(bug)
+        // and would crash on a null bug ptr in production.
         if (ctx->user_cb) {
-            return ctx->user_cb(nullptr, ctx->user_data, type);
+            return ctx->user_cb(bug, ctx->user_data, type);
         }
         return SWITCH_TRUE;
     }
@@ -206,15 +222,17 @@ extern "C" switch_bool_t OswMediaBugTrampoline(switch_media_bug_t* /*bug*/,
             // recurse / deadlock. DetachInternal still deletes ctx for us.
             mgr->DetachInternal(bug_id, /*call_remove_callback=*/false);
         }
+        // W6.5 P1-001 fix: forward the real `bug` ptr to user_cb's CLOSE
+        // handler so it can run any per-bug cleanup before FS frees the bug.
         if (user_cb) {
-            return user_cb(nullptr, user_data, type);
+            return user_cb(bug, user_data, type);
         }
         return SWITCH_TRUE;
     }
 
-    // All other callback types.
+    // All other callback types — W6.5 P1-001 fix: forward real bug ptr.
     if (ctx->user_cb) {
-        return ctx->user_cb(nullptr, ctx->user_data, type);
+        return ctx->user_cb(bug, ctx->user_data, type);
     }
     return SWITCH_TRUE;
 }
@@ -443,6 +461,7 @@ bool MediaBugManager::SetBugCallback(std::uint64_t bug_id,
 void MediaBugManager::DetachInternal(std::uint64_t bug_id, bool call_remove_callback) noexcept {
     // Capture what we need under mu_, then release before calling FS.
     switch_core_session_t* session_to_remove = nullptr;
+    switch_media_bug_t* fs_bug_to_remove = nullptr;
     BugCallbackContext* ctx_to_delete = nullptr;
     BugRecord* rec_to_delete = nullptr;
 
@@ -465,17 +484,26 @@ void MediaBugManager::DetachInternal(std::uint64_t bug_id, bool call_remove_call
         }
 
         // Take ownership for cleanup outside the lock.
+        // W6.5 P1-004 fix: capture the EXACT bug pointer so we can detach
+        // only this one bug (not every bug that shares the trampoline
+        // callback). The codex review found that switch_core_media_bug_
+        // remove_callback() removes ALL bugs with the matching callback,
+        // which breaks multi-stream calls where N module-owned bugs all
+        // share OswMediaBugTrampoline as their callback function.
         session_to_remove = call_remove_callback ? rec->session : nullptr;
+        fs_bug_to_remove = call_remove_callback ? rec->fs_bug : nullptr;
         ctx_to_delete = rec->ctx;
         rec_to_delete = rec;
         by_id_.erase(it);
     }
 
     // mu_ released. Ask FS to detach the bug if requested. FS guarantees
-    // that after remove_callback returns, no more trampoline invocations
-    // will fire for this user_data — so freeing ctx below is safe.
-    if (session_to_remove) {
-        FsMediaBugRemoveCallback(session_to_remove, OswMediaBugTrampoline);
+    // that after switch_core_media_bug_remove() returns, no more callback
+    // invocations will fire for this bug — so freeing ctx below is safe.
+    if (session_to_remove && fs_bug_to_remove) {
+        // W6.5 P1-004 fix: remove the specific bug by pointer, not by
+        // callback function (which would remove every module-owned bug).
+        FsMediaBugRemove(session_to_remove, &fs_bug_to_remove);
     }
 
     delete ctx_to_delete;
