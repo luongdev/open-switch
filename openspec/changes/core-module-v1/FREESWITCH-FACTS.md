@@ -2527,6 +2527,94 @@ Returns non-zero if the flag is set.
 
 ---
 
+---
+
+## FF-029 — gRPC ServerInterceptorFactoryInterface lifecycle, intercept point, and thread model
+
+**Claim.** gRPC C++ (1.74) exposes a server-side interceptor mechanism
+via `grpc::ServerInterceptorFactoryInterface` and
+`grpc::experimental::Interceptor`. Interceptor factories are registered
+**once** on the `grpc::ServerBuilder` before `BuildAndStart()` via
+`builder.experimental().SetInterceptorCreators(...)`. After
+`BuildAndStart()` the interceptor list is immutable for the server's
+lifetime; dynamic add/remove are not supported.
+
+**Intercept point.** The `PRE_RECV_INITIAL_METADATA` hook fires on
+every RPC before the server handler method is entered. This is the
+correct hook point for authentication and authorization: at this point
+the `grpc::ServerContext` is fully populated with the peer's auth context
+(mTLS common name via `auth_context()->FindPropertyValues("x509_common_name")`)
+and the initial metadata (containing `authorization: Bearer <jwt>`).
+To abort the RPC the interceptor calls `methods->Hijack()` and does NOT
+call `methods->Proceed()`. The interceptor then uses the server context
+to set a Finish status via `grpc::ServerContext::TryCancel()` or by
+returning an error in the send-status hook. In practice, to return an
+error response (e.g., UNAUTHENTICATED), the interceptor must complete the
+Hijack path — hijack means "I will handle this RPC myself"; the interceptor
+then sends the error status via `InterceptorBatchMethods` on the
+`PRE_SEND_STATUS` hook.
+
+**Thread model.** Each RPC invocation creates a new `Interceptor`
+instance via `CreateServerInterceptor()`. The factory itself is shared
+across all RPC threads and must be thread-safe; the per-RPC
+`Interceptor` instance is only accessed from one thread at a time (the
+gRPC worker thread processing that RPC). `Intercept()` is called
+synchronously; it must either call `Proceed()` to continue the pipeline
+or `Hijack()` to terminate it. Calling neither causes the RPC to hang
+indefinitely — there is no timeout on the intercept decision itself.
+
+**Source.** `include/grpcpp/support/server_interceptor.h` (gRPC 1.74).
+`include/grpcpp/impl/server_builder_impl.h` — `SetInterceptorCreators`
+stores the vector into the builder and passes it to the server core at
+`BuildAndStart()` time.
+
+**Permalink.**
+<https://github.com/grpc/grpc/blob/v1.74.0/include/grpcpp/support/server_interceptor.h>
+
+**Excerpt** (simplified; verbatim from grpcpp/support/server_interceptor.h):
+
+```cpp
+namespace grpc {
+class ServerInterceptorFactoryInterface {
+ public:
+  virtual experimental::Interceptor* CreateServerInterceptor(
+      experimental::ServerRpcInfo* info) = 0;
+  virtual ~ServerInterceptorFactoryInterface() = default;
+};
+
+namespace experimental {
+class Interceptor {
+ public:
+  virtual void Intercept(InterceptorBatchMethods* methods) = 0;
+  virtual ~Interceptor() = default;
+};
+}  // namespace experimental
+}  // namespace grpc
+```
+
+**Implications for W4 Track B.**
+
+- Register the `AuthInterceptorFactory` once at `ServerBuilder` time
+  (in `GrpcServer::Start`). The factory is constructed with a
+  `std::shared_ptr<RbacRegistry>` so the RBAC table can be updated
+  atomically (inotify reload path) without restarting the server.
+- Use `PRE_RECV_INITIAL_METADATA` as the single interception hook
+  point. All auth/authz logic runs here.
+- The `Interceptor` instance is per-RPC; it captures a
+  `const std::shared_ptr<RbacRegistry>` snapshot at construction (load
+  from the factory's `std::atomic<std::shared_ptr<>>`) so that a
+  concurrent RBAC reload mid-RPC sees a consistent table.
+- To reject an RPC: call `methods->Hijack()` in the
+  `PRE_RECV_INITIAL_METADATA` hook. Then, in the subsequently-invoked
+  `PRE_SEND_INITIAL_METADATA` hook, write the error status via
+  `grpc::ServerContextBase::TryCancel()` — the hijack path is the
+  canonical way to synthesise an error response from an interceptor
+  without entering the service handler.
+- The factory must NOT hold a raw pointer to any object that could be
+  destroyed during the server's lifetime. Use `shared_ptr`/`weak_ptr`.
+
+---
+
 ## How to add a new FF entry
 
 If you find a previously-undocumented FreeSWITCH behaviour that
