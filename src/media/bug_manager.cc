@@ -361,47 +361,56 @@ MediaBugManager::AttachResult MediaBugManager::Attach(switch_core_session_t* ses
     }
     const std::string uuid(uuid_cstr);
 
-    // --- Phase 1: validate + compute flags (mu_ held) --------------------
-    std::uint64_t assigned_id = 0;
-    std::uint32_t effective_flags = cfg.fs_flags;
-    {
-        std::lock_guard<std::mutex> lk(mu_);
+    // W6.5 P2-001 fix: hold mu_ for the entire Attach path (validation
+    // → FS add → register).  The previous code released mu_ between
+    // validation and FsMediaBugAdd, so 2 concurrent Attach calls on the
+    // same channel could both pass uniqueness/rank checks, both call FS,
+    // and both register — silently violating the "one bug per purpose per
+    // channel" + "stage-rank monotonic" invariants.
+    //
+    // Safety analysis: holding mu_ across FsMediaBugAdd is safe because
+    // FS's internal switch_core_media_bug_add invokes the trampoline once
+    // synchronously with SWITCH_ABC_TYPE_INIT.  The trampoline forwards
+    // to ctx->user_cb iff non-null — but Track C's flow sets user_cb via
+    // SetBugCallback AFTER Attach returns, so during the FS-add call
+    // user_cb is always nullptr and the trampoline returns SWITCH_TRUE
+    // without touching anything else.  No re-entry into MediaBugManager.
+    std::lock_guard<std::mutex> lk(mu_);
 
-        // Duplicate purpose check.
-        if (HasPurpose(uuid, cfg.purpose)) {
-            return AttachResult{
-                false,
-                grpc::StatusCode::ALREADY_EXISTS,
-                std::string("purpose already attached: ") + std::string(PurposeName(cfg.purpose)),
-                BugHandle{}};
-        }
-
-        // Stage-rank enforcement.
-        const std::uint32_t this_rank = StageRank(cfg.purpose);
-        const std::uint32_t max_rank = MaxRankForChannel(uuid);
-
-        if (cfg.purpose == Purpose::kVadBargeIn) {
-            // VAD always gets SMBF_FIRST regardless of attach order.
-            effective_flags |= kSmbfFirst;
-        } else if (this_rank < max_rank) {
-            // Out-of-order attach.  Allowed only if caller already set
-            // SMBF_FIRST in cfg.fs_flags.
-            if ((cfg.fs_flags & kSmbfFirst) == 0) {
-                return AttachResult{false,
-                                    grpc::StatusCode::FAILED_PRECONDITION,
-                                    std::string("out-of-order attach: purpose=") +
-                                        std::string(PurposeName(cfg.purpose)) +
-                                        " rank=" + std::to_string(this_rank) +
-                                        " already-attached max-rank=" + std::to_string(max_rank),
-                                    BugHandle{}};
-            }
-        }
-
-        assigned_id = next_id_++;
+    // Duplicate purpose check.
+    if (HasPurpose(uuid, cfg.purpose)) {
+        return AttachResult{
+            false,
+            grpc::StatusCode::ALREADY_EXISTS,
+            std::string("purpose already attached: ") + std::string(PurposeName(cfg.purpose)),
+            BugHandle{}};
     }
-    // mu_ released — safe to call FS now.
 
-    // --- Phase 2: allocate callback context (before calling FS) ----------
+    // Stage-rank enforcement.
+    const std::uint32_t this_rank = StageRank(cfg.purpose);
+    const std::uint32_t max_rank = MaxRankForChannel(uuid);
+    std::uint32_t effective_flags = cfg.fs_flags;
+
+    if (cfg.purpose == Purpose::kVadBargeIn) {
+        // VAD always gets SMBF_FIRST regardless of attach order.
+        effective_flags |= kSmbfFirst;
+    } else if (this_rank < max_rank) {
+        // Out-of-order attach.  Allowed only if caller already set
+        // SMBF_FIRST in cfg.fs_flags.
+        if ((cfg.fs_flags & kSmbfFirst) == 0) {
+            return AttachResult{false,
+                                grpc::StatusCode::FAILED_PRECONDITION,
+                                std::string("out-of-order attach: purpose=") +
+                                    std::string(PurposeName(cfg.purpose)) +
+                                    " rank=" + std::to_string(this_rank) +
+                                    " already-attached max-rank=" + std::to_string(max_rank),
+                                BugHandle{}};
+        }
+    }
+
+    const std::uint64_t assigned_id = next_id_++;
+
+    // Allocate callback context before calling FS.
     auto* ctx = new (std::nothrow) BugCallbackContext{this, assigned_id, nullptr, nullptr};
     if (!ctx) {
         return AttachResult{false,
@@ -413,7 +422,7 @@ MediaBugManager::AttachResult MediaBugManager::Attach(switch_core_session_t* ses
     // Capture purpose before moving cfg into BugRecord.
     const Purpose purpose_copy = cfg.purpose;
 
-    // --- Phase 3: call switch_core_media_bug_add -------------------------
+    // Call switch_core_media_bug_add.
     switch_media_bug_t* fs_bug = nullptr;
     const auto rc = FsMediaBugAdd(session,
                                   kFunctionName,
@@ -433,32 +442,32 @@ MediaBugManager::AttachResult MediaBugManager::Attach(switch_core_session_t* ses
             BugHandle{}};
     }
 
-    // --- Phase 4: register in maps (mu_ re-acquired) ----------------------
-    {
-        std::lock_guard<std::mutex> lk(mu_);
-
-        auto* rec = new (std::nothrow) BugRecord{};
-        if (!rec) {
-            // Allocation failure after FS add: best-effort remove.
-            delete ctx;
-            return AttachResult{false,
-                                grpc::StatusCode::RESOURCE_EXHAUSTED,
-                                "failed to allocate BugRecord",
-                                BugHandle{}};
-        }
-
-        rec->id = assigned_id;
-        rec->purpose = purpose_copy;
-        rec->channel_uuid = uuid;
-        rec->session = session;  // captured for Detach → remove_callback
-        rec->fs_bug = fs_bug;
-        rec->config = std::move(cfg);
-        rec->config.fs_flags = effective_flags;
-        rec->ctx = ctx;
-
-        by_id_.emplace(assigned_id, static_cast<void*>(rec));
-        by_channel_[uuid].push_back(assigned_id);
+    // Register in maps.
+    auto* rec = new (std::nothrow) BugRecord{};
+    if (!rec) {
+        // W6.5 P2-002 fix: FS already holds a bug with `ctx` as its
+        // user_data.  If we delete ctx without removing the FS bug,
+        // the next callback fires with a dangling user_data → UAF.
+        // Remove the bug from FS BEFORE freeing ctx.
+        FsMediaBugRemove(session, &fs_bug);
+        delete ctx;
+        return AttachResult{false,
+                            grpc::StatusCode::RESOURCE_EXHAUSTED,
+                            "failed to allocate BugRecord",
+                            BugHandle{}};
     }
+
+    rec->id = assigned_id;
+    rec->purpose = purpose_copy;
+    rec->channel_uuid = uuid;
+    rec->session = session;  // captured for Detach → remove
+    rec->fs_bug = fs_bug;
+    rec->config = std::move(cfg);
+    rec->config.fs_flags = effective_flags;
+    rec->ctx = ctx;
+
+    by_id_.emplace(assigned_id, static_cast<void*>(rec));
+    by_channel_[uuid].push_back(assigned_id);
 
     BugHandle handle(this, assigned_id, purpose_copy, uuid);
     return AttachResult{true, grpc::StatusCode::OK, "", std::move(handle)};
