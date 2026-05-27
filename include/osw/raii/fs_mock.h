@@ -70,6 +70,9 @@ using switch_media_bug_t = switch_media_bug;
 struct switch_xml;
 using switch_xml_t = switch_xml*;  // FS typedefs switch_xml_t to a pointer
 
+struct switch_frame;
+using switch_frame_t = switch_frame;
+
 // --- FS status / enum values (subset, matched to v1.10.12) -----------
 //
 // switch_types.h:1031 in v1.10.12. We do NOT include all values — just
@@ -396,6 +399,22 @@ struct MockState {
     };
     std::vector<CapturedBinding> bindings;
 
+    // W6C — Media bug frame access (switch_core.h:322/336/342/370).
+    // Shims for get/set write-replace and get read-replace frames.
+    std::atomic<int> media_bug_get_write_replace_frame_calls{0};
+    std::atomic<int> media_bug_set_write_replace_frame_calls{0};
+    std::atomic<int> media_bug_get_read_replace_frame_calls{0};
+
+    // Programmable return values for frame accessors.
+    switch_frame_t* next_write_replace_frame = nullptr;
+    switch_frame_t* next_read_replace_frame = nullptr;
+
+    struct CapturedSetWriteReplaceFrame {
+        switch_media_bug_t* bug = nullptr;
+        switch_frame_t* frame = nullptr;
+    };
+    std::vector<CapturedSetWriteReplaceFrame> set_write_replace_frame_invocations;
+
     // W6A — MediaBugAdd capture (FF-031). Tests assert on function name,
     // target, flags, and user_data pointer to verify manager behaviour.
     std::atomic<int> media_bug_remove_callback_calls{0};
@@ -492,8 +511,16 @@ inline void MockReset() {
         // W6A.
         m.media_bug_add_invocations.clear();
         m.media_bug_remove_callback_invocations.clear();
+        // W6C.
+        m.set_write_replace_frame_invocations.clear();
     }
     m.media_bug_remove_callback_calls = 0;
+    // W6C resets.
+    m.media_bug_get_write_replace_frame_calls = 0;
+    m.media_bug_set_write_replace_frame_calls = 0;
+    m.media_bug_get_read_replace_frame_calls = 0;
+    m.next_write_replace_frame = nullptr;
+    m.next_read_replace_frame = nullptr;
 }
 
 // --- Shim functions: SAME signatures as the production fs_api.h ------
@@ -965,6 +992,38 @@ inline switch_status_t UnholdUuid(const char* uuid) noexcept {
         m.unhold_uuid_invocations.push_back(std::move(cap));
     }
     return m.next_unhold_uuid_status;
+}
+
+// --- W6C media bug frame access shims ------------------------------------
+//
+// switch_core_media_bug_get_write_replace_frame (switch_core.h:322)
+// switch_core_media_bug_set_write_replace_frame (switch_core.h:336)
+// switch_core_media_bug_get_read_replace_frame  (switch_core.h:342)
+
+inline switch_frame_t* MediaBugGetWriteReplaceFrame(switch_media_bug_t* bug) noexcept {
+    auto& m = Mock();
+    m.media_bug_get_write_replace_frame_calls.fetch_add(1, std::memory_order_relaxed);
+    (void)bug;
+    return m.next_write_replace_frame;
+}
+
+inline void MediaBugSetWriteReplaceFrame(switch_media_bug_t* bug, switch_frame_t* frame) noexcept {
+    auto& m = Mock();
+    m.media_bug_set_write_replace_frame_calls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        MockState::CapturedSetWriteReplaceFrame cap;
+        cap.bug = bug;
+        cap.frame = frame;
+        m.set_write_replace_frame_invocations.push_back(cap);
+    }
+}
+
+inline switch_frame_t* MediaBugGetReadReplaceFrame(switch_media_bug_t* bug) noexcept {
+    auto& m = Mock();
+    m.media_bug_get_read_replace_frame_calls.fetch_add(1, std::memory_order_relaxed);
+    (void)bug;
+    return m.next_read_replace_frame;
 }
 
 }  // namespace osw::raii::fs

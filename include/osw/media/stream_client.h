@@ -104,6 +104,22 @@ class StreamClient {
     [[nodiscard]] std::uint64_t frames_sent() const noexcept;
     [[nodiscard]] std::uint64_t frames_dropped() const noexcept;
 
+    /// W6.5 fix (Gemini-P1): per-stream seq + timestamp counters.
+    /// Replaces the previous `static thread_local` state used in
+    /// OswStreamingReadTap, which leaked state across calls because FS
+    /// reuses media threads for multiple channels.  These atomics live
+    /// on the StreamClient, so they're naturally per-stream / per-call.
+    ///
+    /// `NextSeq()` returns the next monotonic sequence number (0-based).
+    /// `AdvanceTimestamp(samples)` returns the pre-increment timestamp
+    /// (in samples since stream start) and bumps the cursor by `samples`.
+    [[nodiscard]] std::uint64_t NextSeq() noexcept {
+        return seq_counter_.fetch_add(1, std::memory_order_relaxed);
+    }
+    [[nodiscard]] std::uint64_t AdvanceTimestamp(std::uint32_t samples) noexcept {
+        return ts_counter_.fetch_add(samples, std::memory_order_relaxed);
+    }
+
   private:
     // ----------------------------------------------------------------
     // Send ring: bounded queue of outgoing AudioFrame protos.
@@ -157,6 +173,9 @@ class StreamClient {
 
     std::atomic<std::uint64_t> frames_sent_{0};
     std::atomic<std::uint64_t> frames_dropped_{0};
+    // W6.5 fix (Gemini-P1): per-stream monotonic seq + timestamp.
+    std::atomic<std::uint64_t> seq_counter_{0};
+    std::atomic<std::uint64_t> ts_counter_{0};
 
     // ----------------------------------------------------------------
     // Threads

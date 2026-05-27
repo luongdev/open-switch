@@ -124,6 +124,21 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
     StringParam sp_pii{};
     sp_pii.target = &pii_pipe;
 
+    // W6 Track C — TTS playout buffer params
+    int int_tts_jitter = static_cast<int>(out.tts_jitter_buffer_ms);
+    int int_tts_preroll = static_cast<int>(out.tts_preroll_ms);
+    int int_tts_high_water = static_cast<int>(out.tts_high_water_ms);
+    int int_tts_max_jitter = static_cast<int>(out.tts_max_jitter_buffer_ms);
+    StringParam sp_tts_underrun{};
+    sp_tts_underrun.target = &out.tts_underrun_policy;
+
+    switch_xml_config_int_options_t opt_ge200{};
+    opt_ge200.enforce_min = SWITCH_TRUE;
+    opt_ge200.min = 200;
+    switch_xml_config_int_options_t opt_ge50{};
+    opt_ge50.enforce_min = SWITCH_TRUE;
+    opt_ge50.min = 50;
+
     // The switch_xml_config_int_options_t is a stack struct that lives
     // for the duration of the parse; the table holds a pointer into it.
     switch_xml_config_int_options_t opt_ge1{};
@@ -358,6 +373,49 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
                                     "tenant:ctx1,ctx2;...",
                                     "Per-tenant allowed dialplan contexts"),
 
+        // W6 Track C — TTS playout buffer
+        SWITCH_CONFIG_ITEM("tts_jitter_buffer_ms",
+                           SWITCH_CONFIG_INT,
+                           CONFIG_RELOADABLE,
+                           &int_tts_jitter,
+                           reinterpret_cast<const void*>(static_cast<std::intptr_t>(1000)),
+                           &opt_ge200,
+                           "ms",
+                           "TTS playout buffer target depth (ms)"),
+        SWITCH_CONFIG_ITEM("tts_preroll_ms",
+                           SWITCH_CONFIG_INT,
+                           CONFIG_RELOADABLE,
+                           &int_tts_preroll,
+                           reinterpret_cast<const void*>(static_cast<std::intptr_t>(500)),
+                           &opt_ge50,
+                           "ms",
+                           "TTS playout pre-roll before first non-silence frame (ms)"),
+        SWITCH_CONFIG_ITEM("tts_high_water_ms",
+                           SWITCH_CONFIG_INT,
+                           CONFIG_RELOADABLE,
+                           &int_tts_high_water,
+                           reinterpret_cast<const void*>(static_cast<std::intptr_t>(1500)),
+                           &opt_ge200,
+                           "ms",
+                           "TTS playout high-water mark for drop-oldest (ms)"),
+        SWITCH_CONFIG_ITEM("tts_max_jitter_buffer_ms",
+                           SWITCH_CONFIG_INT,
+                           CONFIG_RELOADABLE,
+                           &int_tts_max_jitter,
+                           reinterpret_cast<const void*>(static_cast<std::intptr_t>(5000)),
+                           &opt_ge200,
+                           "ms",
+                           "Hard cap on per-call jitter buffer override (ms)"),
+        SWITCH_CONFIG_ITEM_CALLBACK("tts_underrun_policy",
+                                    SWITCH_CONFIG_CUSTOM,
+                                    CONFIG_RELOADABLE,
+                                    nullptr,
+                                    "silence",
+                                    &StringCallback,
+                                    &sp_tts_underrun,
+                                    "silence|repeat_last",
+                                    "TTS underrun policy (silence or repeat_last)"),
+
         SWITCH_CONFIG_ITEM_END()};
 
     // FF-013: switch_xml_config_parse_module_settings opens the file,
@@ -386,6 +444,11 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
         out.osw_install_signal_handlers = (bool_sigh == SWITCH_TRUE);
         out.grpc_tls_require_client_cert = (bool_require_client_cert == SWITCH_TRUE);
         SplitPipeList(pii_pipe, out.pii_redaction_patterns);
+        // W6 Track C — TTS playout buffer
+        out.tts_jitter_buffer_ms = static_cast<std::uint32_t>(int_tts_jitter);
+        out.tts_preroll_ms = static_cast<std::uint32_t>(int_tts_preroll);
+        out.tts_high_water_ms = static_cast<std::uint32_t>(int_tts_high_water);
+        out.tts_max_jitter_buffer_ms = static_cast<std::uint32_t>(int_tts_max_jitter);
         return true;
     }
 

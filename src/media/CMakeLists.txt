@@ -53,6 +53,8 @@ add_library(osw_media_fs STATIC
     bug_manager.cc
     # Track B
     resampler.cc
+    # Track C
+    tts_playout_buffer.cc
 )
 target_include_directories(osw_media_fs
     PUBLIC
@@ -64,6 +66,7 @@ target_compile_features(osw_media_fs PUBLIC cxx_std_20)
 target_link_libraries(osw_media_fs PUBLIC
     osw_media
     osw_observability
+    osw_observability_fs   # tts_playout_buffer.cc calls osw::audit::Emit
     Threads::Threads
 )
 
@@ -104,4 +107,27 @@ if(OSW_BUILD_TESTS)
         -Wno-error
     )
     set_target_properties(osw_media_test_helpers PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+    # osw_media_tts_test_helpers — compiles TtsPlayoutBuffer against the
+    # osw_audit_test_helpers stub (no libfreeswitch needed). Used by
+    # tts_playout_buffer_test which is FS-agnostic apart from audit calls.
+    add_library(osw_media_tts_test_helpers STATIC
+        tts_playout_buffer.cc
+    )
+    target_include_directories(osw_media_tts_test_helpers
+        PUBLIC
+            ${CMAKE_SOURCE_DIR}/include
+        PRIVATE
+            ${CMAKE_SOURCE_DIR}
+    )
+    target_compile_features(osw_media_tts_test_helpers PUBLIC cxx_std_20)
+    target_link_libraries(osw_media_tts_test_helpers PUBLIC
+        osw_media
+        osw_audit_test_helpers
+        Threads::Threads
+    )
+    target_compile_options(osw_media_tts_test_helpers PRIVATE
+        -Wno-error
+    )
+    set_target_properties(osw_media_tts_test_helpers PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()

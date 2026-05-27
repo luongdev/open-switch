@@ -27,14 +27,20 @@
 
 namespace osw {
 class Health;
+struct Config;
 
 namespace events {
 class Broadcaster;
 class RingSet;
 }  // namespace events
 
+namespace media {
+class MediaBugManager;
+}  // namespace media
+
 namespace control {
 
+class ActiveMediaStreams;
 class IdempotencyCache;  // forward; defined in osw/control/idempotency_cache.h
 
 class ControlServiceSkeleton final : public open_switch::control::v1::ControlService::Service {
@@ -58,6 +64,16 @@ class ControlServiceSkeleton final : public open_switch::control::v1::ControlSer
     /// ensure it outlives the gRPC server's RPC threads. When null (default),
     /// Originate/Bridge/Execute handlers skip all cache logic.
     void SetIdempotencyCache(IdempotencyCache* cache) noexcept;
+
+    /// Inject W6C media-plane dependencies. Called by Module::Load (step 5.4)
+    /// after MediaBugManager and ActiveMediaStreams are constructed and before
+    /// the gRPC server starts accepting traffic.
+    ///
+    /// All three are non-owning. The Module owns each object and ensures they
+    /// outlive the gRPC server's RPC threads.
+    void SetMediaBugManager(osw::media::MediaBugManager* mgr) noexcept;
+    void SetActiveMediaStreams(osw::control::ActiveMediaStreams* streams) noexcept;
+    void SetConfig(const osw::Config* config) noexcept;
 
     /// Inject the W2 event-plane bridges. Called by Module::Load after
     /// Broadcaster + RingSet are constructed (and before Start()-ing the
@@ -140,6 +156,23 @@ class ControlServiceSkeleton final : public open_switch::control::v1::ControlSer
         const open_switch::control::v1::SubscribeEventsRequest* req,
         grpc::ServerWriter<open_switch::events::v1::EventEnvelope>* writer) override;
 
+    // --- W6C media-streaming RPCs -------------------------------------
+    grpc::Status StartTts(grpc::ServerContext* ctx,
+                          const open_switch::control::v1::StartTtsRequest* req,
+                          open_switch::control::v1::StartTtsResponse* resp) override;
+
+    grpc::Status StartStt(grpc::ServerContext* ctx,
+                          const open_switch::control::v1::StartSttRequest* req,
+                          open_switch::control::v1::StartSttResponse* resp) override;
+
+    grpc::Status StartVoicebot(grpc::ServerContext* ctx,
+                               const open_switch::control::v1::StartVoicebotRequest* req,
+                               open_switch::control::v1::StartVoicebotResponse* resp) override;
+
+    grpc::Status StopMediaStream(grpc::ServerContext* ctx,
+                                 const open_switch::control::v1::StopMediaStreamRequest* req,
+                                 open_switch::control::v1::StopMediaStreamResponse* resp) override;
+
   private:
     osw::Health* health_;
     std::string module_version_;
@@ -165,6 +198,12 @@ class ControlServiceSkeleton final : public open_switch::control::v1::ControlSer
     // between the write in Load and any RPC handler read (same rationale
     // as broadcaster_ above — Codex W2 C-3).
     std::atomic<IdempotencyCache*> idempotency_cache_{nullptr};
+    // W6C media-plane dependencies. Written once by Module::Load step 5.4
+    // before gRPC starts serving; read by every W6C RPC handler thread.
+    // atomic<> for the same happens-before reason as broadcaster_ (C-3).
+    std::atomic<osw::media::MediaBugManager*> bug_mgr_{nullptr};
+    std::atomic<osw::control::ActiveMediaStreams*> active_media_streams_{nullptr};
+    std::atomic<const osw::Config*> config_{nullptr};
 };
 
 }  // namespace control

@@ -16,8 +16,16 @@
 
 #include "open_switch/control/v1/control.pb.h"
 
+#include "osw/control/active_media_streams.h"
 #include "osw/control/idempotency_cache.h"
+#include "osw/core/config.h"
 #include "osw/observability/health.h"
+
+// Forward-declare for W6C setter implementations. Full definition in
+// osw/media/bug_manager.h but that pulls in FS types we avoid here.
+namespace osw::media {
+class MediaBugManager;
+}
 
 #include "src/control/control_service_skeleton.h"
 
@@ -97,6 +105,19 @@ void ControlServiceSkeleton::SetEventPlane(events::Broadcaster* broadcaster,
                                           std::memory_order_relaxed);
     rings_.store(rings, std::memory_order_release);
     broadcaster_.store(broadcaster, std::memory_order_release);
+}
+
+void ControlServiceSkeleton::SetMediaBugManager(osw::media::MediaBugManager* mgr) noexcept {
+    bug_mgr_.store(mgr, std::memory_order_release);
+}
+
+void ControlServiceSkeleton::SetActiveMediaStreams(
+    osw::control::ActiveMediaStreams* streams) noexcept {
+    active_media_streams_.store(streams, std::memory_order_release);
+}
+
+void ControlServiceSkeleton::SetConfig(const osw::Config* config) noexcept {
+    config_.store(config, std::memory_order_release);
 }
 
 }  // namespace osw::control

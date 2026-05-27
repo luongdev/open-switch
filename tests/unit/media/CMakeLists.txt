@@ -55,3 +55,17 @@ osw_add_unit_test(
     SOURCES stream_client_test.cc
     LIBS    osw_media
 )
+
+# --- tts_playout_buffer_test (Track C) ---------------------------------
+#
+# TtsPlayoutBuffer lives in osw_media_fs (uses osw::audit::Emit which calls
+# switch_event_fire). The test links osw_media_tts_test_helpers which
+# compiles tts_playout_buffer.cc against osw_audit_test_helpers (stubs
+# switch_event_fire), avoiding the need for a real libfreeswitch.
+
+osw_add_unit_test(
+    NAME    tts_playout_buffer_test
+    LABEL   "media;unit;w6c"
+    SOURCES tts_playout_buffer_test.cc
+    LIBS    osw_media osw_media_tts_test_helpers
+)

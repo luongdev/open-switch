@@ -131,6 +131,30 @@ struct Config {
     std::string metrics_bind_address = "127.0.0.1";
     /// TCP port for the metrics HTTP server.
     std::uint16_t metrics_port = 9090;
+
+    // --- Media (W6 Track C) ---------------------------------------------
+    /// TTS playout jitter buffer target depth. Range: 200-5000 ms;
+    /// Validate() clamps. Default 1000.
+    std::uint32_t tts_jitter_buffer_ms = 1000;
+
+    /// Pre-roll: the playback waits until the buffer accumulates at
+    /// least this many ms before emitting the first non-silence frame.
+    /// Validate() clamps to [50, tts_jitter_buffer_ms]. Default 500.
+    std::uint32_t tts_preroll_ms = 500;
+
+    /// High-water: when buffer depth exceeds this, the producer drops
+    /// the OLDEST queued frame on each Push. Validate() clamps to
+    /// [tts_jitter_buffer_ms, tts_max_jitter_buffer_ms]. Default 1500.
+    std::uint32_t tts_high_water_ms = 1500;
+
+    /// Hard cap on per-call jitter buffer override. Validate() clamps
+    /// tts_jitter_buffer_ms to <= this and rejects per-call overrides
+    /// above this. Default 5000.
+    std::uint32_t tts_max_jitter_buffer_ms = 5000;
+
+    /// Underrun policy: "silence" (default - clean for speech) or
+    /// "repeat_last" (copies last 20 ms frame; better for music).
+    std::string tts_underrun_policy = "silence";
 };
 
 /// Validates the config. Returns Ok() or Fail(detail).

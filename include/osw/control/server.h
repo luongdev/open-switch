@@ -48,8 +48,13 @@ class Broadcaster;
 class RingSet;
 }  // namespace events
 
+namespace media {
+class MediaBugManager;
+}  // namespace media
+
 namespace control {
 
+class ActiveMediaStreams;
 class ControlServiceSkeleton;
 class IdempotencyCache;
 class RpcMetrics;
@@ -125,6 +130,14 @@ class GrpcServer {
     /// Non-owning pointer; the Module owns the IdempotencyCache.
     void SetIdempotencyCache(control::IdempotencyCache* cache) noexcept;
 
+    /// Inject the W6C media-plane dependencies. Must be called before
+    /// Start() so RPC handlers always see valid pointers. Non-owning;
+    /// the Module owns all three objects and ensures they outlive the
+    /// gRPC server's RPC threads.
+    void SetMediaBugManager(osw::media::MediaBugManager* mgr) noexcept;
+    void SetActiveMediaStreams(osw::control::ActiveMediaStreams* streams) noexcept;
+    void SetMediaConfig(const osw::Config* config) noexcept;
+
   private:
     Health* health_;
     std::shared_ptr<grpc::ServerCredentials> creds_;
@@ -140,6 +153,10 @@ class GrpcServer {
     control::RpcMetrics* rpc_metrics_ = nullptr;  // non-owning; may be null
     control::IdempotencyCache* pending_cache_ =
         nullptr;  // staged before Start; applied during Start
+    // W6C: staged before Start; applied during Start (same pattern as pending_cache_).
+    osw::media::MediaBugManager* pending_bug_mgr_ = nullptr;
+    osw::control::ActiveMediaStreams* pending_streams_ = nullptr;
+    const osw::Config* pending_media_cfg_ = nullptr;
 };
 
 }  // namespace control

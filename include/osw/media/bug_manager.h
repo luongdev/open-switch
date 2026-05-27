@@ -100,10 +100,52 @@ class MediaBugManager {
     [[nodiscard]] std::size_t ActiveBugCount(std::string_view channel_uuid) const noexcept;
     [[nodiscard]] std::size_t TotalActiveBugCount() const noexcept;
 
+    /// Function-pointer typedef used by the CS_DESTROY state hook to
+    /// route the per-channel cleanup back into ActiveMediaStreams from
+    /// inside MediaBugManager TU.  Kept as a raw C-style function ptr +
+    /// opaque data pointer so this header has no dependency on
+    /// osw/control/active_media_streams.h (which itself depends on
+    /// bug_handle.h — a cycle if we included it here).
+    using ChannelCleanupFn = void (*)(void* active_streams_opaque, std::string_view channel_uuid);
+
     /// Register the CS_DESTROY state handler once at module load.
-    /// Called from Module::Load (Track C wires the session reference;
-    /// Track A only makes the function available).
-    void RegisterStateHandlers() noexcept;
+    /// Called from Module::Load AFTER `active_streams_opaque` is
+    /// constructed so the CS_DESTROY hook can clean up both registries
+    /// on hangup.
+    ///
+    /// W6.5 P1-003 fix: the previous stub did not actually call
+    /// switch_core_add_state_handler — CS_DESTROY never fired, leaking
+    /// every bug + stream on channel destroy.  The current impl wires
+    /// a switch_state_handler_table_t with on_destroy=OswMediaChannelDestroy
+    /// and stores `this` + the opaque registry + the cleanup-fn in
+    /// file-static pointers so the C-callable hook can route through
+    /// the module-owned objects.
+    ///
+    /// `active_streams_opaque` + `cleanup_fn` may both be nullptr in
+    /// legacy unit tests that don't exercise the ActiveMediaStreams
+    /// registry; the hook will skip the cleanup call in that case.
+    void RegisterStateHandlers(void* active_streams_opaque, ChannelCleanupFn cleanup_fn) noexcept;
+
+    /// Tear down the CS_DESTROY state handler at module shutdown.
+    /// MUST be called before `~MediaBugManager` runs (otherwise the
+    /// hook may dereference the destroyed manager).
+    void UnregisterStateHandlers() noexcept;
+
+    /// Wire user_cb + user_data onto an existing bug's BugCallbackContext.
+    /// Called by Track C handlers after Attach to connect the media bug
+    /// callback to the StreamClient / TtsPlayoutBuffer.
+    /// `bug_id` comes from the BugHandle returned by Attach.
+    /// `user_cb` is the extern "C" callback (OswStreamingReadTap /
+    /// OswStreamingWriteReplace) passed as void* to keep this header
+    /// free of FS-type dependencies; the .cc implementation casts it
+    /// to switch_media_bug_callback_t internally.
+    /// `user_data` is a non-owning pointer to handler-owned state.
+    /// Returns false if bug_id is not found.
+    bool SetBugCallback(std::uint64_t bug_id, void* user_cb, void* user_data) noexcept;
+
+    /// Expose the bug_id from a BugHandle (needed by Track C to call
+    /// SetBugCallback without exposing bug_id as a public BugHandle field).
+    static std::uint64_t BugId(const BugHandle& h) noexcept { return h.bug_id_; }
 
     /// Function-name constant used in switch_core_media_bug_add
     /// (FF-031 §"function" field).  Also used as the filter in
