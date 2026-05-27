@@ -145,6 +145,9 @@ grpc::Status ControlServiceSkeleton::Bridge(grpc::ServerContext* /*ctx*/,
 
     // Guards release here (end of scope) — correct per FF-023.
 
+    // Populate the B-leg UUID in the response (P2-7).
+    resp->set_bridged_uuid(b_uuid);
+
     osw::audit::Emit("osw.control.bridge", {{"a_uuid", a_uuid}, {"b_uuid", b_uuid}});
 
     osw::log::Info(kSubsystem, "Bridge OK: a=%s b=%s", a_uuid.c_str(), b_uuid.c_str());
