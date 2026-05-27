@@ -175,3 +175,48 @@ osw_add_unit_test(
     SOURCES idempotency_cache_test.cc
     LIBS    osw_control
 )
+
+# W6 Track C — media streaming handler tests (FS-mock seam).
+#
+# All four tests link osw_control_w6c_test_helpers, which compiles the W6C
+# handlers (start_tts, start_stt, start_voicebot, stop_media_stream) and
+# ActiveMediaStreams against OSW_TEST_FS_MOCK=1.
+# Link order: osw_control FIRST so vtable forward-references accumulate
+# before the helpers library is scanned (same discipline as all other
+# handler tests in this file).
+
+osw_add_unit_test(
+    NAME    start_stt_handler_test
+    LABEL   "control;unit;w6c"
+    SOURCES start_stt_handler_test.cc
+    LIBS    osw_control osw_control_w6c_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(start_stt_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
+
+osw_add_unit_test(
+    NAME    start_tts_handler_test
+    LABEL   "control;unit;w6c"
+    SOURCES start_tts_handler_test.cc
+    LIBS    osw_control osw_control_w6c_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(start_tts_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
+
+osw_add_unit_test(
+    NAME    start_voicebot_handler_test
+    LABEL   "control;unit;w6c"
+    SOURCES start_voicebot_handler_test.cc
+    LIBS    osw_control osw_control_w6c_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(start_voicebot_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
+
+osw_add_unit_test(
+    NAME    stop_media_stream_handler_test
+    LABEL   "control;unit;w6c"
+    SOURCES stop_media_stream_handler_test.cc
+    LIBS    osw_control osw_control_w6c_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(stop_media_stream_handler_test PRIVATE ${CMAKE_SOURCE_DIR})

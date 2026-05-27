@@ -24,6 +24,7 @@ package open_switch.control.v1;
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "open_switch/events/v1/events.proto";
+import "open_switch/media/v1/media.proto";
 
 option cc_enable_arenas = true;
 
@@ -83,6 +84,13 @@ service ControlService {
 
   // Health + module status.
   rpc Health(HealthRequest) returns (HealthResponse);
+
+  // ── Media plane (W6) ─────────────────────────────────────────────────
+
+  rpc StartTts(StartTtsRequest) returns (StartTtsResponse);
+  rpc StartStt(StartSttRequest) returns (StartSttResponse);
+  rpc StartVoicebot(StartVoicebotRequest) returns (StartVoicebotResponse);
+  rpc StopMediaStream(StopMediaStreamRequest) returns (StopMediaStreamResponse);
 }
 
 // ─── Common metadata ──────────────────────────────────────────────────
@@ -331,6 +339,91 @@ message SubscribeEventsRequest {
   // is set, an event with an empty subclass matches only if `""` (or
   // an exact-empty pattern) appears in the list.
   repeated string subclass_globs = 6;
+}
+
+// ─── Media — Start/Stop ──────────────────────────────────────────────
+
+message TtsBufferOverride {
+  // 0 = use config default (tts_jitter_buffer_ms).
+  // Non-zero values are clamped to [200, tts_max_jitter_buffer_ms].
+  uint32 jitter_buffer_ms = 1;
+  // 0 = use config default (tts_preroll_ms).
+  // Non-zero values are clamped to [50, jitter_buffer_ms].
+  uint32 preroll_ms = 2;
+}
+
+message StartTtsRequest {
+  RequestHeader header = 1;
+  string channel_uuid = 2;
+  string upstream_endpoint = 3;  // gRPC URL of TTS service
+  uint32 sample_rate_hz = 4;     // 8000 or 16000; default 16000
+  string start_message = 5;      // optional opening utterance
+  map<string, string> variables = 10;  // passed through to TTS service
+
+  // Per-call jitter-buffer override. Either field set to 0 means
+  // "use the module-level Config defaults"; non-zero values are
+  // clamped to [200, tts_max_jitter_buffer_ms]. See §TtsPlayoutBuffer.
+  TtsBufferOverride buffer_override = 20;
+}
+
+message StartTtsResponse {
+  string stream_id = 1;  // UUIDv7 minted by handler
+  open_switch.media.v1.AudioCodec negotiated_codec = 2;
+  uint32 negotiated_sample_rate_hz = 3;
+  ErrorDetail error = 99;
+}
+
+message StartSttRequest {
+  RequestHeader header = 1;
+  string channel_uuid = 2;
+  string upstream_endpoint = 3;
+  uint32 sample_rate_hz = 4;     // default 16000
+  string language = 5;           // BCP-47, e.g. "vi-VN"
+  bool interim_results = 6;
+  repeated string vocabulary_hints = 7;
+  map<string, string> variables = 10;
+}
+
+message StartSttResponse {
+  string stream_id = 1;
+  open_switch.media.v1.AudioCodec negotiated_codec = 2;
+  uint32 negotiated_sample_rate_hz = 3;
+  ErrorDetail error = 99;
+}
+
+message StartVoicebotRequest {
+  RequestHeader header = 1;
+  string channel_uuid = 2;
+  string upstream_endpoint = 3;
+  uint32 sample_rate_hz = 4;     // default 16000
+  string start_message = 5;
+  map<string, string> variables = 10;
+
+  // Applies to the WRITE side (bot->caller); read side has no jitter
+  // buffer (FS callback delivers caller mic at the channel's natural
+  // ptime cadence and SendAudio just forwards).
+  TtsBufferOverride buffer_override = 20;
+}
+
+message StartVoicebotResponse {
+  // Voicebot is a single logical stream but produces TWO media bugs
+  // internally (read tap + write replace). The stream_id identifies
+  // the logical pair; StopMediaStream tears both down.
+  string stream_id = 1;
+  open_switch.media.v1.AudioCodec negotiated_codec = 2;
+  uint32 negotiated_sample_rate_hz = 3;
+  ErrorDetail error = 99;
+}
+
+message StopMediaStreamRequest {
+  RequestHeader header = 1;
+  string channel_uuid = 2;
+  string stream_id = 3;
+}
+
+message StopMediaStreamResponse {
+  bool was_active = 1;  // false if stream_id wasn't found (idempotent OK)
+  ErrorDetail error = 99;
 }
 
 // ─── Health ──────────────────────────────────────────────────────────

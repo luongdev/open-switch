@@ -8,6 +8,7 @@
 
 #include "osw/core/config.h"
 
+#include <algorithm>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -98,6 +99,45 @@ ConfigValidation Validate(const Config& cfg) {
             std::ostringstream oss;
             oss << "pii_redaction_patterns[" << i << "] is not a valid regex: " << e.what();
             return ConfigValidation::Fail(oss.str());
+        }
+    }
+
+    // --- Media (W6 Track C) -- TTS playout buffer -----------------------
+    // Clamp tts_jitter_buffer_ms to [200, tts_max_jitter_buffer_ms].
+    constexpr std::uint32_t kMinJitterMs = 200;
+    if (cfg.tts_max_jitter_buffer_ms < kMinJitterMs) {
+        return ConfigValidation::Fail(
+            "tts_max_jitter_buffer_ms must be >= 200");
+    }
+    if (cfg.tts_jitter_buffer_ms < kMinJitterMs ||
+        cfg.tts_jitter_buffer_ms > cfg.tts_max_jitter_buffer_ms) {
+        return ConfigValidation::Fail(
+            "tts_jitter_buffer_ms must be in [200, tts_max_jitter_buffer_ms]");
+    }
+    if (cfg.tts_preroll_ms < 50 || cfg.tts_preroll_ms > cfg.tts_jitter_buffer_ms) {
+        return ConfigValidation::Fail(
+            "tts_preroll_ms must be in [50, tts_jitter_buffer_ms]");
+    }
+    if (cfg.tts_high_water_ms < cfg.tts_jitter_buffer_ms ||
+        cfg.tts_high_water_ms > cfg.tts_max_jitter_buffer_ms) {
+        return ConfigValidation::Fail(
+            "tts_high_water_ms must be in [tts_jitter_buffer_ms, tts_max_jitter_buffer_ms]");
+    }
+    // Normalise underrun_policy — unknown value coerced below; here just
+    // accept the two known strings. The loader lower-cases the string so
+    // "Silence" / "REPEAT_LAST" both work.
+    {
+        std::string policy = cfg.tts_underrun_policy;
+        // to-lower in-place for validation comparison
+        std::transform(policy.begin(), policy.end(), policy.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        static const std::set<std::string> kValidPolicies{"silence", "repeat_last"};
+        if (!kValidPolicies.contains(policy)) {
+            // Coerce to "silence" at Validate() level — same as config_fs.cc
+            // which only stores a raw string. Validate is called after loading,
+            // so we can't mutate cfg (const-ref). Return Ok() but the coercion
+            // is documented: the handler uses ParseUnderrunPolicy() which
+            // also coerces. We do not fail the module load for an unknown policy.
         }
     }
 

@@ -68,6 +68,13 @@ add_library(osw_control_fs STATIC
     handlers/set_variables_handler.cc
     handlers/hold_handler.cc
     handlers/unhold_handler.cc
+    # W6 Track C — media streaming RPCs + bug callbacks
+    active_media_streams.cc
+    handlers/media_bug_callbacks.cc
+    handlers/start_tts_handler.cc
+    handlers/start_stt_handler.cc
+    handlers/start_voicebot_handler.cc
+    handlers/stop_media_stream_handler.cc
 )
 target_include_directories(osw_control_fs
     PUBLIC
@@ -79,7 +86,8 @@ target_include_directories(osw_control_fs
 target_compile_features(osw_control_fs PUBLIC cxx_std_20)
 target_link_libraries(osw_control_fs PUBLIC
     osw_control
-    osw_events
+    osw_events_fs                            # for GenerateUuidV7 (envelope.cc) + FS event binder
+    osw_media_fs                             # for MediaBugManager, TtsPlayoutBuffer (Track C)
     osw_observability
     osw_observability_fs                     # for osw::audit::Emit
     osw_proto
@@ -118,6 +126,13 @@ if(OSW_BUILD_TESTS)
         handlers/set_variables_handler.cc
         handlers/hold_handler.cc
         handlers/unhold_handler.cc
+        # W6 Track C — media streaming stubs for vtable completeness
+        active_media_streams.cc
+        handlers/media_bug_callbacks.cc
+        handlers/start_tts_handler.cc
+        handlers/start_stt_handler.cc
+        handlers/start_voicebot_handler.cc
+        handlers/stop_media_stream_handler.cc
         # Stub for SubscribeEvents so the test binary vtable is complete
         # without pulling in the real FS-dependent subscribe_events_handler.cc.
         handlers/subscribe_events_stub.cc
@@ -132,8 +147,12 @@ if(OSW_BUILD_TESTS)
     target_compile_features(osw_control_w3a_test_helpers PUBLIC cxx_std_20)
     target_link_libraries(osw_control_w3a_test_helpers PUBLIC
         osw_control
+        osw_events_test_helpers
+        osw_media
+        osw_media_tts_test_helpers
         osw_observability
         osw_audit_test_helpers
+        osw_media_test_helpers
         osw_proto
         Threads::Threads
     )
@@ -166,6 +185,13 @@ if(OSW_BUILD_TESTS)
         handlers/set_variables_handler.cc
         handlers/hold_handler.cc
         handlers/unhold_handler.cc
+        # W6 Track C handlers — included for vtable completeness.
+        active_media_streams.cc
+        handlers/media_bug_callbacks.cc
+        handlers/start_tts_handler.cc
+        handlers/start_stt_handler.cc
+        handlers/start_voicebot_handler.cc
+        handlers/stop_media_stream_handler.cc
         # Stub for SubscribeEvents (same rationale as w3a helpers).
         handlers/subscribe_events_stub.cc
     )
@@ -179,8 +205,12 @@ if(OSW_BUILD_TESTS)
     target_compile_features(osw_control_w3b_test_helpers PUBLIC cxx_std_20)
     target_link_libraries(osw_control_w3b_test_helpers PUBLIC
         osw_control
+        osw_events_test_helpers
+        osw_media
+        osw_media_tts_test_helpers
         osw_observability
         osw_audit_test_helpers
+        osw_media_test_helpers
         osw_proto
         Threads::Threads
     )
@@ -189,6 +219,63 @@ if(OSW_BUILD_TESTS)
     )
     target_compile_options(osw_control_w3b_test_helpers PRIVATE
         -Wno-error
+    )
+
+    # --- osw_control_w6c_test_helpers (FS-mock seam for W6 Track C tests) --
+    #
+    # Compiles all W6C handlers and the ActiveMediaStreams registry against
+    # OSW_TEST_FS_MOCK=1 so unit tests run without a real FreeSWITCH library.
+    # Includes every ControlServiceSkeleton override so handler test binaries
+    # have a complete vtable.
+    add_library(osw_control_w6c_test_helpers STATIC
+        call_cause.cc
+        session_guard.cc
+        originate_options.cc
+        var_denylist.cc
+        handlers/originate_handler.cc
+        handlers/hangup_handler.cc
+        handlers/hangup_many_handler.cc
+        handlers/bridge_handler.cc
+        handlers/execute_handler.cc
+        handlers/blind_transfer_handler.cc
+        handlers/set_variables_handler.cc
+        handlers/hold_handler.cc
+        handlers/unhold_handler.cc
+        active_media_streams.cc
+        handlers/media_bug_callbacks.cc
+        handlers/start_tts_handler.cc
+        handlers/start_stt_handler.cc
+        handlers/start_voicebot_handler.cc
+        handlers/stop_media_stream_handler.cc
+        handlers/subscribe_events_stub.cc
+    )
+    target_include_directories(osw_control_w6c_test_helpers PUBLIC
+        ${CMAKE_SOURCE_DIR}/include
+    )
+    target_include_directories(osw_control_w6c_test_helpers PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${OSW_PROTO_GEN_DIR}
+    )
+    target_compile_features(osw_control_w6c_test_helpers PUBLIC cxx_std_20)
+    target_link_libraries(osw_control_w6c_test_helpers PUBLIC
+        osw_control
+        osw_events_test_helpers
+        osw_media
+        osw_media_tts_test_helpers
+        osw_observability
+        osw_audit_test_helpers
+        osw_media_test_helpers
+        osw_proto
+        Threads::Threads
+    )
+    target_compile_definitions(osw_control_w6c_test_helpers PUBLIC
+        OSW_TEST_FS_MOCK=1
+    )
+    target_compile_options(osw_control_w6c_test_helpers PRIVATE
+        -Wno-error
+    )
+    set_target_properties(osw_control_w6c_test_helpers PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
     )
 endif()
 

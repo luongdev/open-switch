@@ -62,9 +62,11 @@
 
 #include <switch.h>  // FF-014 environment, switch_version_*
 
+#include "osw/control/active_media_streams.h"
 #include "osw/control/idempotency_cache.h"
 #include "osw/control/rpc_metrics.h"
 #include "osw/control/server.h"
+#include "osw/media/bug_manager.h"
 #include "osw/core/config_fs.h"
 #include "osw/events/binder.h"
 #include "osw/events/envelope.h"
@@ -227,6 +229,15 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
             std::chrono::seconds(config_.idempotency_ttl_seconds),
             std::chrono::seconds(config_.idempotency_in_flight_max_wait_seconds));
         grpc_server_->SetIdempotencyCache(idempotency_cache_.get());
+
+        // 5.4. Construct W6C media-plane subsystems and inject into GrpcServer
+        //      BEFORE Start() so RPC threads always see valid pointers.
+        bug_manager_ = std::make_unique<media::MediaBugManager>();
+        bug_manager_->RegisterStateHandlers();
+        active_media_streams_ = std::make_unique<control::ActiveMediaStreams>();
+        grpc_server_->SetMediaBugManager(bug_manager_.get());
+        grpc_server_->SetActiveMediaStreams(active_media_streams_.get());
+        grpc_server_->SetMediaConfig(&config_);
 
         if (!grpc_server_->Start(config_)) {
             osw::log::Error(kSubsystem, "gRPC server failed to start");
@@ -448,6 +459,15 @@ bool Module::Shutdown() noexcept {
         //      drained in step 5 (no more handler threads accessing the
         //      cache), so this is safe.
         idempotency_cache_.reset();
+
+        // 7.6. Tear down W6C media-plane subsystems.
+        //      Order: active_media_streams_ first — its TearDown calls
+        //      client->Close() (joins reader thread) then bugs.clear()
+        //      (calls MediaBugManager::Detach via BugHandle dtor), then
+        //      bug_manager_ last. Reversing this order would leave
+        //      BugHandle dtors trying to deref a freed MediaBugManager.
+        active_media_streams_.reset();
+        bug_manager_.reset();
 
         // 8. Tear down the observability plane. rpc_metrics_ and
         //    health_metrics_ hold raw pointers into prometheus_registry_;

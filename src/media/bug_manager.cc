@@ -398,6 +398,31 @@ MediaBugManager::AttachResult MediaBugManager::Attach(switch_core_session_t* ses
 }
 
 // ---------------------------------------------------------------------------
+// SetBugCallback — Track C wires user_cb + user_data after Attach.
+// ---------------------------------------------------------------------------
+
+bool MediaBugManager::SetBugCallback(std::uint64_t bug_id,
+                                     void* user_cb_vp,
+                                     void* user_data) noexcept {
+    // Cast back to the concrete FS callback type. The public API uses void*
+    // to keep bug_manager.h free of <switch_types.h> dependencies so that
+    // FS-agnostic TUs can include it (e.g. bug_handle.cc in osw_media).
+    auto user_cb = reinterpret_cast<switch_media_bug_callback_t>(user_cb_vp);
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = by_id_.find(bug_id);
+    if (it == by_id_.end()) {
+        return false;
+    }
+    auto* rec = ToRecord(it->second);
+    if (!rec || !rec->ctx) {
+        return false;
+    }
+    rec->ctx->user_cb = user_cb;
+    rec->ctx->user_data = user_data;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Detach.
 // ---------------------------------------------------------------------------
 

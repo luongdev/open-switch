@@ -105,6 +105,24 @@ class MediaBugManager {
     /// Track A only makes the function available).
     void RegisterStateHandlers() noexcept;
 
+    /// Wire user_cb + user_data onto an existing bug's BugCallbackContext.
+    /// Called by Track C handlers after Attach to connect the media bug
+    /// callback to the StreamClient / TtsPlayoutBuffer.
+    /// `bug_id` comes from the BugHandle returned by Attach.
+    /// `user_cb` is the extern "C" callback (OswStreamingReadTap /
+    /// OswStreamingWriteReplace) passed as void* to keep this header
+    /// free of FS-type dependencies; the .cc implementation casts it
+    /// to switch_media_bug_callback_t internally.
+    /// `user_data` is a non-owning pointer to handler-owned state.
+    /// Returns false if bug_id is not found.
+    bool SetBugCallback(std::uint64_t bug_id,
+                        void* user_cb,
+                        void* user_data) noexcept;
+
+    /// Expose the bug_id from a BugHandle (needed by Track C to call
+    /// SetBugCallback without exposing bug_id as a public BugHandle field).
+    static std::uint64_t BugId(const BugHandle& h) noexcept { return h.bug_id_; }
+
     /// Function-name constant used in switch_core_media_bug_add
     /// (FF-031 §"function" field).  Also used as the filter in
     /// switch_core_media_bug_remove_callback.
