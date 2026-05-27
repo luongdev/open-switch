@@ -79,3 +79,12 @@ osw_add_unit_test(
     SOURCES tts_playout_buffer_test.cc
     LIBS    osw_media osw_media_tts_test_helpers
 )
+
+# --- bug_fanout_test (W7 Track D, pure unit) ---------------------------
+
+osw_add_unit_test(
+    NAME    bug_fanout_test
+    LABEL   "media;unit;w7d"
+    SOURCES bug_fanout_test.cc
+    LIBS    osw_media
+)

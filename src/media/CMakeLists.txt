@@ -31,6 +31,8 @@ add_library(osw_media STATIC
     # Track B
     audio_frame.cc
     stream_client.cc
+    # W7 Track D
+    bug_fanout.cc
 )
 target_include_directories(osw_media
     PUBLIC
