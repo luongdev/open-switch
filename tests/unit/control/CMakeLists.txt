@@ -138,3 +138,44 @@ osw_add_unit_test(
     DEFINES OSW_TEST_FS_MOCK=1
 )
 target_include_directories(unhold_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
+
+# W4 Track B — Auth + RBAC interceptor tests.
+#
+# rbac_test: pure C++ (no gRPC, no FS mock). Tests ParseAuthConfig and
+# RbacRegistry in isolation.  Links osw_control (which carries rbac.cc)
+# via osw_audit_test_helpers transitive dep on osw_observability.
+#
+# jwt_verifier_test: tests JwtVerifier with a real OpenSSL key generated
+# inline.  Links osw_control (which carries jwt_verifier.cc) + OpenSSL.
+#
+# auth_interceptor_test: factory construction + update API + integration
+# tests combining JwtVerifier + RbacRegistry.  Needs gRPC headers for
+# the factory type; links osw_control.
+#
+# All three link osw_audit_test_helpers so audit::Emit calls in rbac.cc /
+# auth_interceptor.cc route through the FS-mock seam rather than calling
+# real switch_event_*.
+
+osw_add_unit_test(
+    NAME    rbac_test
+    LABEL   "control;unit;w4b"
+    SOURCES rbac_test.cc
+    LIBS    osw_control osw_audit_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+
+osw_add_unit_test(
+    NAME    jwt_verifier_test
+    LABEL   "control;unit;w4b"
+    SOURCES jwt_verifier_test.cc
+    LIBS    osw_control osw_audit_test_helpers OpenSSL::Crypto
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+
+osw_add_unit_test(
+    NAME    auth_interceptor_test
+    LABEL   "control;unit;w4b"
+    SOURCES auth_interceptor_test.cc
+    LIBS    osw_control osw_audit_test_helpers OpenSSL::Crypto
+    DEFINES OSW_TEST_FS_MOCK=1
+)
