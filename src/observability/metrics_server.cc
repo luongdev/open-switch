@@ -155,9 +155,13 @@ void MetricsServer::Stop() {
     if (!running_.exchange(false, std::memory_order_acq_rel)) {
         return;  // was already stopped
     }
-    // Closing the listen socket causes the blocking accept() in Run()
-    // to return with an error, which breaks the loop.
+    // shutdown(SHUT_RDWR) first: on Linux, close() on a socket that another
+    // thread is blocked in accept() is not guaranteed to unblock accept()
+    // (POSIX leaves this unspecified). shutdown() flushes the socket's
+    // receive/send queues and causes accept() to return with EINVAL, which
+    // the Run() loop treats as a stop signal. close() then reclaims the fd.
     if (listen_fd_ >= 0) {
+        ::shutdown(listen_fd_, SHUT_RDWR);
         ::close(listen_fd_);
         listen_fd_ = -1;
     }

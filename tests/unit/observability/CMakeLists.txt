@@ -45,3 +45,14 @@ osw_add_unit_test(
     SOURCES metrics_server_test.cc
     LIBS    osw_observability
 )
+
+# W5 Track A — integration-style wiring test.
+# Drives the Registry + HealthMetrics + MetricsServer construction and
+# teardown pattern that Module::Load performs, over a real loopback socket,
+# without requiring a FreeSWITCH process.
+osw_add_unit_test(
+    NAME    metrics_http_wiring_test
+    LABEL   "observability;unit"
+    SOURCES metrics_http_wiring_test.cc
+    LIBS    osw_observability
+)

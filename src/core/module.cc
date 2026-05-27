@@ -62,6 +62,7 @@
 
 #include <switch.h>  // FF-014 environment, switch_version_*
 
+#include "osw/control/rpc_metrics.h"
 #include "osw/control/server.h"
 #include "osw/core/config_fs.h"
 #include "osw/events/binder.h"
@@ -70,7 +71,10 @@
 #include "osw/events/subscribe/broadcaster.h"
 #include "osw/events/tier.h"
 #include "osw/observability/audit.h"
+#include "osw/observability/health_metrics.h"
 #include "osw/observability/log.h"
+#include "osw/observability/metrics_server.h"
+#include "osw/observability/prometheus.h"
 
 namespace osw {
 
@@ -171,9 +175,45 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
         const std::string fs_ver = FreeSwitchVersionString();
         health_.SetVersions(kModuleVersion, fs_ver);
 
+        // 5a. Build the observability plane: single shared prometheus::Registry,
+        //     HealthMetrics adapter, RpcMetrics adapter, and the HTTP server.
+        //     The registry is created here and owned by the Module for its
+        //     full lifetime. All adapters hold non-owning raw pointers into it.
+        prometheus_registry_ = std::make_unique<observability::prometheus::Registry>();
+
+        health_metrics_ =
+            std::make_unique<observability::HealthMetrics>(prometheus_registry_.get());
+
+        rpc_metrics_ = std::make_unique<control::RpcMetrics>(prometheus_registry_.get());
+
+        // 5b. Start the MetricsServer when metrics_enabled (default true).
+        //     Bind failure is non-fatal: log Error and continue. Metrics are
+        //     observability, not safety — a port conflict must not block load.
+        if (config_.metrics_enabled) {
+            observability::prometheus::Registry* reg_ptr = prometheus_registry_.get();
+            observability::HealthMetrics* hm_ptr = health_metrics_.get();
+            osw::Health* health_ptr = &health_;
+            metrics_server_ = std::make_unique<observability::MetricsServer>(
+                [reg_ptr, hm_ptr, health_ptr]() -> std::string {
+                    hm_ptr->Refresh(*health_ptr);
+                    return reg_ptr->Render();
+                });
+            if (!metrics_server_->Start(config_.metrics_bind_address, config_.metrics_port)) {
+                osw::log::Error(kSubsystem,
+                                "MetricsServer failed to bind on %s:%u; "
+                                "continuing without metrics HTTP endpoint",
+                                config_.metrics_bind_address.c_str(),
+                                static_cast<unsigned>(config_.metrics_port));
+                metrics_server_.reset();
+            }
+        } else {
+            osw::log::Info(kSubsystem, "metrics_enabled=false; metrics HTTP endpoint not started");
+        }
+
         // 6. Start gRPC server.
         grpc_server_ = std::make_unique<control::GrpcServer>(&health_);
         grpc_server_->SetVersions(kModuleVersion, fs_ver);
+        grpc_server_->SetRpcMetrics(rpc_metrics_.get());
         if (!grpc_server_->Start(config_)) {
             osw::log::Error(kSubsystem, "gRPC server failed to start");
             grpc_server_.reset();
@@ -364,7 +404,15 @@ bool Module::Shutdown() noexcept {
             broadcaster_->Stop();
         }
 
-        // 5. Drain the gRPC server. SubscribeEvents writer threads have
+        // 5. Stop the MetricsServer BEFORE draining gRPC so that no scrape
+        //    thread is reading the registry during teardown. The HTTP server
+        //    is observability only — stop it first.
+        if (metrics_server_) {
+            metrics_server_->Stop();
+            metrics_server_.reset();
+        }
+
+        // 6. Drain the gRPC server. SubscribeEvents writer threads have
         //    already exited via the kShutdown kick; this catches any
         //    in-flight unary RPCs.
         if (grpc_server_) {
@@ -374,14 +422,21 @@ bool Module::Shutdown() noexcept {
             grpc_server_.reset();
         }
 
-        // 6. Tear down the event-plane subsystems in reverse-construction
+        // 7. Tear down the event-plane subsystems in reverse-construction
         //    order.
         broadcaster_.reset();
         binder_.reset();
         rings_.reset();
         classifier_.reset();
 
-        // 7. Mark Lifecycle stopped + Health NOT_SERVING.
+        // 8. Tear down the observability plane. rpc_metrics_ and
+        //    health_metrics_ hold raw pointers into prometheus_registry_;
+        //    reset them before dropping the registry.
+        rpc_metrics_.reset();
+        health_metrics_.reset();
+        prometheus_registry_.reset();
+
+        // 9. Mark Lifecycle stopped + Health NOT_SERVING.
         lifecycle_.MarkStopped();
         loaded_ = false;
 
