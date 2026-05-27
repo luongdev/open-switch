@@ -237,6 +237,16 @@ extern "C" switch_bool_t OswMediaBugTrampoline(switch_media_bug_t* bug,
     return SWITCH_TRUE;
 }
 
+// W6.5 P1-003 fix: file-static pointers wired by RegisterStateHandlers.
+// The CS_DESTROY hook is a C-callable extern function; it cannot capture
+// `this`.  Storing the module-owned manager + opaque ActiveMediaStreams
+// pointer here lets the hook route through the actual module instances.
+namespace {
+osw::media::MediaBugManager* g_state_hook_bug_manager_ = nullptr;
+void* g_state_hook_active_streams_opaque_ = nullptr;
+osw::media::MediaBugManager::ChannelCleanupFn g_state_hook_cleanup_fn_ = nullptr;
+}  // namespace
+
 extern "C" switch_status_t OswMediaChannelDestroy(switch_core_session_t* session) noexcept {
     if (!session) {
         return SWITCH_STATUS_SUCCESS;
@@ -256,11 +266,50 @@ extern "C" switch_status_t OswMediaChannelDestroy(switch_core_session_t* session
         return SWITCH_STATUS_SUCCESS;
     }
 
+    // W6.5 P1-003 fix: route through the MODULE-OWNED registries (set by
+    // RegisterStateHandlers), not the Instance() singleton.  Module::Load
+    // creates a std::unique_ptr<MediaBugManager> which is distinct from
+    // the singleton; the hook had been calling Instance().DetachAll
+    // against the wrong object, so bug records leaked on channel destroy.
+    //
+    // Order matters: drain ActiveMediaStreams FIRST so its TearDown can
+    // detach bugs via BugHandle dtors before MediaBugManager::DetachAll
+    // sweeps any survivors.
+    if (g_state_hook_cleanup_fn_ && g_state_hook_active_streams_opaque_) {
+        g_state_hook_cleanup_fn_(g_state_hook_active_streams_opaque_, uuid_cstr);
+    }
+
+    osw::media::MediaBugManager* mgr = g_state_hook_bug_manager_;
+    if (!mgr) {
+        // Defensive fall-back to the singleton for legacy code paths
+        // (e.g., tests that may exercise the hook before RegisterStateHandlers
+        // ran).  Logs a warning in production via the calling site of
+        // RegisterStateHandlers if the registration was skipped.
+        mgr = &osw::media::MediaBugManager::Instance();
+    }
     // FF-032: at CS_DESTROY the FS-side bug chain is already cleaned up.
-    // DetachAll must NOT call switch_core_media_bug_remove_callback.
-    osw::media::MediaBugManager::Instance().DetachAll(uuid_cstr);
+    // DetachAll must NOT call switch_core_media_bug_remove.
+    mgr->DetachAll(uuid_cstr);
     return SWITCH_STATUS_SUCCESS;
 }
+
+// W6.5 P1-003 fix: switch_state_handler_table_t for switch_core_add_state_handler.
+// The table is module-lifetime (static); FS holds a reference until
+// switch_core_remove_state_handler is called from UnregisterStateHandlers.
+//
+// FS struct (FF-035 candidate — switch_module_interfaces.h):
+//   12 callbacks (on_init .. on_destroy) + int flags + void* padding[10].
+// We only set on_destroy; everything else value-initialises to zero.
+#if !defined(OSW_TEST_FS_MOCK)
+namespace {
+switch_state_handler_table_t MakeOswStateHandlerTable() noexcept {
+    switch_state_handler_table_t t{};
+    t.on_destroy = OswMediaChannelDestroy;
+    return t;
+}
+switch_state_handler_table_t kOswStateHandlerTable = MakeOswStateHandlerTable();
+}  // namespace
+#endif  // !OSW_TEST_FS_MOCK
 
 // ---------------------------------------------------------------------------
 // MediaBugManager — implementation.
@@ -557,10 +606,33 @@ std::size_t MediaBugManager::TotalActiveBugCount() const noexcept {
 // State handler registration.
 // ---------------------------------------------------------------------------
 
-void MediaBugManager::RegisterStateHandlers() noexcept {
-    // Placeholder.  Track C wires switch_core_event_hook_add_state_change
-    // with OswMediaChannelDestroy.  Track A only provides the handler
-    // implementation and this stub so Module::Load can call it.
+void MediaBugManager::RegisterStateHandlers(
+    void* active_streams_opaque,
+    MediaBugManager::ChannelCleanupFn cleanup_fn) noexcept {
+    // W6.5 P1-003 fix: wire the file-static pointers used by
+    // OswMediaChannelDestroy + register the FS state-handler table.
+    g_state_hook_bug_manager_ = this;
+    g_state_hook_active_streams_opaque_ = active_streams_opaque;
+    g_state_hook_cleanup_fn_ = cleanup_fn;
+
+#if !defined(OSW_TEST_FS_MOCK)
+    // Production: hand FS a pointer to the static handler table; FS
+    // will invoke on_destroy=OswMediaChannelDestroy at CS_DESTROY for
+    // every channel.  The table is global static — no ownership.
+    switch_core_add_state_handler(&kOswStateHandlerTable);
+#endif
+    // In tests with OSW_TEST_FS_MOCK, the existing bug_manager_test
+    // bypasses the hook entirely by calling mgr_.DetachAll directly.
+    // No additional mock plumbing is required.
+}
+
+void MediaBugManager::UnregisterStateHandlers() noexcept {
+#if !defined(OSW_TEST_FS_MOCK)
+    switch_core_remove_state_handler(&kOswStateHandlerTable);
+#endif
+    g_state_hook_bug_manager_ = nullptr;
+    g_state_hook_active_streams_opaque_ = nullptr;
+    g_state_hook_cleanup_fn_ = nullptr;
 }
 
 // ---------------------------------------------------------------------------

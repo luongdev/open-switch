@@ -107,20 +107,32 @@ void ActiveMediaStreams::TearDown(std::unique_ptr<ActiveMediaStream> s) noexcept
         return;
     }
     // Step 1: Close the StreamClient (half-close upstream, join reader thread).
+    //   This stops the gRPC reader pushing more frames into the jitter buffer,
+    //   but does NOT fence the FS media thread — that thread will keep firing
+    //   WRITE_REPLACE callbacks until the bug is detached in Step 3.
     if (s->client) {
         s->client->Close();
     }
-    // Step 2: Signal EOS on the jitter buffer (drains remaining frames).
+    // Step 2: Signal EOS on the jitter buffer (drains remaining frames). The
+    //   FS media thread may still pop frames between here and Step 3 — that's
+    //   fine, the buffer's mu_ guards it.
     if (s->tts_buffer) {
         s->tts_buffer->SignalEndOfStream();
     }
-    // Step 3: Clear write_ctx BEFORE bugs so the bug callback can no longer
-    // dereference it (reader thread joined in step 1 means no concurrent use).
-    s->write_ctx.reset();
-    // Step 4: Clear bugs — BugHandle dtors call MediaBugManager::Detach.
-    // The FS bug callback is fully fenced (reader thread joined above) before
-    // any BugHandle dtor runs.
+    // Step 3 (W6.5 P1-002 fix — UAF closed):
+    //   Clear bugs FIRST.  Each BugHandle dtor calls MediaBugManager::Detach
+    //   → switch_core_media_bug_remove(session, &bug) which FS guarantees
+    //   fences out further callback invocations on that bug.  After
+    //   bugs.clear() returns, the FS media thread will no longer dereference
+    //   write_ctx.
+    //
+    //   The previous order (write_ctx.reset() before bugs.clear()) freed the
+    //   callback context while the FS media thread could still call
+    //   OswStreamingWriteReplace, which casts user_data to WriteCallbackCtx*
+    //   and reads from it → UAF caught by codex W6 review.
     s->bugs.clear();
+    // Step 4: Now safe to free write_ctx — FS callbacks are fenced.
+    s->write_ctx.reset();
     // Step 5: Release buffer.
     s->tts_buffer.reset();
     // Step 6: Release StreamClient.

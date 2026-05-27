@@ -232,9 +232,20 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
 
         // 5.4. Construct W6C media-plane subsystems and inject into GrpcServer
         //      BEFORE Start() so RPC threads always see valid pointers.
-        bug_manager_ = std::make_unique<media::MediaBugManager>();
-        bug_manager_->RegisterStateHandlers();
+        //
+        // W6.5 P1-003 fix: create ActiveMediaStreams FIRST so RegisterStateHandlers
+        // can wire the CS_DESTROY hook to clean up both registries on hangup.
+        // The hook calls ActiveMediaStreams::RemoveForChannel via the
+        // function-pointer indirection (avoids a control→media→control
+        // header cycle).
         active_media_streams_ = std::make_unique<control::ActiveMediaStreams>();
+        bug_manager_ = std::make_unique<media::MediaBugManager>();
+        bug_manager_->RegisterStateHandlers(
+            /*active_streams_opaque=*/static_cast<void*>(active_media_streams_.get()),
+            /*cleanup_fn=*/[](void* opaque, std::string_view uuid) {
+                static_cast<osw::control::ActiveMediaStreams*>(opaque)
+                    ->RemoveForChannel(uuid);
+            });
         grpc_server_->SetMediaBugManager(bug_manager_.get());
         grpc_server_->SetActiveMediaStreams(active_media_streams_.get());
         grpc_server_->SetMediaConfig(&config_);
@@ -461,11 +472,22 @@ bool Module::Shutdown() noexcept {
         idempotency_cache_.reset();
 
         // 7.6. Tear down W6C media-plane subsystems.
-        //      Order: active_media_streams_ first — its TearDown calls
-        //      client->Close() (joins reader thread) then bugs.clear()
-        //      (calls MediaBugManager::Detach via BugHandle dtor), then
-        //      bug_manager_ last. Reversing this order would leave
-        //      BugHandle dtors trying to deref a freed MediaBugManager.
+        //      Order:
+        //        (a) UnregisterStateHandlers FIRST so the CS_DESTROY hook
+        //            stops pointing at the soon-to-be-destroyed registries.
+        //            W6.5 P1-003 fix — was missing entirely; the hook
+        //            stayed registered after module unload and would
+        //            dereference freed memory if FS still had channels.
+        //        (b) active_media_streams_.reset() — its TearDown calls
+        //            client->Close() (joins reader thread) then bugs.clear()
+        //            (calls MediaBugManager::Detach via BugHandle dtor),
+        //            so bug_manager_ must still be alive at this point.
+        //        (c) bug_manager_.reset() last.  Reversing (b) and (c)
+        //            would leave BugHandle dtors trying to deref a freed
+        //            MediaBugManager.
+        if (bug_manager_) {
+            bug_manager_->UnregisterStateHandlers();
+        }
         active_media_streams_.reset();
         bug_manager_.reset();
 
