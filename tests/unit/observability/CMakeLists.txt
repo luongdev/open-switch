@@ -29,3 +29,19 @@ osw_add_unit_test(
     SOURCES audit_test.cc
     LIBS    osw_audit_test_helpers osw_observability
 )
+
+# W4 Track C — Prometheus format tests. Link osw_observability which now
+# includes prometheus.cc + metrics_server.cc + health_metrics.cc.
+osw_add_unit_test(
+    NAME    prometheus_test
+    LABEL   "observability;unit"
+    SOURCES prometheus_test.cc
+    LIBS    osw_observability
+)
+
+osw_add_unit_test(
+    NAME    metrics_server_test
+    LABEL   "observability;unit"
+    SOURCES metrics_server_test.cc
+    LIBS    osw_observability
+)

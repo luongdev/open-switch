@@ -117,6 +117,15 @@ struct Config {
     // --- Observability --------------------------------------------------
     /// Log level threshold ("trace","debug","info","warn","error","crit").
     std::string log_level = "info";
+
+    // --- Metrics (W4 Track C) -------------------------------------------
+    /// Enable the Prometheus /metrics HTTP endpoint.
+    bool metrics_enabled = true;
+    /// Bind address for the metrics HTTP server.
+    /// Default: 127.0.0.1 (loopback only). Operators expose via reverse proxy.
+    std::string metrics_bind_address = "127.0.0.1";
+    /// TCP port for the metrics HTTP server.
+    std::uint16_t metrics_port = 9090;
 };
 
 /// Validates the config. Returns Ok() or Fail(detail).

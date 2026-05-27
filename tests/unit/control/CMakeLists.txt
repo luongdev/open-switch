@@ -138,3 +138,14 @@ osw_add_unit_test(
     DEFINES OSW_TEST_FS_MOCK=1
 )
 target_include_directories(unhold_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
+
+# W4 Track C — RpcMetrics unit test. Links osw_control (which now includes
+# rpc_metrics.cc) and osw_observability (for prometheus::Registry).
+# Uses a real gRPC runtime only for the grpc::StatusCode enum — the test
+# does NOT start a gRPC server, just calls Record/RecordAuthz directly.
+osw_add_unit_test(
+    NAME    rpc_metrics_test
+    LABEL   "control;unit"
+    SOURCES rpc_metrics_test.cc
+    LIBS    osw_control osw_observability
+)
