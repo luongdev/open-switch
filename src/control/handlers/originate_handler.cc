@@ -117,9 +117,16 @@ grpc::Status ControlServiceSkeleton::Originate(
             e.status = status;
             // resp is empty at this point — that is correct; validation
             // errors carry no response body.
-            resp->SerializeToString(&e.serialized_response);
-            e.expires_at = std::chrono::steady_clock::now() + cache->Ttl();
-            cache->Store(request_id, std::move(e));
+            if (!resp->SerializeToString(&e.serialized_response)) {
+                osw::log::Warn(kSubsystem,
+                               "Originate: SerializeToString failed for request_id=%s; "
+                               "cancelling cache reservation to avoid corrupted retry",
+                               request_id.c_str());
+                cache->Cancel(request_id);
+            } else {
+                e.expires_at = std::chrono::steady_clock::now() + cache->Ttl();
+                cache->Store(request_id, std::move(e));
+            }
         }
         return status;
     }
@@ -155,9 +162,16 @@ grpc::Status ControlServiceSkeleton::Originate(
             // returns UNAVAILABLE (that path is below for null bleg).
             IdempotencyCache::Entry e;
             e.status = status;
-            resp->SerializeToString(&e.serialized_response);
-            e.expires_at = std::chrono::steady_clock::now() + cache->Ttl();
-            cache->Store(request_id, std::move(e));
+            if (!resp->SerializeToString(&e.serialized_response)) {
+                osw::log::Warn(kSubsystem,
+                               "Originate: SerializeToString failed for request_id=%s; "
+                               "cancelling cache reservation to avoid corrupted retry",
+                               request_id.c_str());
+                cache->Cancel(request_id);
+            } else {
+                e.expires_at = std::chrono::steady_clock::now() + cache->Ttl();
+                cache->Store(request_id, std::move(e));
+            }
         }
         return status;
     }
@@ -204,9 +218,16 @@ grpc::Status ControlServiceSkeleton::Originate(
     if (cache != nullptr && !request_id.empty()) {
         IdempotencyCache::Entry e;
         e.status = grpc::Status::OK;
-        resp->SerializeToString(&e.serialized_response);
-        e.expires_at = std::chrono::steady_clock::now() + cache->Ttl();
-        cache->Store(request_id, std::move(e));
+        if (!resp->SerializeToString(&e.serialized_response)) {
+            osw::log::Warn(kSubsystem,
+                           "Originate: SerializeToString failed for request_id=%s; "
+                           "cancelling cache reservation to avoid corrupted retry",
+                           request_id.c_str());
+            cache->Cancel(request_id);
+        } else {
+            e.expires_at = std::chrono::steady_clock::now() + cache->Ttl();
+            cache->Store(request_id, std::move(e));
+        }
     }
 
     return grpc::Status::OK;
