@@ -142,6 +142,45 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
         pool_ = pool;
         iface_ = iface;
 
+        // Codex W2 I-5: RAII guard for the partial-init window. If any step
+        // fails or throws, the guard resets all module members to avoid
+        // leaking background threads (metrics, gRPC) while the module
+        // singleton stays alive in an unloaded state.
+        struct LoadGuard {
+            Module* mod;
+            bool committed = false;
+            void commit() noexcept { committed = true; }
+            ~LoadGuard() noexcept {
+                if (committed)
+                    return;
+                // Full cleanup on load failure to prevent active resource leaks.
+                if (mod->broadcaster_) {
+                    try { mod->broadcaster_->Stop(); } catch (...) {}
+                    mod->broadcaster_.reset();
+                }
+                if (mod->binder_) {
+                    try { mod->binder_->Stop(); } catch (...) {}
+                    mod->binder_.reset();
+                }
+                mod->rings_.reset();
+                mod->classifier_.reset();
+                if (mod->metrics_server_) {
+                    try { mod->metrics_server_->Stop(); } catch (...) {}
+                    mod->metrics_server_.reset();
+                }
+                if (mod->grpc_server_) {
+                    try { mod->grpc_server_->Drain(std::chrono::system_clock::now() + std::chrono::seconds(2)); } catch (...) {}
+                    mod->grpc_server_.reset();
+                }
+                mod->rpc_metrics_.reset();
+                mod->health_metrics_.reset();
+                mod->prometheus_registry_.reset();
+                mod->pool_ = nullptr;
+                mod->iface_ = nullptr;
+            }
+        };
+        LoadGuard load_guard{this, false};
+
         // 1. Install the FS-backed default log sink so subsequent log
         //    lines actually reach switch_log_printf. log.cc keeps a
         //    null sink before this call.
@@ -216,7 +255,6 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
         grpc_server_->SetRpcMetrics(rpc_metrics_.get());
         if (!grpc_server_->Start(config_)) {
             osw::log::Error(kSubsystem, "gRPC server failed to start");
-            grpc_server_.reset();
             return false;
         }
 
@@ -244,55 +282,11 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
                                                    &health_);
         if (!binder_->Init()) {
             osw::log::Error(kSubsystem, "events::Binder::Init failed; aborting load");
-            binder_.reset();
-            rings_.reset();
-            classifier_.reset();
-            grpc_server_->Drain(std::chrono::system_clock::now() + std::chrono::seconds(2));
-            grpc_server_.reset();
             return false;
         }
 
-        // Codex W2 I-5: RAII guard for the partial-init window. If
-        // anything between here and the `commit()` call below throws
-        // (e.g. broadcaster_->Start() failing with std::system_error
-        // on thread-creation under resource exhaustion), the guard
-        // calls Binder::Stop() (and Broadcaster::Stop() if it got
-        // constructed) on unwind. Without this, the binder stays
-        // bound: FS keeps delivering events to our handler, which
-        // pushes into rings whose Broadcaster is half-constructed.
-        // Events would leak into the ring and rot until process
-        // shutdown (the Module destructor's defensive cleanup runs
-        // only at process exit — could be hours later).
-        struct PartialLoadCleanup {
-            events::Binder* binder = nullptr;
-            events::Broadcaster* broadcaster = nullptr;
-            bool committed = false;
-            void commit() noexcept { committed = true; }
-            ~PartialLoadCleanup() noexcept {
-                if (committed)
-                    return;
-                if (broadcaster) {
-                    try {
-                        broadcaster->Stop();
-                    } catch (...) {
-                        // best-effort
-                    }
-                }
-                if (binder) {
-                    try {
-                        binder->Stop();
-                    } catch (...) {
-                        // best-effort
-                    }
-                }
-            }
-        };
-        PartialLoadCleanup load_guard;
-        load_guard.binder = binder_.get();
-
         broadcaster_ = std::make_unique<events::Broadcaster>(rings_.get(), &health_);
         broadcaster_->Start();
-        load_guard.broadcaster = broadcaster_.get();
 
         grpc_server_->SetEventPlane(broadcaster_.get(),
                                     rings_.get(),
