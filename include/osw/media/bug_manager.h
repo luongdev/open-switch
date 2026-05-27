@@ -115,6 +115,15 @@ class MediaBugManager {
     /// OswMediaChannelDestroy uses this to reach the manager.
     static MediaBugManager& Instance() noexcept;
 
+    /// Shared cleanup core. `call_remove_callback=true` asks FS to detach
+    /// the bug (used from BugHandle dtor / explicit Detach); `false` skips
+    /// that call (used from the trampoline's CLOSE branch, where FS is
+    /// already tearing the bug down, and from DetachAll on CS_DESTROY
+    /// where the bug chain has already been freed — FF-032). The
+    /// trampoline calls this directly so the friend declaration below is
+    /// not enough — keep it public-but-internal.
+    void DetachInternal(std::uint64_t bug_id, bool call_remove_callback) noexcept;
+
   private:
     friend class BugHandle;
 

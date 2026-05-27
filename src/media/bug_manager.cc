@@ -97,9 +97,10 @@ struct BugRecord {
     std::uint64_t id;  // monotonic; unique within process
     Purpose purpose;
     std::string channel_uuid;
-    switch_media_bug_t* fs_bug;  // FS-owned; non-owning ptr (log/debug only)
+    switch_core_session_t* session;  // captured at Attach; needed for remove_callback
+    switch_media_bug_t* fs_bug;      // FS-owned; non-owning ptr (log/debug only)
     BugConfig config;
-    BugCallbackContext* ctx;  // heap-allocated; owned by this record
+    BugCallbackContext* ctx;  // heap-allocated; owned by this record (delete in cleanup paths)
 };
 
 }  // namespace osw::media
@@ -191,12 +192,22 @@ extern "C" switch_bool_t OswMediaBugTrampoline(switch_media_bug_t* /*bug*/,
     }
 
     if (itype == kAbcTypeClose) {
-        // FS is closing the bug: remove our registry record.
-        if (ctx->manager) {
-            ctx->manager->Detach(ctx->bug_id);
+        // FS is closing the bug. We MUST NOT touch ctx after asking the
+        // manager to detach — DetachInternal frees the record AND ctx.
+        // Capture every field we still need on the stack first.
+        osw::media::MediaBugManager* const mgr = ctx->manager;
+        const std::uint64_t bug_id = ctx->bug_id;
+        const auto user_cb = ctx->user_cb;
+        void* const user_data = ctx->user_data;
+
+        if (mgr) {
+            // call_remove_callback=false: FS is already tearing the bug
+            // down; calling remove_callback from the close-callback would
+            // recurse / deadlock. DetachInternal still deletes ctx for us.
+            mgr->DetachInternal(bug_id, /*call_remove_callback=*/false);
         }
-        if (ctx->user_cb) {
-            return ctx->user_cb(nullptr, ctx->user_data, type);
+        if (user_cb) {
+            return user_cb(nullptr, user_data, type);
         }
         return SWITCH_TRUE;
     }
@@ -372,6 +383,7 @@ MediaBugManager::AttachResult MediaBugManager::Attach(switch_core_session_t* ses
         rec->id = assigned_id;
         rec->purpose = purpose_copy;
         rec->channel_uuid = uuid;
+        rec->session = session;  // captured for Detach → remove_callback
         rec->fs_bug = fs_bug;
         rec->config = std::move(cfg);
         rec->config.fs_flags = effective_flags;
@@ -389,34 +401,64 @@ MediaBugManager::AttachResult MediaBugManager::Attach(switch_core_session_t* ses
 // Detach.
 // ---------------------------------------------------------------------------
 
-void MediaBugManager::Detach(std::uint64_t bug_id) noexcept {
-    std::lock_guard<std::mutex> lk(mu_);
-    auto it = by_id_.find(bug_id);
-    if (it == by_id_.end()) {
-        return;  // already gone or unknown — idempotent
-    }
-    BugRecord* rec = ToRecord(it->second);
-    const std::string& channel_uuid = rec->channel_uuid;
+// Internal: erase the record + delete ctx + (optionally) ask FS to detach
+// the bug. mu_ is acquired/released inside. Caller-side bool decides whether
+// to invoke remove_callback:
+//
+//   call_remove_callback=true  (default): BugHandle dtor / explicit Detach
+//     — session is still alive (FS guarantees session_t valid until our
+//       CS_DESTROY hook returns), and we must stop FS callbacks before
+//       freeing ctx (which is used as user_data by FS).
+//
+//   call_remove_callback=false: invoked by the trampoline's CLOSE branch
+//     (FS is already tearing down the bug — calling remove_callback here
+//     would be redundant or unsafe), and by DetachAll on CS_DESTROY
+//     (FS has already closed all bugs for the dying channel; bug_t* is
+//     stale at this point — see FF-032).
+void MediaBugManager::DetachInternal(std::uint64_t bug_id, bool call_remove_callback) noexcept {
+    // Capture what we need under mu_, then release before calling FS.
+    switch_core_session_t* session_to_remove = nullptr;
+    BugCallbackContext* ctx_to_delete = nullptr;
+    BugRecord* rec_to_delete = nullptr;
 
-    // Erase from by_channel_ index.
-    auto cit = by_channel_.find(channel_uuid);
-    if (cit != by_channel_.end()) {
-        auto& vec = cit->second;
-        vec.erase(std::remove(vec.begin(), vec.end(), bug_id), vec.end());
-        if (vec.empty()) {
-            by_channel_.erase(cit);
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = by_id_.find(bug_id);
+        if (it == by_id_.end()) {
+            return;  // already gone or unknown — idempotent
         }
+        BugRecord* rec = ToRecord(it->second);
+
+        // Drop from by_channel_ index.
+        auto cit = by_channel_.find(rec->channel_uuid);
+        if (cit != by_channel_.end()) {
+            auto& vec = cit->second;
+            vec.erase(std::remove(vec.begin(), vec.end(), bug_id), vec.end());
+            if (vec.empty()) {
+                by_channel_.erase(cit);
+            }
+        }
+
+        // Take ownership for cleanup outside the lock.
+        session_to_remove = call_remove_callback ? rec->session : nullptr;
+        ctx_to_delete = rec->ctx;
+        rec_to_delete = rec;
+        by_id_.erase(it);
     }
 
-    delete rec;
-    by_id_.erase(it);
-    // Note: we do not call FsMediaBugRemoveCallback here because we don't
-    // have a valid session pointer at this point (the session may already be
-    // freed by the time BugHandle destructor runs after channel hangup).
-    // The canonical removal path is via the SWITCH_ABC_TYPE_CLOSE callback
-    // in OswMediaBugTrampoline (which FS fires during hangup/remove).
-    // Track C can override this by storing the session pointer and calling
-    // FsMediaBugRemoveCallback before releasing the BugHandle.
+    // mu_ released. Ask FS to detach the bug if requested. FS guarantees
+    // that after remove_callback returns, no more trampoline invocations
+    // will fire for this user_data — so freeing ctx below is safe.
+    if (session_to_remove) {
+        FsMediaBugRemoveCallback(session_to_remove, OswMediaBugTrampoline);
+    }
+
+    delete ctx_to_delete;
+    delete rec_to_delete;
+}
+
+void MediaBugManager::Detach(std::uint64_t bug_id) noexcept {
+    DetachInternal(bug_id, /*call_remove_callback=*/true);
 }
 
 void MediaBugManager::DetachAll(std::string_view channel_uuid) noexcept {
@@ -432,18 +474,10 @@ void MediaBugManager::DetachAll(std::string_view channel_uuid) noexcept {
         ids = cit->second;  // copy the id list
     }
 
-    // FF-032: during CS_DESTROY do NOT call remove_callback.
-    // Erase records only.
-    {
-        std::lock_guard<std::mutex> lk(mu_);
-        for (std::uint64_t id : ids) {
-            auto it = by_id_.find(id);
-            if (it != by_id_.end()) {
-                delete ToRecord(it->second);
-                by_id_.erase(it);
-            }
-        }
-        by_channel_.erase(uuid);
+    // FF-032: during CS_DESTROY do NOT call remove_callback (FS already
+    // closed our bugs). Still must free ctx + rec for every record.
+    for (std::uint64_t id : ids) {
+        DetachInternal(id, /*call_remove_callback=*/false);
     }
 }
 
