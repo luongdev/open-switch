@@ -30,6 +30,7 @@
 
 #include "osw/control/call_cause.h"
 #include "osw/control/session_guard.h"
+#include "osw/control/var_denylist.h"
 #include "osw/observability/audit.h"
 #include "osw/observability/log.h"
 #include "osw/raii/fs_api.h"
@@ -85,6 +86,22 @@ grpc::Status ControlServiceSkeleton::Hangup(grpc::ServerContext* /*ctx*/,
             kSubsystem, "Hangup FAILED_PRECONDITION: channel already dead uuid=%s", uuid.c_str());
         return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
                             "channel already hung up: uuid=" + uuid);
+    }
+
+    // P2-9: apply caller-supplied variables BEFORE hangup so they are
+    // included in the on_reporting / CDR event FS emits at hangup.
+    // Apply the same reserved-name denylist as SetVariables to prevent
+    // Hangup being used as a backdoor to set sip_h_*, api_on_*, etc.
+    for (const auto& [k, v] : req->variables()) {
+        if (osw::control::IsReservedVar(k)) {
+            osw::log::Debug(kSubsystem,
+                            "Hangup INVALID_ARGUMENT: reserved var '%s' for uuid=%s",
+                            k.c_str(),
+                            uuid.c_str());
+            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                                "variable name is reserved: '" + k + "'");
+        }
+        osw::raii::fs::ChannelSetVariable(ch, k.c_str(), v.c_str());
     }
 
     osw::raii::fs::ChannelHangup(ch, cause);

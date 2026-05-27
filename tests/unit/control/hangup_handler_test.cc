@@ -210,6 +210,54 @@ TEST_F(HangupHandlerTest, LiveChannelReturnsOKAndEmitsAudit) {
 }
 
 // ---------------------------------------------------------------------------
+// P2-9: variables applied before hangup
+// ---------------------------------------------------------------------------
+
+TEST_F(HangupHandlerTest, WithVariablesAppliesThemFirst) {
+    auto& m = osw::raii::fs::Mock();
+    m.next_session = kSession;
+    m.next_channel = kChannel;
+    m.next_channel_get_state = CS_EXECUTE;
+    m.next_event = kAuditEvent;
+    m.next_event_create_subclass_status = SWITCH_STATUS_SUCCESS;
+
+    open_switch::control::v1::HangupRequest req;
+    req.set_uuid("some-uuid-1234");
+    (*req.mutable_variables())["cdr_tag"] = "x";
+    (*req.mutable_variables())["agent"] = "y";
+    open_switch::control::v1::HangupResponse resp;
+    grpc::ServerContext ctx;
+
+    const grpc::Status status = svc_->Hangup(&ctx, &req, &resp);
+    ASSERT_TRUE(status.ok()) << status.error_message();
+
+    EXPECT_EQ(m.channel_set_variable_calls.load(), 2);
+    EXPECT_EQ(m.channel_hangup_calls.load(), 1);
+
+    std::lock_guard<std::mutex> g(m.capture_mu);
+    EXPECT_EQ(m.set_variable_invocations.size(), 2u);
+}
+
+TEST_F(HangupHandlerTest, RejectsReservedVarInVariables) {
+    auto& m = osw::raii::fs::Mock();
+    m.next_session = kSession;
+    m.next_channel = kChannel;
+    m.next_channel_get_state = CS_EXECUTE;
+
+    open_switch::control::v1::HangupRequest req;
+    req.set_uuid("some-uuid-1234");
+    (*req.mutable_variables())["sip_h_Custom"] = "injected";
+    open_switch::control::v1::HangupResponse resp;
+    grpc::ServerContext ctx;
+
+    const grpc::Status status = svc_->Hangup(&ctx, &req, &resp);
+    EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+
+    EXPECT_EQ(m.channel_set_variable_calls.load(), 0);
+    EXPECT_EQ(m.channel_hangup_calls.load(), 0);
+}
+
+// ---------------------------------------------------------------------------
 // Default cause (empty → NORMAL_CLEARING)
 // ---------------------------------------------------------------------------
 
