@@ -151,6 +151,11 @@ grpc::Status HandleStartTts(grpc::ServerContext* /*ctx*/,
 
     osw::media::StreamCallbacks cbs;
     cbs.on_audio = [buf_raw](osw::media::AudioFrame f) noexcept { buf_raw->Push(std::move(f)); };
+    cbs.on_done = [buf_raw](grpc::Status /*status*/) noexcept {
+        if (buf_raw) {
+            buf_raw->SignalEndOfStream();
+        }
+    };
 
     auto channel =
         grpc::CreateChannel(req->upstream_endpoint(), grpc::InsecureChannelCredentials());

@@ -157,6 +157,13 @@ extern "C" switch_bool_t OswStreamingWriteReplace(switch_media_bug_t* bug,
     const std::uint32_t cap_samples = frame->datalen / sizeof(std::int16_t);
 
     const std::uint32_t written = ctx->buffer->Pop(dst, cap_samples);
+    if (written == 0) {
+        if (ctx->buffer->EndOfStream()) {
+            return SWITCH_FALSE;
+        }
+        return SWITCH_TRUE;
+    }
+
     frame->samples = written;
     frame->datalen = written * sizeof(std::int16_t);
     osw::raii::fs::MediaBugSetWriteReplaceFrame(bug, frame);

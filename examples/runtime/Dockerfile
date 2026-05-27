@@ -32,6 +32,12 @@ COPY event_socket.conf.xml /usr/local/etc/freeswitch/autoload_configs/event_sock
 COPY dialplan/default.xml /usr/local/etc/freeswitch/dialplan/default.xml
 COPY dialplan/public/00_osw_e2e.xml /usr/local/etc/freeswitch/dialplan/public/00_osw_e2e.xml
 
+# Keep demo RTP inside the docker-compose published UDP range.
+RUN sed -i \
+      -e 's|<!-- <param name="rtp-start-port" value="16384"/> -->|<param name="rtp-start-port" value="16384"/>|' \
+      -e 's|<!-- <param name="rtp-end-port" value="32768"/> -->|<param name="rtp-end-port" value="16484"/>|' \
+      /usr/local/etc/freeswitch/autoload_configs/switch.conf.xml
+
 # 3. gRPC listen port from open_switch.conf.xml.
 EXPOSE 50061
 
