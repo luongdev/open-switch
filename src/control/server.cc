@@ -22,6 +22,7 @@
 #include "osw/control/auth_interceptor.h"
 #include "osw/control/jwt_verifier.h"
 #include "osw/control/rbac.h"
+#include "osw/control/rpc_metrics.h"
 #include "osw/control/tls.h"
 #include "osw/core/config.h"
 #include "osw/observability/health.h"
@@ -130,16 +131,28 @@ bool GrpcServer::Start(const Config& config) {
     builder.AddListeningPort(config.grpc_listen_address, creds_, &bound_port);
     builder.RegisterService(service_.get());
 
-    // Register the auth interceptor.  Per FF-029: SetInterceptorCreators must
-    // be called before BuildAndStart(); the factory pointer lifetime must
-    // exceed the server's lifetime (auth_factory_ stored in GrpcServer
-    // member satisfies this).
+    // Register all server-side interceptors in a single SetInterceptorCreators
+    // call. The gRPC API REPLACES the interceptor vector on each call to this
+    // method — there's no append — so Auth (W4B) and RpcMetrics (W4C) must be
+    // batched here. Per FF-029: SetInterceptorCreators must be called before
+    // BuildAndStart(); the factory pointer lifetime must exceed the server's
+    // lifetime (auth_factory_ + rpc_metrics_ members satisfy this).
+    //
+    // Both factories conform to grpc::experimental::ServerInterceptorFactoryInterface
+    // (gRPC 1.74 puts the server-side interceptor API in the `experimental`
+    // namespace).
     {
-        std::vector<std::unique_ptr<grpc::ServerInterceptorFactoryInterface>> creators;
-        // We need to pass a unique_ptr; wrap with a non-owning adapter since
-        // auth_factory_ is a shared_ptr we want to retain for UpdateRegistry.
-        struct FactoryAdapter : public grpc::ServerInterceptorFactoryInterface {
-            explicit FactoryAdapter(std::shared_ptr<AuthInterceptorFactory> f)
+        std::vector<std::unique_ptr<grpc::experimental::ServerInterceptorFactoryInterface>>
+            creators;
+
+        // W4B: Auth + RBAC interceptor. We retain auth_factory_ as a
+        // shared_ptr member so UpdateRegistry() (SIGHUP hot-reload) can
+        // swap the RBAC table without restarting the server. Wrap with a
+        // non-owning adapter so the SetInterceptorCreators contract
+        // (unique_ptr ownership) is honoured while we keep our own ref.
+        struct AuthFactoryAdapter
+            : public grpc::experimental::ServerInterceptorFactoryInterface {
+            explicit AuthFactoryAdapter(std::shared_ptr<AuthInterceptorFactory> f)
                 : factory(std::move(f)) {}
             grpc::experimental::Interceptor* CreateServerInterceptor(
                 grpc::experimental::ServerRpcInfo* info) override {
@@ -147,7 +160,15 @@ bool GrpcServer::Start(const Config& config) {
             }
             std::shared_ptr<AuthInterceptorFactory> factory;
         };
-        creators.push_back(std::make_unique<FactoryAdapter>(auth_factory_));
+        creators.push_back(std::make_unique<AuthFactoryAdapter>(auth_factory_));
+
+        // W4C: RpcMetrics interceptor (optional — only when a collector
+        // was injected via SetRpcMetrics).
+        if (rpc_metrics_) {
+            creators.push_back(rpc_metrics_->MakeFactory());
+            osw::log::Info("control", "RpcMetrics interceptor registered");
+        }
+
         builder.experimental().SetInterceptorCreators(std::move(creators));
     }
     // Note: bound_port is filled in by BuildAndStart() (the resolver
@@ -222,6 +243,10 @@ std::string GrpcServer::BoundAddress() const noexcept {
 
 int GrpcServer::BoundPort() const noexcept {
     return bound_port_;
+}
+
+void GrpcServer::SetRpcMetrics(control::RpcMetrics* metrics) noexcept {
+    rpc_metrics_ = metrics;
 }
 
 void GrpcServer::SetEventPlane(events::Broadcaster* broadcaster,

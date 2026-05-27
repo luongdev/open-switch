@@ -25,6 +25,8 @@ add_library(osw_control STATIC
     auth_interceptor.cc
     rbac.cc
     jwt_verifier.cc
+    # W4 Track C — RPC metrics collector + interceptor
+    rpc_metrics.cc
     handlers/health_handler.cc
     handlers/unimplemented.cc
 )
