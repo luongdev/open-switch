@@ -82,14 +82,19 @@ const std::unordered_set<std::string>& AllowedApps() noexcept {
     if (args.empty()) {
         return args;
     }
-    // Match <keyword>=<value> where value runs to whitespace or end of string.
-    // We intentionally over-redact on boundary cases (conservative).
+    // Match <key>=<value> where the key CONTAINS "password", "token", or
+    // "secret" as a substring (not just an exact word). This covers compound
+    // keys like api_secret_key=... or password_hash=..., not only bare
+    // "password=..." or "token=...". Value runs to whitespace or end of string.
+    //
+    // Pattern: \S*?(?:password|token|secret)\S* — any non-ws chars on either
+    // side of the keyword, non-greedy prefix. Still icase via std::regex::icase.
     //
     // NOTE: do NOT prefix the pattern with `(?i)` — GCC's libstdc++ implements
     // ECMAScript regex grammar which does NOT recognise inline mode flags,
-    // throwing std::regex_error at construction. Case-insensitivity is
-    // expressed via std::regex::icase passed to the constructor.
-    static const std::regex kRedactPattern(R"((password|token|secret)=(\S+))", std::regex::icase);
+    // throwing std::regex_error at construction.
+    static const std::regex kRedactPattern(R"((\S*?(?:password|token|secret)\S*)=(\S+))",
+                                           std::regex::icase);
     return std::regex_replace(args, kRedactPattern, "$1=[REDACTED]");
 }
 
