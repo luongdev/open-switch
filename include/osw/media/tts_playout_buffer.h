@@ -70,8 +70,10 @@ class TtsPlayoutBuffer {
     void Push(AudioFrame frame) noexcept;
 
     /// Consumer (FS write_replace bug callback, on the FS media thread).
-    /// Writes up to out_cap_samples of L16 into out; returns the
-    /// number of samples actually written. Behaviour:
+    /// Writes one stable replacement frame of L16 into out and returns the
+    /// number of samples written. Except for empty-buffer EOS, Pop() fills
+    /// out_cap_samples by draining across queued frames and padding with the
+    /// underrun policy if the queue runs dry. Behaviour:
     ///   - Pre-roll not yet reached AND not end-of-stream: write silence
     ///     (zeros), return count. Do NOT signal underrun (we're priming).
     ///   - Buffer has at least one frame: pop oldest, copy samples.
@@ -118,6 +120,7 @@ class TtsPlayoutBuffer {
     bool first_push_logged_ = false;
     bool first_pop_logged_ = false;
     bool first_preroll_silence_logged_ = false;
+    bool first_underrun_logged_ = false;
 
     // Atomics for snapshot readers (Prometheus, Health) — no mu_ needed.
     std::atomic<bool> preroll_reached_{false};

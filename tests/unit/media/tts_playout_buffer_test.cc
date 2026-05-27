@@ -141,6 +141,56 @@ TEST(TtsPlayoutBufferTest, PopAfterPrerollDeliversFramesInOrder) {
     EXPECT_EQ(out[0], 222);
 }
 
+TEST(TtsPlayoutBufferTest, PopCombinesShortFramesIntoOneCallbackFrame) {
+    auto buf = MakeBuffer(20);  // 1-frame preroll
+
+    constexpr std::uint32_t kHalfFrame = kPtime20ms / 2;
+    buf.Push(MakeFrame(11, kHalfFrame));
+    buf.Push(MakeFrame(22, kHalfFrame));
+    ASSERT_TRUE(buf.PrerollReached());
+
+    std::vector<std::int16_t> out(kPtime20ms, 0);
+    const std::uint32_t n = buf.Pop(out.data(), kPtime20ms);
+
+    ASSERT_EQ(n, kPtime20ms);
+    EXPECT_EQ(out[0], 11);
+    EXPECT_EQ(out[kHalfFrame - 1], 11);
+    EXPECT_EQ(out[kHalfFrame], 22);
+    EXPECT_EQ(out[kPtime20ms - 1], 22);
+    EXPECT_EQ(buf.CurrentDepth().count(), 0);
+}
+
+TEST(TtsPlayoutBufferTest, PopPadsMidFrameUnderrunInsteadOfReturningShortFrame) {
+    auto buf = MakeBuffer(10);  // half-frame preroll
+
+    constexpr std::uint32_t kHalfFrame = kPtime20ms / 2;
+    buf.Push(MakeFrame(77, kHalfFrame));
+    ASSERT_TRUE(buf.PrerollReached());
+
+    std::vector<std::int16_t> out(kPtime20ms, std::int16_t{0x7FFF});
+    const std::uint32_t n = buf.Pop(out.data(), kPtime20ms);
+
+    ASSERT_EQ(n, kPtime20ms);
+    EXPECT_EQ(out[0], 77);
+    EXPECT_EQ(out[kHalfFrame - 1], 77);
+    EXPECT_EQ(out[kHalfFrame], 0);
+    EXPECT_EQ(out[kPtime20ms - 1], 0);
+    EXPECT_GE(buf.UnderrunCount(), 1u);
+}
+
+TEST(TtsPlayoutBufferTest, CurrentDepthAccountsForPartialFrontFrame) {
+    auto buf = MakeBuffer(20);
+
+    buf.Push(MakeFrame(33, kPtime20ms * 2));
+    ASSERT_TRUE(buf.PrerollReached());
+    EXPECT_EQ(buf.CurrentDepth().count(), 40);
+
+    std::vector<std::int16_t> out(kPtime20ms);
+    const std::uint32_t n = buf.Pop(out.data(), kPtime20ms);
+    ASSERT_EQ(n, kPtime20ms);
+    EXPECT_EQ(buf.CurrentDepth().count(), 20);
+}
+
 // ---------------------------------------------------------------------------
 // C4 — High-water overrun
 // ---------------------------------------------------------------------------

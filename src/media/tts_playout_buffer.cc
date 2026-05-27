@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <limits>
 #include <utility>
 
 #include "osw/observability/audit.h"
@@ -28,6 +29,32 @@ constexpr const char* kSubsystem = "media.tts_playout";
 
 // Rate-limit window for audit events (1 per stream per second).
 constexpr std::chrono::seconds kAuditRateWindow{1};
+
+std::uint32_t DurationMsForSamples(std::uint32_t samples,
+                                   std::uint32_t sample_rate_hz,
+                                   std::uint32_t channels) noexcept {
+    if (samples == 0 || sample_rate_hz == 0 || channels == 0) {
+        return 0;
+    }
+    return static_cast<std::uint32_t>((static_cast<std::uint64_t>(samples) * 1000u) /
+                                      (static_cast<std::uint64_t>(sample_rate_hz) * channels));
+}
+
+std::uint32_t FillRepeatLast(std::int16_t* out,
+                             std::uint32_t out_cap_samples,
+                             const AudioFrame& last_frame) noexcept {
+    const std::uint32_t last_samples = static_cast<std::uint32_t>(last_frame.sample_count());
+    if (!out || out_cap_samples == 0 || last_samples == 0) {
+        return 0;
+    }
+    std::uint32_t written = 0;
+    while (written < out_cap_samples) {
+        const std::uint32_t n = std::min(out_cap_samples - written, last_samples);
+        std::memcpy(out + written, last_frame.data(), n * sizeof(std::int16_t));
+        written += n;
+    }
+    return written;
+}
 
 }  // namespace
 
@@ -58,6 +85,10 @@ void TtsPlayoutBuffer::Push(AudioFrame frame) noexcept {
     std::uint64_t dropped = 0;
     while (depth_ms_ > static_cast<std::uint32_t>(cfg_.high_water_ms.count()) &&
            queue_.size() > 1) {
+        // If the oldest frame is partially consumed, dropping it must also
+        // clear the offset; otherwise the next frame would be read from the
+        // middle, creating an audible gap/click.
+        front_offset_samples_ = 0;
         queue_.pop_front();
         ++dropped;
         RecomputeDepth();
@@ -91,8 +122,7 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
     // Case: Pre-roll not yet reached (still priming) — emit silence.
     if (!preroll_reached_.load(std::memory_order_relaxed) &&
         !eos_.load(std::memory_order_relaxed)) {
-        const std::uint32_t n = std::min(out_cap_samples,
-                                         cfg_.channel_sample_rate_hz / 50);  // 20ms worth
+        const std::uint32_t n = out_cap_samples;
         std::memset(out, 0, n * sizeof(std::int16_t));
         if (!first_preroll_silence_logged_) {
             first_preroll_silence_logged_ = true;
@@ -107,16 +137,45 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
         return n;
     }
 
-    // Case: Buffer has frames — deliver.
+    // Case: Buffer has frames — deliver a full callback frame by draining
+    // across queued AudioFrames.  Upstream frames may be shorter than the FS
+    // ptime; returning a short replacement frame causes RTP packetization
+    // jitter, so only EOS-before-any-audio returns 0.
     if (!queue_.empty()) {
-        AudioFrame& front = queue_.front();
-        // W6.5 P2-004 fix: respect front_offset_samples_ so partial-frame
-        // consumption preserves the tail across multiple Pop() calls.
-        const std::uint32_t total = static_cast<std::uint32_t>(front.sample_count());
-        const std::uint32_t avail =
-            (front_offset_samples_ >= total) ? 0u : (total - front_offset_samples_);
-        const std::uint32_t n = std::min(out_cap_samples, avail);
-        std::memcpy(out, front.data() + front_offset_samples_, n * sizeof(std::int16_t));
+        std::uint32_t written = 0;
+        while (written < out_cap_samples && !queue_.empty()) {
+            AudioFrame& front = queue_.front();
+            // W6.5 P2-004 fix: respect front_offset_samples_ so partial-frame
+            // consumption preserves the tail across multiple Pop() calls.
+            const std::uint32_t total = static_cast<std::uint32_t>(front.sample_count());
+            const std::uint32_t avail =
+                (front_offset_samples_ >= total) ? 0u : (total - front_offset_samples_);
+            if (avail == 0) {
+                queue_.pop_front();
+                front_offset_samples_ = 0;
+                continue;
+            }
+
+            const std::uint32_t n = std::min(out_cap_samples - written, avail);
+            std::memcpy(out + written,
+                        front.data() + front_offset_samples_,
+                        n * sizeof(std::int16_t));
+
+            // Keep last frame for kRepeatLast policy (full frame, not slice).
+            if (cfg_.underrun == UnderrunPolicy::kRepeatLast) {
+                last_frame_ = front;
+                has_last_frame_ = true;
+            }
+
+            front_offset_samples_ += n;
+            written += n;
+            if (front_offset_samples_ >= total) {
+                queue_.pop_front();
+                front_offset_samples_ = 0;
+            }
+        }
+        RecomputeDepth();
+        playback_started_.store(true, std::memory_order_relaxed);
 
         if (!first_pop_logged_) {
             first_pop_logged_ = true;
@@ -124,28 +183,39 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
                            "TtsPlayoutBuffer first audio pop stream_id=%s samples=%u "
                            "depth_ms=%u first_sample=%d",
                            stream_id_.c_str(),
-                           n,
+                           written,
                            depth_ms_,
-                           n > 0 ? static_cast<int>(out[0]) : 0);
+                           written > 0 ? static_cast<int>(out[0]) : 0);
         }
 
-        // Keep last frame for kRepeatLast policy (full frame, not slice).
-        if (cfg_.underrun == UnderrunPolicy::kRepeatLast) {
-            last_frame_ = front;
-            has_last_frame_ = true;
+        if (written == out_cap_samples) {
+            return written;
         }
 
-        // Pop only when the frame is fully drained; otherwise advance
-        // the offset and leave the frame at queue_.front() for the next
-        // Pop() call.
-        front_offset_samples_ += n;
-        if (front_offset_samples_ >= total) {
-            queue_.pop_front();
-            front_offset_samples_ = 0;
+        // Queue ran dry mid-callback.  Pad the rest so FS sees a stable ptime.
+        const std::uint32_t remaining = out_cap_samples - written;
+        if (eos_.load(std::memory_order_relaxed)) {
+            std::memset(out + written, 0, remaining * sizeof(std::int16_t));
+            return out_cap_samples;
         }
-        RecomputeDepth();
-        playback_started_.store(true, std::memory_order_relaxed);
-        return n;
+
+        underrun_count_.fetch_add(1, std::memory_order_relaxed);
+        if (cfg_.underrun == UnderrunPolicy::kRepeatLast && has_last_frame_) {
+            FillRepeatLast(out + written, remaining, last_frame_);
+        } else {
+            std::memset(out + written, 0, remaining * sizeof(std::int16_t));
+        }
+        if (!first_underrun_logged_) {
+            first_underrun_logged_ = true;
+            osw::log::Warn(kSubsystem,
+                           "TtsPlayoutBuffer underrun stream_id=%s samples_silenced=%u "
+                           "depth_ms=%u",
+                           stream_id_.c_str(),
+                           remaining,
+                           depth_ms_);
+        }
+        EmitUnderrunEvent(remaining, depth_ms_);
+        return out_cap_samples;
     }
 
     // Case: EOS, buffer just drained — return 0 cleanly.
@@ -157,7 +227,7 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
     if (!playback_started_.load(std::memory_order_relaxed)) {
         // Playback never started; treat as priming silence (shouldn't normally
         // reach here after preroll, but be defensive).
-        const std::uint32_t n = std::min(out_cap_samples, cfg_.channel_sample_rate_hz / 50);
+        const std::uint32_t n = out_cap_samples;
         std::memset(out, 0, n * sizeof(std::int16_t));
         return n;
     }
@@ -167,14 +237,20 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
 
     std::uint32_t n = 0;
     if (cfg_.underrun == UnderrunPolicy::kRepeatLast && has_last_frame_) {
-        const std::uint32_t avail = static_cast<std::uint32_t>(last_frame_.sample_count());
-        n = std::min(out_cap_samples, avail);
-        std::memcpy(out, last_frame_.data(), n * sizeof(std::int16_t));
+        n = FillRepeatLast(out, out_cap_samples, last_frame_);
     } else {
-        n = std::min(out_cap_samples, cfg_.channel_sample_rate_hz / 50);
+        n = out_cap_samples;
         std::memset(out, 0, n * sizeof(std::int16_t));
     }
 
+    if (!first_underrun_logged_) {
+        first_underrun_logged_ = true;
+        osw::log::Warn(kSubsystem,
+                       "TtsPlayoutBuffer underrun stream_id=%s samples_silenced=%u depth_ms=%u",
+                       stream_id_.c_str(),
+                       n,
+                       depth_ms_);
+    }
     EmitUnderrunEvent(n, depth_ms_);
     return n;
 }
@@ -222,11 +298,19 @@ void TtsPlayoutBuffer::SetTenantId(std::string tenant_id) noexcept {
 // Internal helpers — called with mu_ held.
 
 void TtsPlayoutBuffer::RecomputeDepth() noexcept {
-    std::uint32_t total = 0;
+    std::uint64_t total = 0;
+    bool first = true;
     for (const auto& f : queue_) {
-        total += f.duration_ms();
+        std::uint32_t samples = static_cast<std::uint32_t>(f.sample_count());
+        if (first) {
+            samples = (front_offset_samples_ >= samples) ? 0u : (samples - front_offset_samples_);
+            first = false;
+        }
+        total += DurationMsForSamples(samples, f.sample_rate_hz(), f.channels());
     }
-    depth_ms_ = total;
+    depth_ms_ =
+        static_cast<std::uint32_t>(
+            std::min<std::uint64_t>(total, std::numeric_limits<std::uint32_t>::max()));
 }
 
 void TtsPlayoutBuffer::EmitUnderrunEvent(std::uint32_t samples_silenced,
