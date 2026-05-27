@@ -41,4 +41,10 @@ services:
       nofile:
         soft: 65536
         hard: 65536
+      rtprio:
+        soft: 99
+        hard: 99
+    cap_add:
+      - SYS_NICE
+      - NET_RAW
     restart: unless-stopped
