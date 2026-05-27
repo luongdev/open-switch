@@ -134,11 +134,14 @@ grpc::Status StreamClient::Open(int open_deadline_ms) noexcept {
         std::future_status::timeout) {
         // Force-cancel the stream so Write/Read return and handshake_thread can join.
         context_->TryCancel();
-        handshake_status = handshake_future.get();
-        if (handshake_status.ok()) {
-            handshake_status = grpc::Status(grpc::StatusCode::DEADLINE_EXCEEDED,
-                                            "Open handshake exceeded open_deadline_ms");
-        }
+        // Drain the future — the handshake thread will see Write/Read return
+        // false and resolve with CANCELLED (a side-effect of OUR TryCancel,
+        // not the original cause).  Discard that side-effect status and
+        // surface DEADLINE_EXCEEDED to the caller, matching the original
+        // V1 contract that the test S2_OpenDeadlineExceeded asserts on.
+        (void)handshake_future.get();
+        handshake_status = grpc::Status(grpc::StatusCode::DEADLINE_EXCEEDED,
+                                        "Open handshake exceeded open_deadline_ms");
     } else {
         handshake_status = handshake_future.get();
     }
