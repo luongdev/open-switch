@@ -134,15 +134,6 @@ inline switch_status_t FsMediaBugAdd(switch_core_session_t* session,
 #endif
 }
 
-inline switch_status_t FsMediaBugRemoveCallback(switch_core_session_t* session,
-                                                switch_media_bug_callback_t callback) noexcept {
-#if defined(OSW_TEST_FS_MOCK)
-    return osw::raii::fs::MediaBugRemoveCallback(session, callback);
-#else
-    return switch_core_media_bug_remove_callback(session, callback);
-#endif
-}
-
 // W6.5 P1-004 fix: per-bug pointer-based remove. All module-owned bugs
 // share OswMediaBugTrampoline as their callback function, so the
 // callback-based remove API removes ALL of them at once — wrong for

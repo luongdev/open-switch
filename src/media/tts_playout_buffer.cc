@@ -29,11 +29,6 @@ constexpr const char* kSubsystem = "media.tts_playout";
 // Rate-limit window for audit events (1 per stream per second).
 constexpr std::chrono::seconds kAuditRateWindow{1};
 
-// Helper: compute ptime ms from a frame with given sample_rate_hz.
-inline std::uint32_t FrameDurationMs(const AudioFrame& f) noexcept {
-    return f.duration_ms();
-}
-
 }  // namespace
 
 TtsPlayoutBuffer::TtsPlayoutBuffer(Config cfg) noexcept : cfg_(cfg) {}
