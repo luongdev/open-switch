@@ -34,6 +34,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <regex>
 #include <string>
 #include <unordered_set>
@@ -42,6 +43,7 @@
 
 #include "open_switch/control/v1/control.pb.h"
 
+#include "osw/control/idempotency_cache.h"
 #include "osw/control/session_guard.h"
 #include "osw/control/var_denylist.h"
 #include "osw/observability/audit.h"
@@ -107,33 +109,78 @@ grpc::Status ControlServiceSkeleton::Execute(grpc::ServerContext* /*ctx*/,
         return grpc::Status(grpc::StatusCode::INTERNAL, "null request or response");
     }
 
+    // --- Idempotency deduplication ----------------------------------------
+    const std::string request_id = req->has_header() ? req->header().request_id() : std::string{};
+
+    IdempotencyCache* cache = idempotency_cache_.load(std::memory_order_acquire);
+    if (cache != nullptr && !request_id.empty()) {
+        auto result = cache->LookupOrReserve(request_id);
+        if (result.state == IdempotencyCache::State::kHit) {
+            if (resp->ParseFromString(result.entry.serialized_response)) {
+                osw::log::Debug(kSubsystem, "Execute: cache hit request_id=%s", request_id.c_str());
+                return result.entry.status;
+            }
+            // Parse failure — fall through to live execution.
+        }
+    }
+
+    // Helper: cache definitive result and return it.
+    const auto cache_and_return = [&](grpc::Status status) -> grpc::Status {
+        if (cache != nullptr && !request_id.empty()) {
+            IdempotencyCache::Entry e;
+            e.status = status;
+            if (!resp->SerializeToString(&e.serialized_response)) {
+                osw::log::Warn(kSubsystem,
+                               "Execute: SerializeToString failed for request_id=%s; "
+                               "cancelling cache reservation to avoid corrupted retry",
+                               request_id.c_str());
+                cache->Cancel(request_id);
+            } else {
+                e.expires_at = std::chrono::steady_clock::now() + cache->Ttl();
+                cache->Store(request_id, std::move(e));
+            }
+        }
+        return status;
+    };
+    const auto cancel_and_return = [&](grpc::Status status) -> grpc::Status {
+        if (cache != nullptr && !request_id.empty()) {
+            cache->Cancel(request_id);
+        }
+        return status;
+    };
+
     const std::string& uuid = req->uuid();
     const std::string& app = req->app();
     const std::string& args = req->args();
 
     if (uuid.empty()) {
-        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "uuid must not be empty");
+        return cache_and_return(
+            grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "uuid must not be empty"));
     }
     if (app.empty()) {
-        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "app must not be empty");
+        return cache_and_return(
+            grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "app must not be empty"));
     }
     if (!IsAppAllowed(app)) {
         osw::log::Debug(
             kSubsystem, "Execute INVALID_ARGUMENT: app='%s' not in allow-list", app.c_str());
-        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                            "app '" + app + "' is not in the V1 allow-list");
+        return cache_and_return(grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                                             "app '" + app + "' is not in the V1 allow-list"));
     }
 
     auto guard = osw::control::SessionGuard::Locate(uuid);
     if (!guard.Valid()) {
         osw::log::Debug(kSubsystem, "Execute NOT_FOUND: uuid=%s", uuid.c_str());
-        return grpc::Status(grpc::StatusCode::NOT_FOUND, "session not found: uuid=" + uuid);
+        // NOT_FOUND is definitive.
+        return cache_and_return(
+            grpc::Status(grpc::StatusCode::NOT_FOUND, "session not found: uuid=" + uuid));
     }
 
     switch_channel_t* const ch = guard.Channel();
     if (ch == nullptr) {
         osw::log::Warn(kSubsystem, "Execute: channel null for uuid=%s", uuid.c_str());
-        return grpc::Status(grpc::StatusCode::INTERNAL, "channel pointer null");
+        // INTERNAL from FS inconsistency — transient; cancel reservation.
+        return cancel_and_return(grpc::Status(grpc::StatusCode::INTERNAL, "channel pointer null"));
     }
 
     // Pre-execute state check: reject if channel already dead.
@@ -143,8 +190,8 @@ grpc::Status ControlServiceSkeleton::Execute(grpc::ServerContext* /*ctx*/,
                         "Execute FAILED_PRECONDITION: channel dead uuid=%s state=%d",
                         uuid.c_str(),
                         static_cast<int>(state));
-        return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
-                            "channel already hung up: uuid=" + uuid);
+        return cache_and_return(grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
+                                             "channel already hung up: uuid=" + uuid));
     }
 
     // When app == "set", the args string is "name=value". Apply the same
@@ -158,8 +205,8 @@ grpc::Status ControlServiceSkeleton::Execute(grpc::ServerContext* /*ctx*/,
                             "Execute INVALID_ARGUMENT: set with reserved var '%s' uuid=%s",
                             var_name.c_str(),
                             uuid.c_str());
-            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                                "variable name is reserved: '" + var_name + "'");
+            return cache_and_return(grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                                                 "variable name is reserved: '" + var_name + "'"));
         }
     }
 
@@ -172,8 +219,10 @@ grpc::Status ControlServiceSkeleton::Execute(grpc::ServerContext* /*ctx*/,
     if (rc != SWITCH_STATUS_SUCCESS) {
         osw::log::Warn(
             kSubsystem, "Execute FS failure: rc=%d uuid=%s app=%s", rc, uuid.c_str(), app.c_str());
-        return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
-                            "execute_application failed: rc=" + std::to_string(rc));
+        // FAILED_PRECONDITION from FS: definitive execution result.
+        return cache_and_return(
+            grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
+                         "execute_application failed: rc=" + std::to_string(rc)));
     }
 
     // Audit with redacted args (PII-safe).
@@ -183,7 +232,7 @@ grpc::Status ControlServiceSkeleton::Execute(grpc::ServerContext* /*ctx*/,
 
     osw::log::Info(kSubsystem, "Execute OK: uuid=%s app=%s", uuid.c_str(), app.c_str());
 
-    return grpc::Status::OK;
+    return cache_and_return(grpc::Status::OK);
 }
 
 }  // namespace osw::control

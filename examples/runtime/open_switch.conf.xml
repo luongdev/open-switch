@@ -37,5 +37,12 @@
     <param name="log_level"                value="info"/>
     <param name="pii_redaction_patterns"   value=""/>
     <param name="tenant_allowed_contexts"  value=""/>
+
+    <!-- W6 Track C — TTS playout jitter buffer (compiled-in defaults) -->
+    <param name="tts_jitter_buffer_ms"      value="1000"/>
+    <param name="tts_preroll_ms"            value="500"/>
+    <param name="tts_high_water_ms"         value="1500"/>
+    <param name="tts_max_jitter_buffer_ms"  value="5000"/>
+    <param name="tts_underrun_policy"       value="silence"/>
   </settings>
 </configuration>

@@ -2830,6 +2830,373 @@ class Interceptor {
 
 ---
 
+## FF-031 — `switch_core_media_bug_add` signature + ownership
+
+Signature (FS 1.10.12, `src/include/switch_core.h:290-295`):
+```c
+switch_status_t switch_core_media_bug_add(
+    switch_core_session_t *session,
+    const char *function,
+    const char *target,
+    switch_media_bug_callback_t callback,
+    void *user_data,
+    time_t stop_time,
+    switch_media_bug_flag_t flags,
+    switch_media_bug_t **new_bug);
+```
+
+- `function` is the function-name string (used by `_remove_callback`
+  filter — see FF-008). We use `kFunctionName = "mod_open_switch"`.
+- `target` is opaque metadata; pass a short identifier (e.g. purpose
+  name from `PurposeName(cfg.purpose)`) for log clarity.
+- `user_data` is caller-owned. Must outlive the bug — the manager
+  allocates a `BugCallbackContext` on the heap, stores it in `by_id_`
+  on success, and frees it in `Detach` / `DetachAll`.
+- `*new_bug` is FS-owned; do NOT delete. We retain a non-owning ptr
+  in `BugRecord.fs_bug` for log / debug only.
+- `stop_time = 0` means run until manually removed.
+- `switch_media_bug_callback_t` signature (from
+  `src/include/switch_types.h:2407`):
+  `switch_bool_t cb(switch_media_bug_t*, void*, switch_abc_type_t)`
+- `SMBF_FIRST = (1 << 26)` — prepends the bug to the chain head
+  (verified at `src/include/switch_types.h:1920`).
+
+**Source.** `src/include/switch_core.h:290` in v1.10.12.
+
+**Permalink.**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_core.h#L290>
+
+---
+
+## FF-032 — Channel state handler `CS_DESTROY` ordering
+
+Register via `switch_core_event_hook_add_state_change` (macro-generated
+from `switch_core_event_hook.h:245`):
+```c
+switch_status_t switch_core_event_hook_add_state_change(
+    switch_core_session_t *session,
+    switch_state_change_hook_t state_change);
+```
+where `switch_state_change_hook_t = switch_status_t (*)(switch_core_session_t *)`.
+
+The callback fires for EVERY channel state transition. Filter on
+`switch_channel_get_state(channel) == CS_DESTROY` and return
+`SWITCH_STATUS_SUCCESS`.
+
+`CS_DESTROY` (enum value 12, `switch_types.h:1404`) runs AFTER the
+channel's bugs have been closed by FS-side hangup processing, but
+BEFORE the session is freed — so `DetachAll` here is a defensive
+cleanup that drops any `BugHandle` records the manager still tracks.
+The bug pointers stored in `BugRecord.fs_bug` are no longer valid at
+this point; do NOT call `switch_core_media_bug_remove_callback` from
+`DetachAll` on the `CS_DESTROY` path — only erase records.
+
+**Source.** `src/include/switch_core_event_hook.h:64,151,198,245`
+in v1.10.12.
+
+**Permalink.**
+<https://github.com/signalwire/freeswitch/blob/v1.10.12/src/include/switch_core_event_hook.h#L64>
+
+---
+
+## FF-033 — `switch_audio_resampler_t` lifecycle (stateful across frames)
+
+**Source verified**: `/usr/local/include/switch_resample.h` in base image
+`simplefs/open-switch-base:1.10.12-trixie` (confirmed by `docker run`).
+
+**Struct layout** (exact fields from switch_resample.h):
+
+```c
+typedef struct {
+    void     *resampler;   // opaque spandsp handle
+    int       from_rate;
+    int       to_rate;
+    double    factor;
+    double    rfactor;
+    int16_t  *to;          // output sample buffer (heap-allocated by FS)
+    uint32_t  to_len;      // number of valid samples currently in `to`
+    uint32_t  to_size;     // total allocated capacity of `to`
+    int       channels;
+} switch_audio_resampler_t;
+```
+
+**Allocation**:
+
+```c
+// Macro expands to switch_resample_perform_create with __FILE__ / __LINE__.
+switch_status_t switch_resample_create(
+    switch_audio_resampler_t **new_resampler,
+    uint32_t from_rate,
+    uint32_t to_rate,
+    uint32_t to_size,       // capacity in samples for the output buffer
+    int quality,            // SWITCH_RESAMPLE_QUALITY == 2
+    uint32_t channels);
+```
+
+Returns `SWITCH_STATUS_SUCCESS` on success; `*new_resampler` is
+heap-allocated by FS. Caller must not free it manually.
+
+**Processing**:
+
+```c
+uint32_t switch_resample_process(
+    switch_audio_resampler_t *resampler,
+    int16_t *src,           // input buffer (non-const — FS has not const-corrected it)
+    uint32_t srclen);       // number of input samples
+```
+
+After the call `resampler->to` contains the output samples and
+`resampler->to_len` is the count. The function also returns `to_len`.
+
+**Lifetime rule (CRITICAL)**: The internal FIR filter state (in
+`resampler->resampler`) is preserved across calls. DO NOT destroy and
+re-create the handle between frames — doing so resets the filter state
+and causes audible discontinuities at every frame boundary. Create once
+per stream; reuse for all frames on that stream.
+
+**Destruction**:
+
+```c
+void switch_resample_destroy(switch_audio_resampler_t **resampler);
+// Takes **resampler (double-pointer); nulls *resampler after freeing.
+```
+
+**V1 module policy**: `osw::media::Resampler` wraps this API and
+enforces the allowed pair restriction (8 kHz ↔ 16 kHz only). Other
+pairs return nullptr from `Resampler::Create()` — the FS API itself
+accepts any rate; the restriction is module policy.
+
+---
+
+## FF-034 — gRPC 1.74 `ClientReaderWriter` bidi stream semantics
+
+**Source**: gRPC C++ API documentation + source for gRPC 1.74 as used in
+`simplefs/open-switch-base:1.10.12-trixie`. Key facts for the
+`MediaBridge::Stream` bidi stream (`StreamClient` in Track B).
+
+**Stub method signature**:
+
+```cpp
+// For: service MediaBridge { rpc Stream(stream FromModule) returns (stream FromService); }
+std::unique_ptr<grpc::ClientReaderWriter<FromModule, FromService>>
+    MediaBridge::Stub::Stream(grpc::ClientContext* ctx);
+```
+
+`ClientContext*` is caller-owned and MUST outlive the stream object.
+
+**Write behaviour**:
+
+- `Write(msg)` is blocking; returns `false` when the send side is
+  shut down OR the call is cancelled. A `false` return means the
+  stream is broken; do not retry.
+- After `Write` returns `false` the stream object must still be
+  kept alive until `Finish()` is called.
+
+**Read behaviour**:
+
+- `Read(msg)` is blocking; returns `false` when the peer has
+  half-closed its send side (i.e. the server called `WritesDone()`
+  or `Finish()`) OR the call is cancelled.
+- After `Read` returns `false` call `Finish()` to retrieve the
+  final status.
+
+**Half-close (client send side)**:
+
+- `WritesDone()` signals to the server that the client is done
+  sending. The server's `Read` will return the final pending
+  messages then return `false`. `WritesDone` is non-blocking (it
+  sends a half-close message on the wire).
+
+**Finish**:
+
+- `Finish()` waits for the server to finish and returns the final
+  `grpc::Status`. MUST be called exactly once after `Read` returns
+  `false`. Calling `Finish()` on a still-open stream blocks until
+  the server finishes.
+
+**Cancellation**:
+
+- `ClientContext::TryCancel()` is async and sticky. Once cancelled:
+  - Subsequent `Read` calls return `false`.
+  - Subsequent `Write` calls return `false`.
+  - `Finish` returns `grpc::Status::CANCELLED`.
+- There is no "un-cancel"; cancellation is terminal.
+
+**Lifetime contract**:
+
+```
+stream_  MUST be destroyed BEFORE context_.
+```
+
+Destroying the stream while the context is alive is safe. Accessing
+the stream after the context is destroyed is undefined behaviour
+(use-after-free in gRPC internals).
+
+`osw::media::StreamClient` owns both as `unique_ptr` and resets
+`stream_` first in `Close()`:
+
+```cpp
+stream_.reset();    // destroy stream first
+context_.reset();   // then context
+```
+
+**Thread safety**: `Read` and `Write` are independently thread-safe
+in gRPC 1.74 (one thread may call `Read` concurrently with another
+calling `Write`). However, two concurrent `Write` calls or two
+concurrent `Read` calls on the same stream are NOT safe — the
+`StreamClient` enforces this by having a single writer thread and a
+single reader thread.
+
+---
+
+## FF-036 — `write_replace_frame_out` passthrough semantics (WRITE_REPLACE)
+
+**Claim**: An `SMBF_WRITE_REPLACE` callback achieves **frame passthrough**
+(no audio modification, but the bug stays attached) by returning
+`SWITCH_TRUE` **without calling** `switch_core_media_bug_set_write_replace_frame()`.
+FreeSWITCH initialises `bp->write_replace_frame_out = write_frame`
+BEFORE invoking the callback, so an unmodified out-pointer naturally
+passes the input frame through. Returning `SWITCH_FALSE` marks the
+bug `SMBF_PRUNE`d (removed on next iteration).
+
+**Source citation** (FS v1.10.12 — `src/switch_core_media.c:16131-16150`):
+
+```c
+if (switch_test_flag(bp, SMBF_WRITE_REPLACE)) {
+    do_bugs = 0;
+    if (bp->callback) {
+        bp->write_replace_frame_in = write_frame;
+        bp->write_replace_frame_out = write_frame;     // ← init = input frame
+        if ((ok = bp->callback(bp, bp->user_data, SWITCH_ABC_TYPE_WRITE_REPLACE)) == SWITCH_TRUE) {
+            write_frame = bp->write_replace_frame_out; // ← use _out for next iter
+        }
+    }
+}
+
+if (bp->stop_time && bp->stop_time <= switch_epoch_time_now(NULL)) {
+    ok = SWITCH_FALSE;
+}
+
+if (ok == SWITCH_FALSE) {
+    switch_set_flag(bp, SMBF_PRUNE);
+    prune++;
+}
+```
+
+**Consequences**:
+
+- A WRITE_REPLACE callback can be a **silent observer** by returning
+  `SWITCH_TRUE` and not touching `_out`. The frame flows downstream
+  unchanged.
+- A WRITE_REPLACE callback **injects audio** by calling
+  `switch_core_media_bug_set_write_replace_frame(bug, &replacement_frame)`
+  before returning `SWITCH_TRUE`. The replacement is visible to bugs
+  later in the chain on the same ptime tick (FF-001's single
+  interleaved loop).
+- `do_bugs = 0` is set the moment ANY WRITE_REPLACE bug is found.
+  This blocks the `goto done` shortcut FS uses when no bugs need to
+  see the frame — i.e., once a WRITE_REPLACE bug is attached, FS
+  always routes through the bug pipe regardless of whether the
+  callback modifies the frame.
+- **Returning `SWITCH_FALSE` from a callback is destructive**: the
+  bug is flagged `SMBF_PRUNE` and removed on the next iteration via
+  `switch_core_media_bug_prune(session)`. Module callbacks MUST only
+  return `SWITCH_FALSE` when they want the bug to be removed (e.g.,
+  fatal upstream error). Exception handlers that return `SWITCH_FALSE`
+  by reflex will silently tear down the bug.
+
+**Used by**:
+
+- W7 Track D `StartBot` multi-target bug attachment — bot-not-speaking
+  passthrough on per-target WRITE_REPLACE bug.
+- W6 Track C `OswStreamingWriteReplace` callback (legacy TTS) — same
+  passthrough rule when the TtsPlayoutBuffer is empty.
+- W7 Track B `RECORDING_RELAY` write tap (`SMBF_WRITE_STREAM`, not
+  WRITE_REPLACE) — different rule; see FF-001.
+
+**Implication for the multi-target pattern** (W7 Track D): when a bot
+attaches a WRITE_REPLACE bug to a target channel but is not currently
+streaming audio, the callback returns `SWITCH_TRUE` without setting
+`_out`. The frame coming in from the channel's normal write source
+(silence_stream playback driver — see FF-037 — bridge audio, etc.)
+passes through unchanged, so the target hears whatever they would
+normally hear on that channel. There is **no need to mute, splice,
+or shortcut** when the bot is quiet.
+
+---
+
+## FF-037 — `CF_BREAK` channel flag breaks `switch_ivr_play_file` from external thread
+
+**Claim**: Any thread can interrupt a `switch_ivr_play_file()` call
+that is blocked playing a file on another thread by setting the
+`CF_BREAK` flag on the channel via
+`switch_channel_set_flag(channel, CF_BREAK)`. The play loop checks
+the flag once per read-frame iteration (~20 ms cadence) and exits
+with `SWITCH_STATUS_BREAK`. The flag is auto-cleared by the play
+loop on exit.
+
+**Source citation** (FS v1.10.12 — `src/switch_ivr_play_say.c:1675-1681`):
+
+```c
+while (more_data) {
+    /* ... read incoming frames, decide whether to play more ... */
+
+    if ((f = switch_channel_test_flag(channel, CF_BREAK))) {
+        switch_channel_clear_flag(channel, CF_BREAK);
+        if (f == 2) {
+            done = 1;
+        }
+        status = SWITCH_STATUS_BREAK;
+        break;
+    }
+    /* ... continue play loop ... */
+}
+```
+
+(Identical pattern at `src/switch_ivr_play_say.c:791-796` for
+`switch_ivr_phrase_macro` and at `2851-2856` for
+`switch_ivr_say_string`. The flag is a universal "interrupt the
+current IVR primitive" lever in FS.)
+
+**Consequences**:
+
+- A module-spawned silence-driver thread that calls
+  `switch_ivr_play_file(session, NULL, "silence_stream://-1", &args)`
+  (an infinite loop by design — `-1` = forever) can be stopped from
+  any other thread by `switch_channel_set_flag(channel, CF_BREAK)`.
+  The play_file call returns `SWITCH_STATUS_BREAK` within one ptime
+  tick; the thread can then exit cleanly.
+- `CF_BREAK` is a one-shot — once consumed, the flag is cleared. If
+  the play loop is restarted after exit, it will not see the old
+  break signal.
+- The flag is **per-channel**, not per-thread or per-call. Setting
+  it from outside the channel's media thread is safe (FS uses
+  channel-local atomic operations for flag manipulation under
+  `switch_channel_set_flag` per FS's threading model documented in
+  earlier FF entries).
+
+**Used by**:
+
+- W6.6 silence driver hotfix — module spawns one
+  `switch_ivr_play_file("silence_stream://-1")` thread per channel
+  that has a WRITE_REPLACE bot bug attached AND no other write-side
+  driver (no operator-side `<playback>` or bridge). Stop via
+  `CF_BREAK` on bot stop / channel hangup.
+
+**Alternative break mechanisms considered**:
+
+- `switch_input_args_t.input_callback` returning `SWITCH_STATUS_BREAK`
+  — only fires on DTMF / audio input events; not driveable from an
+  external thread.
+- `switch_channel_hangup()` — too destructive (terminates the
+  channel, not just the playback).
+- `switch_core_session_kill_channel()` — same issue.
+
+`CF_BREAK` is the only suitable mechanism for "stop playing this
+file, don't touch anything else."
+
+---
+
 ## How to add a new FF entry
 
 If you find a previously-undocumented FreeSWITCH behaviour that

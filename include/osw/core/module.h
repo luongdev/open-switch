@@ -47,9 +47,15 @@ typedef struct switch_loadable_module_interface switch_loadable_module_interface
 namespace osw {
 
 namespace control {
-class GrpcServer;  // forward; defined in osw/control/server.h
-class RpcMetrics;  // forward; defined in osw/control/rpc_metrics.h
+class ActiveMediaStreams;  // forward; defined in osw/control/active_media_streams.h
+class GrpcServer;          // forward; defined in osw/control/server.h
+class IdempotencyCache;    // forward; defined in osw/control/idempotency_cache.h
+class RpcMetrics;          // forward; defined in osw/control/rpc_metrics.h
 }  // namespace control
+
+namespace media {
+class MediaBugManager;  // forward; defined in osw/media/bug_manager.h
+}  // namespace media
 
 namespace events {
 class Binder;          // forward; defined in osw/events/binder.h
@@ -115,6 +121,19 @@ class Module {
     std::unique_ptr<observability::HealthMetrics> health_metrics_;
     std::unique_ptr<control::RpcMetrics> rpc_metrics_;
     std::unique_ptr<observability::MetricsServer> metrics_server_;
+
+    // W5B idempotency cache. Constructed from config in Module::Load and
+    // injected into ControlServiceSkeleton via GrpcServer::SetIdempotencyCache.
+    std::unique_ptr<control::IdempotencyCache> idempotency_cache_;
+
+    // W6C media-plane subsystems. Construction order in Module::Load step 5.4:
+    //   1. bug_manager_         (MediaBugManager; CS_DESTROY handler registered here)
+    //   2. active_media_streams_ (per-stream BugHandle + StreamClient registry)
+    // Destruction order in Module::Shutdown step 7.5 (after gRPC server drained):
+    //   active_media_streams_ first (TearDown calls client->Close(), then
+    //   bugs.clear() which calls bug_manager_->Detach), then bug_manager_.
+    std::unique_ptr<media::MediaBugManager> bug_manager_;
+    std::unique_ptr<control::ActiveMediaStreams> active_media_streams_;
 
     // W2 event-plane subsystems. Construction order in Module::Load:
     //   1. classifier_  (FS-agnostic; built from tier rules)

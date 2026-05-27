@@ -62,6 +62,8 @@
 
 #include <switch.h>  // FF-014 environment, switch_version_*
 
+#include "osw/control/active_media_streams.h"
+#include "osw/control/idempotency_cache.h"
 #include "osw/control/rpc_metrics.h"
 #include "osw/control/server.h"
 #include "osw/core/config_fs.h"
@@ -70,6 +72,7 @@
 #include "osw/events/ring.h"
 #include "osw/events/subscribe/broadcaster.h"
 #include "osw/events/tier.h"
+#include "osw/media/bug_manager.h"
 #include "osw/observability/audit.h"
 #include "osw/observability/health_metrics.h"
 #include "osw/observability/log.h"
@@ -172,6 +175,12 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
                     try { mod->grpc_server_->Drain(std::chrono::system_clock::now() + std::chrono::seconds(2)); } catch (...) {}
                     mod->grpc_server_.reset();
                 }
+                mod->idempotency_cache_.reset();
+                if (mod->bug_manager_) {
+                    try { mod->bug_manager_->UnregisterStateHandlers(); } catch (...) {}
+                }
+                mod->active_media_streams_.reset();
+                mod->bug_manager_.reset();
                 mod->rpc_metrics_.reset();
                 mod->health_metrics_.reset();
                 mod->prometheus_registry_.reset();
@@ -253,6 +262,38 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
         grpc_server_ = std::make_unique<control::GrpcServer>(&health_);
         grpc_server_->SetVersions(kModuleVersion, fs_ver);
         grpc_server_->SetRpcMetrics(rpc_metrics_.get());
+
+        // 5.5. Construct and inject the W5B idempotency cache BEFORE
+        //      Start(): GrpcServer::SetIdempotencyCache now stashes the
+        //      pointer in pending_cache_ and Start() applies it the moment
+        //      the skeleton is built (Gemini W5 P3-1 fix — closes the race
+        //      window where the gRPC server was accepting RPCs but the
+        //      skeleton's cache pointer was still null).
+        idempotency_cache_ = std::make_unique<control::IdempotencyCache>(
+            static_cast<std::size_t>(config_.idempotency_cache_capacity),
+            std::chrono::seconds(config_.idempotency_ttl_seconds),
+            std::chrono::seconds(config_.idempotency_in_flight_max_wait_seconds));
+        grpc_server_->SetIdempotencyCache(idempotency_cache_.get());
+
+        // 5.4. Construct W6C media-plane subsystems and inject into GrpcServer
+        //      BEFORE Start() so RPC threads always see valid pointers.
+        //
+        // W6.5 P1-003 fix: create ActiveMediaStreams FIRST so RegisterStateHandlers
+        // can wire the CS_DESTROY hook to clean up both registries on hangup.
+        // The hook calls ActiveMediaStreams::RemoveForChannel via the
+        // function-pointer indirection (avoids a control→media→control
+        // header cycle).
+        active_media_streams_ = std::make_unique<control::ActiveMediaStreams>();
+        bug_manager_ = std::make_unique<media::MediaBugManager>();
+        bug_manager_->RegisterStateHandlers(
+            /*active_streams_opaque=*/static_cast<void*>(active_media_streams_.get()),
+            /*cleanup_fn=*/[](void* opaque, std::string_view uuid) {
+                static_cast<osw::control::ActiveMediaStreams*>(opaque)->RemoveForChannel(uuid);
+            });
+        grpc_server_->SetMediaBugManager(bug_manager_.get());
+        grpc_server_->SetActiveMediaStreams(active_media_streams_.get());
+        grpc_server_->SetMediaConfig(&config_);
+
         if (!grpc_server_->Start(config_)) {
             osw::log::Error(kSubsystem, "gRPC server failed to start");
             return false;
@@ -423,9 +464,35 @@ bool Module::Shutdown() noexcept {
         rings_.reset();
         classifier_.reset();
 
+        // 7.5. Tear down idempotency cache. The gRPC server was already
+        //      drained in step 5 (no more handler threads accessing the
+        //      cache), so this is safe.
+        idempotency_cache_.reset();
+
+        // 7.6. Tear down W6C media-plane subsystems.
+        //      Order:
+        //        (a) UnregisterStateHandlers FIRST so the CS_DESTROY hook
+        //            stops pointing at the soon-to-be-destroyed registries.
+        //            W6.5 P1-003 fix — was missing entirely; the hook
+        //            stayed registered after module unload and would
+        //            dereference freed memory if FS still had channels.
+        //        (b) active_media_streams_.reset() — its TearDown calls
+        //            client->Close() (joins reader thread) then bugs.clear()
+        //            (calls MediaBugManager::Detach via BugHandle dtor),
+        //            so bug_manager_ must still be alive at this point.
+        //        (c) bug_manager_.reset() last.  Reversing (b) and (c)
+        //            would leave BugHandle dtors trying to deref a freed
+        //            MediaBugManager.
+        if (bug_manager_) {
+            bug_manager_->UnregisterStateHandlers();
+        }
+        active_media_streams_.reset();
+        bug_manager_.reset();
+
         // 8. Tear down the observability plane. rpc_metrics_ and
         //    health_metrics_ hold raw pointers into prometheus_registry_;
         //    reset them before dropping the registry.
+        //    (metrics_server_ was already stopped + reset in step 5.)
         rpc_metrics_.reset();
         health_metrics_.reset();
         prometheus_registry_.reset();

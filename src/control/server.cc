@@ -19,11 +19,20 @@
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/server_builder.h>
 
+#include "osw/control/active_media_streams.h"
+#include "osw/control/idempotency_cache.h"
 #include "osw/control/rpc_metrics.h"
 #include "osw/control/tls.h"
 #include "osw/core/config.h"
 #include "osw/observability/health.h"
 #include "osw/observability/log.h"
+
+// Forward-declare MediaBugManager for the W6C setter pass-throughs.
+// Full definition is in osw/media/bug_manager.h; server.cc only holds
+// and passes pointers, so the forward-decl is sufficient.
+namespace osw::media {
+class MediaBugManager;
+}
 
 #include "src/control/control_service_skeleton.h"
 
@@ -88,6 +97,24 @@ bool GrpcServer::Start(const Config& config) {
 
     service_ = std::make_unique<ControlServiceSkeleton>(health_);
     service_->SetVersions(module_version_, freeswitch_version_);
+    // Apply any cache pointer staged via SetIdempotencyCache(...) BEFORE
+    // Start() — this closes the race window where the gRPC server is
+    // already accepting RPCs but the skeleton's cache pointer is still
+    // null (Gemini W5 P3-1). Module::Load now constructs the cache and
+    // calls SetIdempotencyCache before Start(); this line applies it.
+    if (pending_cache_) {
+        service_->SetIdempotencyCache(pending_cache_);
+    }
+    // Apply W6C staged pointers with the same pattern.
+    if (pending_bug_mgr_) {
+        service_->SetMediaBugManager(pending_bug_mgr_);
+    }
+    if (pending_streams_) {
+        service_->SetActiveMediaStreams(pending_streams_);
+    }
+    if (pending_media_cfg_) {
+        service_->SetConfig(pending_media_cfg_);
+    }
 
     grpc::ServerBuilder builder;
     int bound_port = 0;
@@ -185,6 +212,16 @@ void GrpcServer::SetRpcMetrics(control::RpcMetrics* metrics) noexcept {
     rpc_metrics_ = metrics;
 }
 
+void GrpcServer::SetIdempotencyCache(control::IdempotencyCache* cache) noexcept {
+    // Stash the pointer so Start() can apply it the moment the skeleton is
+    // constructed (closes the pre-Start race window). If the skeleton
+    // already exists (post-Start call), apply immediately too.
+    pending_cache_ = cache;
+    if (service_) {
+        service_->SetIdempotencyCache(cache);
+    }
+}
+
 void GrpcServer::SetEventPlane(events::Broadcaster* broadcaster,
                                events::RingSet* rings,
                                std::uint32_t max_subscribers,
@@ -201,6 +238,27 @@ void GrpcServer::SetEventPlane(events::Broadcaster* broadcaster,
         return;
     }
     service_->SetEventPlane(broadcaster, rings, max_subscribers, subscriber_send_queue_capacity);
+}
+
+void GrpcServer::SetMediaBugManager(osw::media::MediaBugManager* mgr) noexcept {
+    pending_bug_mgr_ = mgr;
+    if (service_) {
+        service_->SetMediaBugManager(mgr);
+    }
+}
+
+void GrpcServer::SetActiveMediaStreams(osw::control::ActiveMediaStreams* streams) noexcept {
+    pending_streams_ = streams;
+    if (service_) {
+        service_->SetActiveMediaStreams(streams);
+    }
+}
+
+void GrpcServer::SetMediaConfig(const osw::Config* config) noexcept {
+    pending_media_cfg_ = config;
+    if (service_) {
+        service_->SetConfig(config);
+    }
 }
 
 }  // namespace osw::control

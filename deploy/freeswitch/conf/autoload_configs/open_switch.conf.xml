@@ -150,6 +150,35 @@
          ============================================================ -->
     <param name="tenant_allowed_contexts"  value=""/>
 
+    <!-- ============================================================
+         Media plane — TTS playout jitter buffer (W6 Track C)
+
+         tts_jitter_buffer_ms — target buffer depth in ms.
+           Range: [200, tts_max_jitter_buffer_ms]. Default 1000.
+           Increase for high-jitter upstream engines.
+
+         tts_preroll_ms — how many ms must accumulate before the
+           first non-silence frame is emitted. Range: [50,
+           tts_jitter_buffer_ms]. Default 500.
+
+         tts_high_water_ms — when buffer depth exceeds this, the
+           oldest frame is dropped on each Push (overrun). Range:
+           [tts_jitter_buffer_ms, tts_max_jitter_buffer_ms].
+           Default 1500.
+
+         tts_max_jitter_buffer_ms — hard cap on the above values
+           and on per-call StartTts.buffer_override. Default 5000.
+
+         tts_underrun_policy — "silence" emits zeros on underrun
+           (clean for speech); "repeat_last" copies the previous
+           20ms frame (better for music). Default "silence".
+         ============================================================ -->
+    <param name="tts_jitter_buffer_ms"      value="1000"/>
+    <param name="tts_preroll_ms"            value="500"/>
+    <param name="tts_high_water_ms"         value="1500"/>
+    <param name="tts_max_jitter_buffer_ms"  value="5000"/>
+    <param name="tts_underrun_policy"       value="silence"/>
+
   </settings>
 
 </configuration>

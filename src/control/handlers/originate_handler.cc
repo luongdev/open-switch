@@ -32,6 +32,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
+#include <chrono>
 #include <string>
 
 #include <grpcpp/grpcpp.h>
@@ -39,6 +40,7 @@
 #include "open_switch/control/v1/control.pb.h"
 
 #include "osw/control/call_cause.h"
+#include "osw/control/idempotency_cache.h"
 #include "osw/control/originate_options.h"
 #include "osw/observability/audit.h"
 #include "osw/observability/log.h"
@@ -78,11 +80,55 @@ grpc::Status ControlServiceSkeleton::Originate(
         return grpc::Status(grpc::StatusCode::INTERNAL, "null request or response");
     }
 
+    // --- Idempotency deduplication ----------------------------------------
+    // Extract request_id from the header (empty = no dedup requested).
+    const std::string request_id = req->has_header() ? req->header().request_id() : std::string{};
+
+    IdempotencyCache* cache = idempotency_cache_.load(std::memory_order_acquire);
+    if (cache != nullptr && !request_id.empty()) {
+        auto result = cache->LookupOrReserve(request_id);
+        if (result.state == IdempotencyCache::State::kHit) {
+            // Replay cached response — no FS call.
+            if (!resp->ParseFromString(result.entry.serialized_response)) {
+                osw::log::Warn(kSubsystem,
+                               "Originate: cache hit but ParseFromString failed; "
+                               "falling through to live execution");
+                // Treat as a miss: do NOT cancel the slot (we never reserved
+                // it — this was a hit path); simply fall through.
+            } else {
+                osw::log::Debug(
+                    kSubsystem, "Originate: cache hit request_id=%s", request_id.c_str());
+                return result.entry.status;
+            }
+        }
+        // kMiss (with reservation) or hit-parse-failure: fall through to
+        // live execution below. Store/Cancel at exit.
+    }
+
     // Validate and materialise the request into originate parameters.
     auto opts = osw::control::OriginateOptions::Build(*req);
     if (!opts.Valid()) {
         osw::log::Debug(kSubsystem, "Originate INVALID_ARGUMENT: %s", opts.ErrorMessage().c_str());
-        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, opts.ErrorMessage());
+        // Definitive validation error: cache it so retries get the same
+        // response without re-validating (also unblocks waiters).
+        const grpc::Status status(grpc::StatusCode::INVALID_ARGUMENT, opts.ErrorMessage());
+        if (cache != nullptr && !request_id.empty()) {
+            IdempotencyCache::Entry e;
+            e.status = status;
+            // resp is empty at this point — that is correct; validation
+            // errors carry no response body.
+            if (!resp->SerializeToString(&e.serialized_response)) {
+                osw::log::Warn(kSubsystem,
+                               "Originate: SerializeToString failed for request_id=%s; "
+                               "cancelling cache reservation to avoid corrupted retry",
+                               request_id.c_str());
+                cache->Cancel(request_id);
+            } else {
+                e.expires_at = std::chrono::steady_clock::now() + cache->Ttl();
+                cache->Store(request_id, std::move(e));
+            }
+        }
+        return status;
     }
 
     switch_core_session_t* bleg = nullptr;
@@ -107,13 +153,38 @@ grpc::Status ControlServiceSkeleton::Originate(
     if (rc != SWITCH_STATUS_SUCCESS) {
         osw::log::Warn(
             kSubsystem, "Originate FS failure: rc=%d cause=%d", rc, static_cast<int>(cause));
-        return MapOriginateFailure(cause);
+        const grpc::Status status = MapOriginateFailure(cause);
+        if (cache != nullptr && !request_id.empty()) {
+            // FAILED_PRECONDITION (USER_BUSY, etc.) and DEADLINE_EXCEEDED
+            // are definitive: the call was attempted and got a concrete FS
+            // result. Cache them so retries replay the same outcome.
+            // UNAVAILABLE would be transient, but MapOriginateFailure never
+            // returns UNAVAILABLE (that path is below for null bleg).
+            IdempotencyCache::Entry e;
+            e.status = status;
+            if (!resp->SerializeToString(&e.serialized_response)) {
+                osw::log::Warn(kSubsystem,
+                               "Originate: SerializeToString failed for request_id=%s; "
+                               "cancelling cache reservation to avoid corrupted retry",
+                               request_id.c_str());
+                cache->Cancel(request_id);
+            } else {
+                e.expires_at = std::chrono::steady_clock::now() + cache->Ttl();
+                cache->Store(request_id, std::move(e));
+            }
+        }
+        return status;
     }
 
     // FF-021: on success, *bleg is the new session (we own the rwlock).
     if (bleg == nullptr) {
         // FS returned SUCCESS but null bleg — treat as UNAVAILABLE.
+        // This is a transient FS inconsistency: Cancel so waiters retry
+        // (do NOT cache; the next attempt may succeed).
         osw::log::Warn(kSubsystem, "Originate: FS returned SUCCESS but bleg is null");
+        if (cache != nullptr && !request_id.empty()) {
+            cache->Cancel(request_id);
+        }
         return grpc::Status(grpc::StatusCode::UNAVAILABLE, "FS returned null session");
     }
 
@@ -125,6 +196,10 @@ grpc::Status ControlServiceSkeleton::Originate(
 
     if (uuid.empty()) {
         osw::log::Warn(kSubsystem, "Originate: bleg UUID is empty after originate");
+        // Internal inconsistency — transient; Cancel so waiters can retry.
+        if (cache != nullptr && !request_id.empty()) {
+            cache->Cancel(request_id);
+        }
         return grpc::Status(grpc::StatusCode::INTERNAL, "originated session has no UUID");
     }
 
@@ -138,6 +213,22 @@ grpc::Status ControlServiceSkeleton::Originate(
 
     osw::log::Info(
         kSubsystem, "Originate OK: uuid=%s dest=%s", uuid.c_str(), opts.dial_string().c_str());
+
+    // Cache the successful response.
+    if (cache != nullptr && !request_id.empty()) {
+        IdempotencyCache::Entry e;
+        e.status = grpc::Status::OK;
+        if (!resp->SerializeToString(&e.serialized_response)) {
+            osw::log::Warn(kSubsystem,
+                           "Originate: SerializeToString failed for request_id=%s; "
+                           "cancelling cache reservation to avoid corrupted retry",
+                           request_id.c_str());
+            cache->Cancel(request_id);
+        } else {
+            e.expires_at = std::chrono::steady_clock::now() + cache->Ttl();
+            cache->Store(request_id, std::move(e));
+        }
+    }
 
     return grpc::Status::OK;
 }

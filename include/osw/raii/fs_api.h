@@ -176,6 +176,11 @@ inline switch_status_t MediaBugRemove(switch_core_session_t* session,
     return switch_core_media_bug_remove(session, bug);
 }
 
+inline switch_status_t MediaBugRemoveCallback(switch_core_session_t* session,
+                                              switch_media_bug_callback_t callback) noexcept {
+    return switch_core_media_bug_remove_callback(session, callback);
+}
+
 // --- XML open_cfg / free (FF-015) ------------------------------------
 //
 // `switch_xml_open_cfg(path, &node, params)` returns the root XML* or
@@ -377,6 +382,27 @@ inline switch_status_t HoldUuid(const char* uuid, const char* message, switch_bo
 
 inline switch_status_t UnholdUuid(const char* uuid) noexcept {
     return switch_ivr_unhold_uuid(uuid);
+}
+
+// --- W6C media bug frame access (switch_core.h:322/336/342) -------------
+//
+// switch_core_media_bug_get_write_replace_frame — returns the frame the
+//   FS write-replace callback should overwrite. Called with the bug active.
+// switch_core_media_bug_set_write_replace_frame — installs the replacement
+//   frame pointer (after writing samples into it).
+// switch_core_media_bug_get_read_replace_frame — returns the read frame
+//   for STT / read-stream bugs (read-only access).
+
+inline switch_frame_t* MediaBugGetWriteReplaceFrame(switch_media_bug_t* bug) noexcept {
+    return switch_core_media_bug_get_write_replace_frame(bug);
+}
+
+inline void MediaBugSetWriteReplaceFrame(switch_media_bug_t* bug, switch_frame_t* frame) noexcept {
+    switch_core_media_bug_set_write_replace_frame(bug, frame);
+}
+
+inline switch_frame_t* MediaBugGetReadReplaceFrame(switch_media_bug_t* bug) noexcept {
+    return switch_core_media_bug_get_read_replace_frame(bug);
 }
 
 }  // namespace osw::raii::fs

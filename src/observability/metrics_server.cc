@@ -203,6 +203,19 @@ void MetricsServer::Run() {
 }
 
 void MetricsServer::HandleConnection(int fd) const {
+    // Configure a receive timeout on the accepted socket. Without this, a
+    // scraper that opens the connection but never sends (or sends data too
+    // slowly to complete the headers) blocks the single serving thread
+    // indefinitely. That deadlocks MetricsServer::Stop() at loop_.join()
+    // and in turn prevents Module::Shutdown from completing — i.e., FS
+    // unload hangs. SO_RCVTIMEO bounds the worst-case per-connection wait.
+    // 5 s is generous for a localhost scrape (Prometheus default scrape
+    // interval is 15 s) and tight enough to keep Stop() responsive.
+    struct timeval rcv_timeout = {};
+    rcv_timeout.tv_sec = 5;
+    rcv_timeout.tv_usec = 0;
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcv_timeout, sizeof(rcv_timeout));
+
     std::string response;
     std::array<char, kMaxRequestBytes + 1> buf{};
 

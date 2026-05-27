@@ -19,8 +19,12 @@
  *        - SetVariables (real impl lives in set_variables_handler.cc)      [W3C]
  *        - Hold (real impl lives in hold_handler.cc)                       [W3C]
  *        - Unhold (real impl lives in unhold_handler.cc)                   [W3C]
+ *        - StartTts (real impl lives in start_tts_handler.cc)              [W6C]
+ *        - StartStt (real impl lives in start_stt_handler.cc)              [W6C]
+ *        - StartVoicebot (real impl lives in start_voicebot_handler.cc)    [W6C]
+ *        - StopMediaStream (real impl lives in stop_media_stream_handler.cc) [W6C]
  *
- * After W3 (A+B+C) lands, this TU carries ONLY the Unimplemented() helper.
+ * After W6C lands, this TU carries ONLY the Unimplemented() helper.
  * No stub method bodies remain. Future RPCs added to ControlServiceSkeleton
  * (V2 node lifecycle, etc.) can be stubbed here until their real handler
  * lands.
@@ -54,8 +58,9 @@ grpc::Status Unimplemented(std::string_view method, std::string_view wave) {
 
 }  // namespace osw::control::handlers
 
-// No stub method bodies remain after W3. Bridge/Execute/BlindTransfer
-// (W3B) and SetVariables/Hold/Unhold (W3C) all moved to their dedicated
-// handler TUs; SubscribeEvents (W2) lives in subscribe_events_handler.cc;
+// No stub method bodies remain after W6C. StartTts/StartStt/StartVoicebot/
+// StopMediaStream (W6C) moved to their dedicated handler TUs;
+// Bridge/Execute/BlindTransfer (W3B) and SetVariables/Hold/Unhold (W3C)
+// moved earlier; SubscribeEvents (W2) lives in subscribe_events_handler.cc;
 // Originate/Hangup/HangupMany (W3A) in their dedicated TUs; Health (W1)
 // in health_handler.cc.
