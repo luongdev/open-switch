@@ -26,14 +26,14 @@ constexpr std::array<std::string_view, 13> kReservedVarPrefixes{{
     "bridge_pre_execute_",
     "bridge_post_bridge_",
     "hangup_after_bridge_",
-    "sip_h_",                 // injects raw SIP headers
-    "record_",                // record_post_process_exec etc.
+    "sip_h_",   // injects raw SIP headers
+    "record_",  // record_post_process_exec etc.
     "_record_",
     "wait_for_",
-    "transfer_after_bridge",  // no trailing underscore — matches the exact var too
-    "session_in_hangup_hook", // arbitrary hangup hook injection
-    "api_on_",                // catches api_on_answer / api_on_hangup
-    "execute_on_",            // catches execute_on_answer etc.
+    "transfer_after_bridge",   // no trailing underscore — matches the exact var too
+    "session_in_hangup_hook",  // arbitrary hangup hook injection
+    "api_on_",                 // catches api_on_answer / api_on_hangup
+    "execute_on_",             // catches execute_on_answer etc.
 }};
 
 }  // namespace

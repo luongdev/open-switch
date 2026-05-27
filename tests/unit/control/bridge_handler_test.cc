@@ -73,7 +73,8 @@ class BridgeHandlerTest : public ::testing::Test {
         m.next_event_create_subclass_status = SWITCH_STATUS_SUCCESS;
     }
 
-    grpc::Status CallBridge(const std::string& a, const std::string& b,
+    grpc::Status CallBridge(const std::string& a,
+                            const std::string& b,
                             open_switch::control::v1::BridgeResponse* resp_out = nullptr) {
         open_switch::control::v1::BridgeRequest req;
         req.set_leg_a_uuid(a);
