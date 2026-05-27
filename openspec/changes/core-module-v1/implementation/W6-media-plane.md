@@ -36,6 +36,7 @@ Valgrind nightly.
 | Recording bug | **Defer to W7** | Bug-priority ordering across bot + recording needs the canonical chain established by W6's MediaBugManager first. |
 | AMD detect | **Skip V1** (or defer to W7) | Not on the ship-gate exit-criteria list. The proto reserves the slot; handler can land in V2. |
 | Eavesdrop policy (MOD.SEC.001) | **Defer to W7** | Gates supervisor eavesdrop on bot calls; meaningless without the media plane existing. |
+| TTS playout jitter buffer | **In W6 Track C** — `TtsPlayoutBuffer` class between `StreamClient::on_audio` and FS `WRITE_REPLACE`. Default target 1000 ms, preroll 500 ms, high-water 1500 ms, hard cap 5000 ms. Per-call override via `StartTtsRequest.buffer_override`. Underrun policy: `silence` (default) \| `repeat_last`. | Without it, any TTS-engine jitter or network burst causes audible gaps in the bot's voice. See W6-track-C-handlers.md §"TtsPlayoutBuffer" for full design. |
 
 ## Out of scope (deferred to W7 / V2)
 
