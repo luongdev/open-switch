@@ -3,7 +3,7 @@
   <extension name="osw_public_e2e_park">
     <condition field="destination_number" expression="^(9999|osw-e2e)$">
       <action application="answer"/>
-      <action application="park"/>
+      <action application="playback" data="silence_stream://-1"/>
     </condition>
   </extension>
 
