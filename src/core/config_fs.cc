@@ -131,8 +131,7 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
     int int_tts_max_jitter = static_cast<int>(out.tts_max_jitter_buffer_ms);
     StringParam sp_tts_underrun{};
     sp_tts_underrun.target = &out.tts_underrun_policy;
-    switch_bool_t bool_silence_driver =
-        out.silence_driver_enabled ? SWITCH_TRUE : SWITCH_FALSE;
+    switch_bool_t bool_silence_driver = out.silence_driver_enabled ? SWITCH_TRUE : SWITCH_FALSE;
     int int_max_silence_drivers = static_cast<int>(out.max_silence_drivers);
     int int_bot_max_targets = static_cast<int>(out.bot_max_targets);
     int int_bot_target_queue_ms = static_cast<int>(out.bot_target_queue_ms);

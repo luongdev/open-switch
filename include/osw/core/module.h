@@ -55,7 +55,7 @@ class RpcMetrics;          // forward; defined in osw/control/rpc_metrics.h
 }  // namespace control
 
 namespace media {
-class MediaBugManager;  // forward; defined in osw/media/bug_manager.h
+class MediaBugManager;        // forward; defined in osw/media/bug_manager.h
 class SilenceDriverRegistry;  // forward; defined in osw/media/silence_driver.h
 }  // namespace media
 

@@ -6,7 +6,10 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-#include "osw/raii/fs_api.h"  // FS/mock types must be available first.
+// FS/mock types must be available before silence_driver.h when OSW_TEST_FS_MOCK=1.
+// clang-format off
+#include "osw/raii/fs_api.h"
+// clang-format on
 
 #include "osw/media/silence_driver.h"
 
@@ -42,8 +45,8 @@ bool ChannelAlreadyHasWriteSource(switch_channel_t* channel) noexcept {
 SilenceDriver::SilenceDriver(std::string channel_uuid, SilenceDriverRegistry& registry)
     : channel_uuid_(std::move(channel_uuid)) {
     (void)registry;
-    const switch_status_t status = osw::raii::fs::IvrBroadcast(
-        channel_uuid_.c_str(), kSilenceStream, kSilenceBroadcastFlags);
+    const switch_status_t status =
+        osw::raii::fs::IvrBroadcast(channel_uuid_.c_str(), kSilenceStream, kSilenceBroadcastFlags);
     if (status == SWITCH_STATUS_SUCCESS) {
         running_.store(true, std::memory_order_release);
     } else {
@@ -54,7 +57,9 @@ SilenceDriver::SilenceDriver(std::string channel_uuid, SilenceDriverRegistry& re
     }
 }
 
-SilenceDriver::~SilenceDriver() { Stop(); }
+SilenceDriver::~SilenceDriver() {
+    Stop();
+}
 
 void SilenceDriver::Stop() noexcept {
     const bool already_requested = stop_requested_.exchange(true, std::memory_order_acq_rel);
@@ -118,9 +123,9 @@ void SilenceDriverRegistry::AttachOpportunistic(switch_core_session_t* session) 
             return;
         }
         if (drivers_.size() >= config_.max_silence_drivers) {
-            osw::audit::Emit(kAuditCapReached,
-                             {{"Unique-ID", uuid},
-                              {"cap", std::to_string(config_.max_silence_drivers)}});
+            osw::audit::Emit(
+                kAuditCapReached,
+                {{"Unique-ID", uuid}, {"cap", std::to_string(config_.max_silence_drivers)}});
             return;
         }
 

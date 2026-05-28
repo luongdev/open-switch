@@ -169,12 +169,12 @@ void Logf(Level level, std::string_view subsystem, const char* fmt, ...) noexcep
 
 // Convenience wrappers — fixed level.
 
-#define OSW_LOG_DEFINE_LEVEL_FN(name, level_enum)                                      \
+#define OSW_LOG_DEFINE_LEVEL_FN(name, level_enum)                                       \
     inline void name(std::string_view subsystem, FormatString fmt_spec, ...) noexcept { \
-        std::va_list ap;                                                               \
-        va_start(ap, fmt_spec);                                                        \
-        LogvAt(level_enum, fmt_spec.location, subsystem, fmt_spec.fmt, ap);            \
-        va_end(ap);                                                                    \
+        std::va_list ap;                                                                \
+        va_start(ap, fmt_spec);                                                         \
+        LogvAt(level_enum, fmt_spec.location, subsystem, fmt_spec.fmt, ap);             \
+        va_end(ap);                                                                     \
     }
 
 OSW_LOG_DEFINE_LEVEL_FN(Trace, Level::kTrace)

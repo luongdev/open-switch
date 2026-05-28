@@ -43,16 +43,16 @@ using open_switch::control::v1::StartBotRequest;
 
 const char* PurposeName(StartBotRequest::Purpose purpose) noexcept {
     switch (purpose) {
-    case StartBotRequest::TTS_BROADCAST:
-        return "tts_broadcast";
-    case StartBotRequest::STT_LISTEN:
-        return "stt_listen";
-    case StartBotRequest::VOICEBOT_DUPLEX:
-        return "voicebot_duplex";
-    case StartBotRequest::WHISPER:
-        return "whisper";
-    default:
-        return "unspecified";
+        case StartBotRequest::TTS_BROADCAST:
+            return "tts_broadcast";
+        case StartBotRequest::STT_LISTEN:
+            return "stt_listen";
+        case StartBotRequest::VOICEBOT_DUPLEX:
+            return "voicebot_duplex";
+        case StartBotRequest::WHISPER:
+            return "whisper";
+        default:
+            return "unspecified";
     }
 }
 
@@ -75,7 +75,8 @@ grpc::Status ValidateStartBot(const StartBotRequest& req,
             return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "target channel UUID is empty");
         }
         if (!seen.insert(uuid).second) {
-            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "duplicate target channel UUID");
+            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                                "duplicate target channel UUID");
         }
     }
 
@@ -89,17 +90,17 @@ grpc::Status ValidateStartBot(const StartBotRequest& req,
     }
 
     switch (req.purpose()) {
-    case StartBotRequest::TTS_BROADCAST:
-    case StartBotRequest::VOICEBOT_DUPLEX:
-        break;
-    case StartBotRequest::STT_LISTEN:
-    case StartBotRequest::WHISPER:
-        return grpc::Status(
-            grpc::StatusCode::UNIMPLEMENTED,
-            "StartBot STT_LISTEN/WHISPER requires W7 fanout/read path; TTS_BROADCAST and "
-            "VOICEBOT_DUPLEX are available");
-    default:
-        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "purpose required");
+        case StartBotRequest::TTS_BROADCAST:
+        case StartBotRequest::VOICEBOT_DUPLEX:
+            break;
+        case StartBotRequest::STT_LISTEN:
+        case StartBotRequest::WHISPER:
+            return grpc::Status(
+                grpc::StatusCode::UNIMPLEMENTED,
+                "StartBot STT_LISTEN/WHISPER requires W7 fanout/read path; TTS_BROADCAST and "
+                "VOICEBOT_DUPLEX are available");
+        default:
+            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "purpose required");
     }
 
     const std::uint32_t rate =

@@ -33,7 +33,7 @@ bool IsWriteReplacePurpose(open_switch::media::v1::StreamStart::Purpose purpose)
     using StreamStart = open_switch::media::v1::StreamStart;
     return purpose == StreamStart::TTS_PLAYBACK || purpose == StreamStart::VOICEBOT_DUPLEX;
 }
-}
+}  // namespace
 
 ActiveMediaStreams::~ActiveMediaStreams() noexcept {
     // On module shutdown, forcibly tear down any surviving streams.

@@ -374,9 +374,8 @@ TEST_F(BugManagerTest, AttachDoesNotHoldGlobalLockAcrossFsAdd) {
     bool first_blocked = false;
     {
         std::unique_lock<std::mutex> g(Mock().media_bug_add_block_mu);
-        first_blocked = Mock().media_bug_add_cv.wait_for(g, 1s, [] {
-            return Mock().media_bug_add_waiting == 1;
-        });
+        first_blocked = Mock().media_bug_add_cv.wait_for(
+            g, 1s, [] { return Mock().media_bug_add_waiting == 1; });
     }
     EXPECT_TRUE(first_blocked);
     if (!first_blocked) {

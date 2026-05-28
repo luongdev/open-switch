@@ -249,17 +249,13 @@ TEST_F(SilenceDriverTest, MediaBugManagerKeepsDriverUntilLastWriteReplaceDetache
     MediaBugManager manager;
     manager.SetSilenceDriverRegistry(&registry);
 
-    auto tts = manager.Attach(
-        FakeSession(), {Purpose::kTtsPlayback, SMBF_WRITE_REPLACE, 8000, "tenant", "ep"});
+    auto tts = manager.Attach(FakeSession(),
+                              {Purpose::kTtsPlayback, SMBF_WRITE_REPLACE, 8000, "tenant", "ep"});
     ASSERT_TRUE(tts.ok) << tts.error;
     ASSERT_EQ(1, Mock().ivr_broadcast_calls.load());
 
-    auto voicebot_write = manager.Attach(FakeSession(),
-                                         {Purpose::kVoicebotDuplexWrite,
-                                          SMBF_WRITE_REPLACE,
-                                          8000,
-                                          "tenant",
-                                          "ep"});
+    auto voicebot_write = manager.Attach(
+        FakeSession(), {Purpose::kVoicebotDuplexWrite, SMBF_WRITE_REPLACE, 8000, "tenant", "ep"});
     ASSERT_TRUE(voicebot_write.ok) << voicebot_write.error;
     EXPECT_EQ(1u, registry.ActiveCount());
 

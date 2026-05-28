@@ -21,10 +21,12 @@
 
 #include "osw/core/config.h"
 
-#if !defined(OSW_TEST_FS_MOCK)
+#if defined(OSW_TEST_FS_MOCK)
+#include "osw/raii/fs_mock.h"
+#else
 struct switch_core_session;
 using switch_core_session_t = switch_core_session;
-#endif  // !OSW_TEST_FS_MOCK
+#endif  // OSW_TEST_FS_MOCK
 
 namespace osw::media {
 

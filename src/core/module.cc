@@ -160,26 +160,42 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
                     return;
                 // Full cleanup on load failure to prevent active resource leaks.
                 if (mod->broadcaster_) {
-                    try { mod->broadcaster_->Stop(); } catch (...) {}
+                    try {
+                        mod->broadcaster_->Stop();
+                    } catch (...) {
+                    }
                     mod->broadcaster_.reset();
                 }
                 if (mod->binder_) {
-                    try { mod->binder_->Stop(); } catch (...) {}
+                    try {
+                        mod->binder_->Stop();
+                    } catch (...) {
+                    }
                     mod->binder_.reset();
                 }
                 mod->rings_.reset();
                 mod->classifier_.reset();
                 if (mod->metrics_server_) {
-                    try { mod->metrics_server_->Stop(); } catch (...) {}
+                    try {
+                        mod->metrics_server_->Stop();
+                    } catch (...) {
+                    }
                     mod->metrics_server_.reset();
                 }
                 if (mod->grpc_server_) {
-                    try { mod->grpc_server_->Drain(std::chrono::system_clock::now() + std::chrono::seconds(2)); } catch (...) {}
+                    try {
+                        mod->grpc_server_->Drain(std::chrono::system_clock::now() +
+                                                 std::chrono::seconds(2));
+                    } catch (...) {
+                    }
                     mod->grpc_server_.reset();
                 }
                 mod->idempotency_cache_.reset();
                 if (mod->bug_manager_) {
-                    try { mod->bug_manager_->UnregisterStateHandlers(); } catch (...) {}
+                    try {
+                        mod->bug_manager_->UnregisterStateHandlers();
+                    } catch (...) {
+                    }
                 }
                 if (mod->active_bots_) {
                     mod->active_bots_->DrainAll(mod->active_media_streams_.get());
@@ -190,7 +206,10 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
                     mod->bug_manager_->SetSilenceDriverRegistry(nullptr);
                 }
                 if (mod->silence_driver_registry_) {
-                    try { mod->silence_driver_registry_->DrainAll(); } catch (...) {}
+                    try {
+                        mod->silence_driver_registry_->DrainAll();
+                    } catch (...) {
+                    }
                     mod->silence_driver_registry_.reset();
                 }
                 mod->bug_manager_.reset();

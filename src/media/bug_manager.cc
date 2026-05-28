@@ -442,14 +442,14 @@ MediaBugManager::AttachResult MediaBugManager::Attach(switch_core_session_t* ses
                 // Out-of-order attach.  Allowed only if caller already set
                 // SMBF_FIRST in cfg.fs_flags.
                 if ((cfg.fs_flags & kSmbfFirst) == 0) {
-                    validation_failure = AttachResult{
-                        false,
-                        grpc::StatusCode::FAILED_PRECONDITION,
-                        std::string("out-of-order attach: purpose=") +
-                            std::string(PurposeName(cfg.purpose)) +
-                            " rank=" + std::to_string(this_rank) +
-                            " already-attached max-rank=" + std::to_string(max_rank),
-                        BugHandle{}};
+                    validation_failure =
+                        AttachResult{false,
+                                     grpc::StatusCode::FAILED_PRECONDITION,
+                                     std::string("out-of-order attach: purpose=") +
+                                         std::string(PurposeName(cfg.purpose)) +
+                                         " rank=" + std::to_string(this_rank) +
+                                         " already-attached max-rank=" + std::to_string(max_rank),
+                                     BugHandle{}};
                     validation_failed = true;
                 }
             }

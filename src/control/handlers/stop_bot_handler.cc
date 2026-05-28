@@ -49,9 +49,8 @@ grpc::Status HandleStopBot(grpc::ServerContext* /*ctx*/,
                          {{"bot_id", req->bot_id()}, {"tenant_id", tenant_id}});
         osw::log::Info(kSubsystem, "StopBot OK: bot_id=%s", req->bot_id().c_str());
     } else {
-        osw::log::Debug(kSubsystem,
-                        "StopBot: bot_id=%s not found (idempotent)",
-                        req->bot_id().c_str());
+        osw::log::Debug(
+            kSubsystem, "StopBot: bot_id=%s not found (idempotent)", req->bot_id().c_str());
     }
 
     return grpc::Status::OK;

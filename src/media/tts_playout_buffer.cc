@@ -15,15 +15,16 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <fcntl.h>
 #include <limits>
 #include <string>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <unistd.h>
 #include <utility>
+
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include "osw/observability/audit.h"
 #include "osw/observability/log.h"
@@ -108,9 +109,8 @@ void TtsPlayoutBuffer::Push(AudioFrame frame) noexcept {
         return;
     }
     std::lock_guard<std::mutex> g(mu_);
-    DebugCaptureSamples(debug_push_samples_,
-                        frame.data(),
-                        static_cast<std::uint32_t>(frame.sample_count()));
+    DebugCaptureSamples(
+        debug_push_samples_, frame.data(), static_cast<std::uint32_t>(frame.sample_count()));
 
     queue_.push_back(std::move(frame));
     RecomputeDepth();
@@ -205,9 +205,8 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
             }
 
             const std::uint32_t n = std::min(out_cap_samples - written, avail);
-            std::memcpy(out + written,
-                        front.data() + front_offset_samples_,
-                        n * sizeof(std::int16_t));
+            std::memcpy(
+                out + written, front.data() + front_offset_samples_, n * sizeof(std::int16_t));
 
             // Keep last frame for kRepeatLast policy (full frame, not slice).
             if (cfg_.underrun == UnderrunPolicy::kRepeatLast) {
@@ -362,9 +361,8 @@ void TtsPlayoutBuffer::RecomputeDepth() noexcept {
         }
         total += DurationMsForSamples(samples, f.sample_rate_hz(), f.channels());
     }
-    depth_ms_ =
-        static_cast<std::uint32_t>(
-            std::min<std::uint64_t>(total, std::numeric_limits<std::uint32_t>::max()));
+    depth_ms_ = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(total, std::numeric_limits<std::uint32_t>::max()));
 }
 
 void TtsPlayoutBuffer::EmitUnderrunEvent(std::uint32_t samples_silenced,
@@ -417,12 +415,10 @@ void TtsPlayoutBuffer::InitDebugDumpLocked() noexcept {
         }
         (void)::mkdir(dir, 0755);
         debug_audio_dir_ = dir;
-        const std::uint64_t max_samples =
-            static_cast<std::uint64_t>(cfg_.channel_sample_rate_hz) * cfg_.channels *
-            kDefaultDebugDumpSeconds;
-        debug_audio_max_samples_ =
-            static_cast<std::size_t>(
-                std::min<std::uint64_t>(max_samples, std::numeric_limits<std::size_t>::max()));
+        const std::uint64_t max_samples = static_cast<std::uint64_t>(cfg_.channel_sample_rate_hz) *
+                                          cfg_.channels * kDefaultDebugDumpSeconds;
+        debug_audio_max_samples_ = static_cast<std::size_t>(
+            std::min<std::uint64_t>(max_samples, std::numeric_limits<std::size_t>::max()));
         if (debug_audio_max_samples_ == 0) {
             return;
         }
