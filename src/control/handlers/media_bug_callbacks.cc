@@ -29,8 +29,6 @@
 
 namespace {
 
-constexpr const char* kWriteReplaceSubsystem = "media.write_replace";
-
 #if defined(OSW_TEST_FS_MOCK)
 constexpr int kAbcTypeRead = 1;          // SWITCH_ABC_TYPE_READ
 constexpr int kAbcTypeReadPing = 5;      // SWITCH_ABC_TYPE_READ_PING
@@ -38,6 +36,7 @@ constexpr int kAbcTypeWriteReplace = 3;  // SWITCH_ABC_TYPE_WRITE_REPLACE
 constexpr int kAbcTypeInit = 0;
 constexpr int kAbcTypeClose = 8;
 #else
+constexpr const char* kWriteReplaceSubsystem = "media.write_replace";
 constexpr int kAbcTypeRead = static_cast<int>(SWITCH_ABC_TYPE_READ);
 constexpr int kAbcTypeReadPing = static_cast<int>(SWITCH_ABC_TYPE_READ_PING);
 constexpr int kAbcTypeWriteReplace = static_cast<int>(SWITCH_ABC_TYPE_WRITE_REPLACE);
