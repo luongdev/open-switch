@@ -31,6 +31,7 @@ COPY open_switch.conf.xml /usr/local/etc/freeswitch/autoload_configs/open_switch
 COPY event_socket.conf.xml /usr/local/etc/freeswitch/autoload_configs/event_socket.conf.xml
 COPY dialplan/default.xml /usr/local/etc/freeswitch/dialplan/default.xml
 COPY dialplan/public/00_osw_e2e.xml /usr/local/etc/freeswitch/dialplan/public/00_osw_e2e.xml
+COPY sip_profiles/wsl.xml /usr/local/etc/freeswitch/sip_profiles/wsl.xml
 
 # Keep demo RTP inside the docker-compose published UDP range.
 RUN sed -i \

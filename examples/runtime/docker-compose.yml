@@ -35,6 +35,8 @@ services:
     container_name: osw-fs
     ports:
       - "50061:50061"
+      - "${OSW_REMOTE_SIP_HOST_IP:-0.0.0.0}:5062:5062/tcp"
+      - "${OSW_REMOTE_SIP_HOST_IP:-0.0.0.0}:5062:5062/udp"
     # FS allocates a lot of small APR pool blocks; small ulimit on
     # default Docker hosts isn't a problem but the bump avoids surprises.
     ulimits:
