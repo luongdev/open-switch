@@ -31,6 +31,8 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <string>
+#include <vector>
 
 #include "osw/media/audio_frame.h"
 
@@ -55,7 +57,7 @@ class TtsPlayoutBuffer {
     };
 
     explicit TtsPlayoutBuffer(Config cfg) noexcept;
-    ~TtsPlayoutBuffer() noexcept = default;
+    ~TtsPlayoutBuffer() noexcept;
 
     TtsPlayoutBuffer(const TtsPlayoutBuffer&) = delete;
     TtsPlayoutBuffer& operator=(const TtsPlayoutBuffer&) = delete;
@@ -150,6 +152,19 @@ class TtsPlayoutBuffer {
     void RecomputeDepth() noexcept;
     void EmitUnderrunEvent(std::uint32_t samples_silenced, std::uint64_t depth_ms) noexcept;
     void EmitOverrunEvent(std::uint64_t frames_dropped, std::uint64_t depth_ms) noexcept;
+    void InitDebugDumpLocked() noexcept;
+    void DebugCaptureSamples(std::vector<std::int16_t>& dst,
+                             const std::int16_t* samples,
+                             std::uint32_t sample_count) noexcept;
+    void DebugFlushDumpsLocked() noexcept;
+
+    bool debug_audio_enabled_ = false;
+    bool debug_audio_checked_ = false;
+    bool debug_audio_flushed_ = false;
+    std::size_t debug_audio_max_samples_ = 0;
+    std::string debug_audio_dir_;
+    std::vector<std::int16_t> debug_push_samples_;
+    std::vector<std::int16_t> debug_pop_samples_;
 };
 
 }  // namespace osw::media

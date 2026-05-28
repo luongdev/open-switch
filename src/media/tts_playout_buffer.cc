@@ -13,9 +13,16 @@
 #include "osw/media/tts_playout_buffer.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
+#include <fcntl.h>
 #include <limits>
+#include <string>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 #include <utility>
 
 #include "osw/observability/audit.h"
@@ -29,6 +36,7 @@ constexpr const char* kSubsystem = "media.tts_playout";
 
 // Rate-limit window for audit events (1 per stream per second).
 constexpr std::chrono::seconds kAuditRateWindow{1};
+constexpr std::uint32_t kDefaultDebugDumpSeconds = 90;
 
 std::uint32_t DurationMsForSamples(std::uint32_t samples,
                                    std::uint32_t sample_rate_hz,
@@ -56,15 +64,53 @@ std::uint32_t FillRepeatLast(std::int16_t* out,
     return written;
 }
 
+std::string SanitizePathComponent(const std::string& value) {
+    std::string out;
+    out.reserve(value.size());
+    for (const char ch : value) {
+        const bool safe = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                          (ch >= '0' && ch <= '9') || ch == '-' || ch == '_';
+        out.push_back(safe ? ch : '_');
+    }
+    return out.empty() ? std::string("unknown") : out;
+}
+
+bool WriteAll(int fd, const void* data, std::size_t bytes) noexcept {
+    const auto* p = static_cast<const char*>(data);
+    while (bytes > 0) {
+        const ssize_t n = ::write(fd, p, bytes);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        if (n == 0) {
+            return false;
+        }
+        p += n;
+        bytes -= static_cast<std::size_t>(n);
+    }
+    return true;
+}
+
 }  // namespace
 
 TtsPlayoutBuffer::TtsPlayoutBuffer(Config cfg) noexcept : cfg_(cfg) {}
+
+TtsPlayoutBuffer::~TtsPlayoutBuffer() noexcept {
+    std::lock_guard<std::mutex> g(mu_);
+    DebugFlushDumpsLocked();
+}
 
 void TtsPlayoutBuffer::Push(AudioFrame frame) noexcept {
     if (frame.sample_count() == 0) {
         return;
     }
     std::lock_guard<std::mutex> g(mu_);
+    DebugCaptureSamples(debug_push_samples_,
+                        frame.data(),
+                        static_cast<std::uint32_t>(frame.sample_count()));
 
     queue_.push_back(std::move(frame));
     RecomputeDepth();
@@ -116,6 +162,7 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
 
     // Case: EOS and buffer empty.
     if (eos_.load(std::memory_order_relaxed) && queue_.empty()) {
+        DebugFlushDumpsLocked();
         return 0;
     }
 
@@ -124,6 +171,7 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
         !eos_.load(std::memory_order_relaxed)) {
         const std::uint32_t n = out_cap_samples;
         std::memset(out, 0, n * sizeof(std::int16_t));
+        DebugCaptureSamples(debug_pop_samples_, out, n);
         if (!first_preroll_silence_logged_) {
             first_preroll_silence_logged_ = true;
             osw::log::Info(kSubsystem,
@@ -189,6 +237,7 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
         }
 
         if (written == out_cap_samples) {
+            DebugCaptureSamples(debug_pop_samples_, out, written);
             return written;
         }
 
@@ -196,6 +245,7 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
         const std::uint32_t remaining = out_cap_samples - written;
         if (eos_.load(std::memory_order_relaxed)) {
             std::memset(out + written, 0, remaining * sizeof(std::int16_t));
+            DebugCaptureSamples(debug_pop_samples_, out, out_cap_samples);
             return out_cap_samples;
         }
 
@@ -215,6 +265,7 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
                            depth_ms_);
         }
         EmitUnderrunEvent(remaining, depth_ms_);
+        DebugCaptureSamples(debug_pop_samples_, out, out_cap_samples);
         return out_cap_samples;
     }
 
@@ -229,6 +280,7 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
         // reach here after preroll, but be defensive).
         const std::uint32_t n = out_cap_samples;
         std::memset(out, 0, n * sizeof(std::int16_t));
+        DebugCaptureSamples(debug_pop_samples_, out, n);
         return n;
     }
 
@@ -252,6 +304,7 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
                        depth_ms_);
     }
     EmitUnderrunEvent(n, depth_ms_);
+    DebugCaptureSamples(debug_pop_samples_, out, n);
     return n;
 }
 
@@ -288,6 +341,7 @@ void TtsPlayoutBuffer::SetStreamId(std::string stream_id) noexcept {
     // with the handler thread setting the labels after Open() returned.
     std::lock_guard<std::mutex> lk(mu_);
     stream_id_ = std::move(stream_id);
+    InitDebugDumpLocked();
 }
 
 void TtsPlayoutBuffer::SetTenantId(std::string tenant_id) noexcept {
@@ -349,6 +403,113 @@ void TtsPlayoutBuffer::EmitOverrunEvent(std::uint64_t frames_dropped,
                       {"depth_ms", std::to_string(depth_ms)},
                       {"frames_dropped", std::to_string(frames_dropped)},
                       {"suppressed_count", std::to_string(suppressed)}});
+}
+
+void TtsPlayoutBuffer::InitDebugDumpLocked() noexcept {
+    if (debug_audio_checked_) {
+        return;
+    }
+    debug_audio_checked_ = true;
+    try {
+        const char* dir = std::getenv("OSW_TTS_DUMP_DIR");
+        if (!dir || dir[0] == '\0') {
+            return;
+        }
+        (void)::mkdir(dir, 0755);
+        debug_audio_dir_ = dir;
+        const std::uint64_t max_samples =
+            static_cast<std::uint64_t>(cfg_.channel_sample_rate_hz) * cfg_.channels *
+            kDefaultDebugDumpSeconds;
+        debug_audio_max_samples_ =
+            static_cast<std::size_t>(
+                std::min<std::uint64_t>(max_samples, std::numeric_limits<std::size_t>::max()));
+        if (debug_audio_max_samples_ == 0) {
+            return;
+        }
+        debug_push_samples_.reserve(debug_audio_max_samples_);
+        debug_pop_samples_.reserve(debug_audio_max_samples_);
+        debug_audio_enabled_ = true;
+        osw::log::Info(kSubsystem,
+                       "TtsPlayoutBuffer debug capture enabled stream_id=%s dir=%s "
+                       "max_seconds=%u",
+                       stream_id_.c_str(),
+                       debug_audio_dir_.c_str(),
+                       kDefaultDebugDumpSeconds);
+    } catch (...) {
+        debug_audio_enabled_ = false;
+        osw::log::Warn(kSubsystem,
+                       "TtsPlayoutBuffer debug capture setup failed stream_id=%s",
+                       stream_id_.c_str());
+    }
+}
+
+void TtsPlayoutBuffer::DebugCaptureSamples(std::vector<std::int16_t>& dst,
+                                           const std::int16_t* samples,
+                                           std::uint32_t sample_count) noexcept {
+    if (!debug_audio_enabled_ || !samples || sample_count == 0 ||
+        dst.size() >= debug_audio_max_samples_) {
+        return;
+    }
+    const std::size_t remaining = debug_audio_max_samples_ - dst.size();
+    const std::size_t n = std::min<std::size_t>(remaining, sample_count);
+    try {
+        dst.insert(dst.end(), samples, samples + n);
+    } catch (...) {
+        debug_audio_enabled_ = false;
+        osw::log::Warn(kSubsystem,
+                       "TtsPlayoutBuffer debug capture append failed stream_id=%s",
+                       stream_id_.c_str());
+    }
+}
+
+void TtsPlayoutBuffer::DebugFlushDumpsLocked() noexcept {
+    if (!debug_audio_enabled_ || debug_audio_flushed_) {
+        return;
+    }
+    debug_audio_flushed_ = true;
+    const std::string base = debug_audio_dir_ + "/osw-tts-" + SanitizePathComponent(stream_id_);
+    const std::string rate = ".rate" + std::to_string(cfg_.channel_sample_rate_hz) + ".s16le";
+
+    const auto write_stage = [&](const char* stage, const std::vector<std::int16_t>& samples) {
+        if (samples.empty()) {
+            return;
+        }
+        const std::string path = base + "." + stage + rate;
+        const int fd = ::open(path.c_str(), O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC, 0644);
+        if (fd < 0) {
+            osw::log::Warn(kSubsystem,
+                           "TtsPlayoutBuffer debug dump open failed path=%s errno=%d",
+                           path.c_str(),
+                           errno);
+            return;
+        }
+        const std::size_t bytes = samples.size() * sizeof(std::int16_t);
+        const bool ok = WriteAll(fd, samples.data(), bytes);
+        ::close(fd);
+        if (!ok) {
+            osw::log::Warn(kSubsystem,
+                           "TtsPlayoutBuffer debug dump write failed path=%s errno=%d",
+                           path.c_str(),
+                           errno);
+            return;
+        }
+        osw::log::Info(kSubsystem,
+                       "TtsPlayoutBuffer debug dump wrote stream_id=%s stage=%s path=%s "
+                       "samples=%zu",
+                       stream_id_.c_str(),
+                       stage,
+                       path.c_str(),
+                       samples.size());
+    };
+
+    try {
+        write_stage("push", debug_push_samples_);
+        write_stage("pop", debug_pop_samples_);
+    } catch (...) {
+        osw::log::Warn(kSubsystem,
+                       "TtsPlayoutBuffer debug dump flush failed stream_id=%s",
+                       stream_id_.c_str());
+    }
 }
 
 }  // namespace osw::media

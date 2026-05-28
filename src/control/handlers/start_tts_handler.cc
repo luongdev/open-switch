@@ -116,11 +116,19 @@ grpc::Status HandleStartTts(grpc::ServerContext* /*ctx*/,
     if (!sg.Valid()) {
         return grpc::Status(grpc::StatusCode::NOT_FOUND, "channel not found");
     }
+    const std::size_t replaced = streams->RemoveWriteReplaceForChannel(req->channel_uuid());
+    if (replaced > 0) {
+        osw::log::Info(kSubsystem,
+                       "StartTts: removed %zu prior write-replace stream(s) on channel=%s",
+                       replaced,
+                       req->channel_uuid().c_str());
+    }
 
     // Build TtsPlayoutBuffer.
     const auto& ov = req->buffer_override();
     const std::uint32_t jitter_ms = ResolveBufferMs(ov, config);
     const std::uint32_t preroll_ms = ResolvePrerollMs(ov, config, jitter_ms);
+    const std::string stream_id = osw::events::GenerateUuidV7();
 
     osw::media::TtsPlayoutBuffer::Config buf_cfg;
     buf_cfg.target_ms = std::chrono::milliseconds(jitter_ms);
@@ -133,6 +141,7 @@ grpc::Status HandleStartTts(grpc::ServerContext* /*ctx*/,
 
     auto buffer = std::make_unique<osw::media::TtsPlayoutBuffer>(buf_cfg);
     auto* buf_raw = buffer.get();
+    buffer->SetStreamId(stream_id);
 
     // Build StreamClient. on_audio callback pushes into the jitter buffer.
     const std::string tenant_id = req->has_header() ? req->header().tenant_id() : std::string{};
@@ -200,9 +209,7 @@ grpc::Status HandleStartTts(grpc::ServerContext* /*ctx*/,
     bug_mgr->SetBugCallback(
         bug_id, reinterpret_cast<void*>(OswStreamingWriteReplace), write_ctx.get());
 
-    // Mint stream_id and register.
-    const std::string stream_id = osw::events::GenerateUuidV7();
-    buffer->SetStreamId(stream_id);
+    // Register.
     buffer->SetTenantId(tenant_id);
 
     auto stream = std::make_unique<osw::control::ActiveMediaStream>();

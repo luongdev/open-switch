@@ -28,6 +28,11 @@ namespace osw::control {
 
 namespace {
 constexpr const char* kSubsystem = "control.active_media_streams";
+
+bool IsWriteReplacePurpose(open_switch::media::v1::StreamStart::Purpose purpose) noexcept {
+    using StreamStart = open_switch::media::v1::StreamStart;
+    return purpose == StreamStart::TTS_PLAYBACK || purpose == StreamStart::VOICEBOT_DUPLEX;
+}
 }
 
 ActiveMediaStreams::~ActiveMediaStreams() noexcept {
@@ -94,6 +99,31 @@ void ActiveMediaStreams::RemoveForChannel(std::string_view channel_uuid) noexcep
     for (auto& s : victims) {
         TearDown(std::move(s));
     }
+}
+
+std::size_t ActiveMediaStreams::RemoveWriteReplaceForChannel(
+    std::string_view channel_uuid) noexcept {
+    std::vector<std::unique_ptr<ActiveMediaStream>> victims;
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        for (auto it = by_id_.begin(); it != by_id_.end();) {
+            if (it->second && it->second->channel_uuid == channel_uuid &&
+                IsWriteReplacePurpose(it->second->purpose)) {
+                victims.push_back(std::move(it->second));
+                it = by_id_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (auto& s : victims) {
+        osw::log::Info(kSubsystem,
+                       "RemoveWriteReplaceForChannel: tearing down prior stream_id=%s channel=%s",
+                       s->stream_id.c_str(),
+                       s->channel_uuid.c_str());
+        TearDown(std::move(s));
+    }
+    return victims.size();
 }
 
 std::size_t ActiveMediaStreams::Size() const noexcept {
