@@ -223,6 +223,26 @@ TEST_F(SilenceDriverTest, MediaBugManagerStartsAndStopsOnWriteReplaceLifecycle) 
     EXPECT_EQ(1, Mock().channel_set_flag_calls.load());
 }
 
+TEST_F(SilenceDriverTest, MediaBugManagerSkipsSilenceDriverDuringForegroundPlayback) {
+    osw::Config cfg;
+    SilenceDriverRegistry registry(cfg);
+    MediaBugManager manager;
+    manager.SetSilenceDriverRegistry(&registry);
+    Mock().next_channel_variables["current_application"] = "playback";
+
+    BugConfig tts{Purpose::kTtsPlayback, SMBF_WRITE_REPLACE, 8000, "tenant", "ep"};
+    auto attached = manager.Attach(FakeSession(), tts);
+    ASSERT_TRUE(attached.ok) << attached.error;
+
+    EXPECT_EQ(0, Mock().ivr_broadcast_calls.load());
+    EXPECT_EQ(0u, registry.ActiveCount());
+
+    attached.handle = BugHandle{};
+
+    EXPECT_EQ(0u, registry.ActiveCount());
+    EXPECT_EQ(0, Mock().channel_set_flag_calls.load());
+}
+
 TEST_F(SilenceDriverTest, MediaBugManagerKeepsDriverUntilLastWriteReplaceDetaches) {
     osw::Config cfg;
     SilenceDriverRegistry registry(cfg);

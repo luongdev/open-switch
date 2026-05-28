@@ -475,10 +475,16 @@ void StreamClient::ReaderLoop() noexcept {
         final_status_ = status;
     }
 
-    osw::log::Info("media",
-                   "StreamClient::ReaderLoop: stream finished; code=%d message=%s",
-                   static_cast<int>(status.error_code()),
-                   status.error_message().c_str());
+    if (status.error_message().empty()) {
+        osw::log::Info("media",
+                       "StreamClient::ReaderLoop: stream finished; code=%d",
+                       static_cast<int>(status.error_code()));
+    } else {
+        osw::log::Info("media",
+                       "StreamClient::ReaderLoop: stream finished; code=%d message=%s",
+                       static_cast<int>(status.error_code()),
+                       status.error_message().c_str());
+    }
 
     if (callbacks_.on_done) {
         callbacks_.on_done(status);
