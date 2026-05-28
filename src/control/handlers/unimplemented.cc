@@ -23,6 +23,8 @@
  *        - StartStt (real impl lives in start_stt_handler.cc)              [W6C]
  *        - StartVoicebot (real impl lives in start_voicebot_handler.cc)    [W6C]
  *        - StopMediaStream (real impl lives in stop_media_stream_handler.cc) [W6C]
+ *        - StartBot (real impl lives in start_bot_handler.cc)              [W7D]
+ *        - StopBot (real impl lives in stop_bot_handler.cc)                [W7D]
  *
  * After W6C lands, this TU carries ONLY the Unimplemented() helper.
  * No stub method bodies remain. Future RPCs added to ControlServiceSkeleton
@@ -58,8 +60,8 @@ grpc::Status Unimplemented(std::string_view method, std::string_view wave) {
 
 }  // namespace osw::control::handlers
 
-// No stub method bodies remain after W6C. StartTts/StartStt/StartVoicebot/
-// StopMediaStream (W6C) moved to their dedicated handler TUs;
+// No stub method bodies remain after W7D. StartTts/StartStt/StartVoicebot/
+// StopMediaStream (W6C) and StartBot/StopBot (W7D) moved to their dedicated handler TUs;
 // Bridge/Execute/BlindTransfer (W3B) and SetVariables/Hold/Unhold (W3C)
 // moved earlier; SubscribeEvents (W2) lives in subscribe_events_handler.cc;
 // Originate/Hangup/HangupMany (W3A) in their dedicated TUs; Health (W1)

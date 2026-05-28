@@ -62,6 +62,7 @@
 
 #include <switch.h>  // FF-014 environment, switch_version_*
 
+#include "osw/control/active_bots.h"
 #include "osw/control/active_media_streams.h"
 #include "osw/control/idempotency_cache.h"
 #include "osw/control/rpc_metrics.h"
@@ -73,6 +74,7 @@
 #include "osw/events/subscribe/broadcaster.h"
 #include "osw/events/tier.h"
 #include "osw/media/bug_manager.h"
+#include "osw/media/silence_driver.h"
 #include "osw/observability/audit.h"
 #include "osw/observability/health_metrics.h"
 #include "osw/observability/log.h"
@@ -158,28 +160,58 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
                     return;
                 // Full cleanup on load failure to prevent active resource leaks.
                 if (mod->broadcaster_) {
-                    try { mod->broadcaster_->Stop(); } catch (...) {}
+                    try {
+                        mod->broadcaster_->Stop();
+                    } catch (...) {
+                    }
                     mod->broadcaster_.reset();
                 }
                 if (mod->binder_) {
-                    try { mod->binder_->Stop(); } catch (...) {}
+                    try {
+                        mod->binder_->Stop();
+                    } catch (...) {
+                    }
                     mod->binder_.reset();
                 }
                 mod->rings_.reset();
                 mod->classifier_.reset();
                 if (mod->metrics_server_) {
-                    try { mod->metrics_server_->Stop(); } catch (...) {}
+                    try {
+                        mod->metrics_server_->Stop();
+                    } catch (...) {
+                    }
                     mod->metrics_server_.reset();
                 }
                 if (mod->grpc_server_) {
-                    try { mod->grpc_server_->Drain(std::chrono::system_clock::now() + std::chrono::seconds(2)); } catch (...) {}
+                    try {
+                        mod->grpc_server_->Drain(std::chrono::system_clock::now() +
+                                                 std::chrono::seconds(2));
+                    } catch (...) {
+                    }
                     mod->grpc_server_.reset();
                 }
                 mod->idempotency_cache_.reset();
                 if (mod->bug_manager_) {
-                    try { mod->bug_manager_->UnregisterStateHandlers(); } catch (...) {}
+                    try {
+                        mod->bug_manager_->UnregisterStateHandlers();
+                    } catch (...) {
+                    }
+                }
+                if (mod->active_bots_) {
+                    mod->active_bots_->DrainAll(mod->active_media_streams_.get());
+                    mod->active_bots_.reset();
                 }
                 mod->active_media_streams_.reset();
+                if (mod->bug_manager_) {
+                    mod->bug_manager_->SetSilenceDriverRegistry(nullptr);
+                }
+                if (mod->silence_driver_registry_) {
+                    try {
+                        mod->silence_driver_registry_->DrainAll();
+                    } catch (...) {
+                    }
+                    mod->silence_driver_registry_.reset();
+                }
                 mod->bug_manager_.reset();
                 mod->rpc_metrics_.reset();
                 mod->health_metrics_.reset();
@@ -284,14 +316,24 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
         // function-pointer indirection (avoids a control→media→control
         // header cycle).
         active_media_streams_ = std::make_unique<control::ActiveMediaStreams>();
+        active_bots_ = std::make_unique<control::ActiveBots>();
+        silence_driver_registry_ = std::make_unique<media::SilenceDriverRegistry>(config_);
         bug_manager_ = std::make_unique<media::MediaBugManager>();
+        bug_manager_->SetSilenceDriverRegistry(silence_driver_registry_.get());
         bug_manager_->RegisterStateHandlers(
-            /*active_streams_opaque=*/static_cast<void*>(active_media_streams_.get()),
+            /*active_streams_opaque=*/static_cast<void*>(this),
             /*cleanup_fn=*/[](void* opaque, std::string_view uuid) {
-                static_cast<osw::control::ActiveMediaStreams*>(opaque)->RemoveForChannel(uuid);
+                auto* mod = static_cast<osw::Module*>(opaque);
+                if (mod->active_bots_) {
+                    mod->active_bots_->StopByChannel(uuid, mod->active_media_streams_.get());
+                }
+                if (mod->active_media_streams_) {
+                    mod->active_media_streams_->RemoveForChannel(uuid);
+                }
             });
         grpc_server_->SetMediaBugManager(bug_manager_.get());
         grpc_server_->SetActiveMediaStreams(active_media_streams_.get());
+        grpc_server_->SetActiveBots(active_bots_.get());
         grpc_server_->SetMediaConfig(&config_);
 
         if (!grpc_server_->Start(config_)) {
@@ -480,13 +522,27 @@ bool Module::Shutdown() noexcept {
         //            client->Close() (joins reader thread) then bugs.clear()
         //            (calls MediaBugManager::Detach via BugHandle dtor),
         //            so bug_manager_ must still be alive at this point.
-        //        (c) bug_manager_.reset() last.  Reversing (b) and (c)
+        //        (c) silence_driver_registry_->DrainAll() then reset while
+        //            bug_manager_ still exists but after stream handles have
+        //            detached their WRITE_REPLACE bugs.
+        //        (d) bug_manager_.reset() last.  Reversing (b) and (d)
         //            would leave BugHandle dtors trying to deref a freed
         //            MediaBugManager.
         if (bug_manager_) {
             bug_manager_->UnregisterStateHandlers();
         }
+        if (active_bots_) {
+            active_bots_->DrainAll(active_media_streams_.get());
+            active_bots_.reset();
+        }
         active_media_streams_.reset();
+        if (bug_manager_) {
+            bug_manager_->SetSilenceDriverRegistry(nullptr);
+        }
+        if (silence_driver_registry_) {
+            silence_driver_registry_->DrainAll();
+            silence_driver_registry_.reset();
+        }
         bug_manager_.reset();
 
         // 8. Tear down the observability plane. rpc_metrics_ and

@@ -16,6 +16,7 @@
 //	./osw-client hangup -uuid <CHANNEL_UUID>
 //	./osw-client bridge -a <UUID_A> -b <UUID_B>
 //	./osw-client execute -uuid <UUID> -app playback -args silence_stream://2000
+//	./osw-client start-tts -uuid <UUID> -endpoint tts-edge:50062 -text 'Xin chao'
 //	./osw-client transfer -uuid <UUID> -dest 9999
 //	./osw-client set-vars -uuid <UUID> -k foo=bar -k bar=baz
 //	./osw-client hold -uuid <UUID>
@@ -91,6 +92,8 @@ func main() {
 		bridge(ctx, cli, hdr(), sub)
 	case "execute":
 		execute(ctx, cli, hdr(), sub)
+	case "start-tts":
+		startTts(ctx, cli, hdr(), sub)
 	case "transfer":
 		blindTransfer(ctx, cli, hdr(), sub)
 	case "set-vars":
@@ -125,6 +128,7 @@ cmds:
     hangup-many   -uuids <u1,u2,...> [-cause CAUSE_STR]
     bridge        -a <uuid_a> -b <uuid_b>
     execute       -uuid <uuid> -app <app> [-args <args>]
+    start-tts     -uuid <uuid> [-endpoint <host:port>] [-rate 8000|16000] [-text <utterance>] [-var k=v] [-jitter-ms <ms>] [-preroll-ms <ms>]
     transfer      -uuid <uuid> -dest <extension> [-dialplan XML] [-context default]
     set-vars      -uuid <uuid> -k k=v -k ...
     hold          -uuid <uuid> [-uuid <uuid> ...]
@@ -325,6 +329,57 @@ func execute(ctx context.Context, cli controlpb.ControlServiceClient, hdr *contr
 		log.Fatalf("Execute error: %s %s", e.Type, e.Message)
 	}
 	fmt.Println(resp.GetResult())
+}
+
+// --- StartTts ------------------------------------------------------------
+
+func startTts(ctx context.Context, cli controlpb.ControlServiceClient, hdr *controlpb.RequestHeader, args []string) {
+	fs := flag.NewFlagSet("start-tts", flag.ExitOnError)
+	uuid := fs.String("uuid", "", "channel UUID")
+	endpoint := fs.String("endpoint", "tts-edge:50062", "OpenSwitch MediaBridge endpoint reachable from FreeSWITCH")
+	rate := fs.Uint("rate", 8000, "sample rate in Hz (8000 or 16000)")
+	text := fs.String("text", "", "optional opening utterance")
+	jitterMS := fs.Uint("jitter-ms", 0, "optional jitter buffer override in ms")
+	prerollMS := fs.Uint("preroll-ms", 0, "optional preroll override in ms")
+	var vars repeatedString
+	fs.Var(&vars, "var", "TTS variable k=v (repeatable)")
+	_ = fs.Parse(args)
+
+	if *uuid == "" {
+		log.Fatal("start-tts: -uuid required")
+	}
+	if *endpoint == "" {
+		log.Fatal("start-tts: -endpoint required")
+	}
+	if *rate != 8000 && *rate != 16000 {
+		log.Fatal("start-tts: -rate must be 8000 or 16000")
+	}
+
+	req := &controlpb.StartTtsRequest{
+		Header:           hdr,
+		ChannelUuid:      *uuid,
+		UpstreamEndpoint: *endpoint,
+		SampleRateHz:     uint32(*rate),
+		StartMessage:     *text,
+		Variables:        parseKV(vars),
+	}
+	if *jitterMS != 0 || *prerollMS != 0 {
+		req.BufferOverride = &controlpb.TtsBufferOverride{
+			JitterBufferMs: uint32(*jitterMS),
+			PrerollMs:      uint32(*prerollMS),
+		}
+	}
+
+	resp, err := cli.StartTts(ctx, req)
+	if err != nil {
+		log.Fatalf("StartTts: %v", err)
+	}
+	if e := resp.GetError(); e != nil && e.Type != controlpb.ErrorDetail_TYPE_UNSPECIFIED {
+		log.Fatalf("StartTts error: %s %s", e.Type, e.Message)
+	}
+	fmt.Printf("stream_id: %s\n", resp.GetStreamId())
+	fmt.Printf("codec:     %s\n", resp.GetNegotiatedCodec())
+	fmt.Printf("rate_hz:   %d\n", resp.GetNegotiatedSampleRateHz())
 }
 
 // --- BlindTransfer -------------------------------------------------------

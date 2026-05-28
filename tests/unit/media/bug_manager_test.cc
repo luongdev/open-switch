@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -346,6 +347,76 @@ TEST_F(BugManagerTest, A9_ConcurrentAttachDetach) {
 
     // At minimum some attaches succeeded (sanity).
     EXPECT_GT(attach_ok.load(), 0);
+}
+
+TEST_F(BugManagerTest, AttachDoesNotHoldGlobalLockAcrossFsAdd) {
+    using namespace std::chrono_literals;
+
+    {
+        std::lock_guard<std::mutex> g(Mock().media_bug_add_block_mu);
+        Mock().media_bug_add_block_remaining = 1;
+        Mock().media_bug_add_release = false;
+    }
+
+    std::atomic<bool> first_done{false};
+    std::atomic<bool> second_done{false};
+    std::atomic<bool> second_ok{false};
+
+    Mock().next_bleg_uuid = "channel-a";
+    std::thread first([&] {
+        auto r = mgr_.Attach(FakeSession(), {Purpose::kSttTranscribe, 0, 16000, "t", "e"});
+        if (r.ok) {
+            r.handle.release();
+        }
+        first_done.store(true, std::memory_order_release);
+    });
+
+    bool first_blocked = false;
+    {
+        std::unique_lock<std::mutex> g(Mock().media_bug_add_block_mu);
+        first_blocked = Mock().media_bug_add_cv.wait_for(
+            g, 1s, [] { return Mock().media_bug_add_waiting == 1; });
+    }
+    EXPECT_TRUE(first_blocked);
+    if (!first_blocked) {
+        {
+            std::lock_guard<std::mutex> g(Mock().media_bug_add_block_mu);
+            Mock().media_bug_add_release = true;
+        }
+        Mock().media_bug_add_cv.notify_all();
+        first.join();
+        return;
+    }
+
+    Mock().next_bleg_uuid = "channel-b";
+    std::thread second([&] {
+        auto r = mgr_.Attach(FakeSession(), {Purpose::kSttTranscribe, 0, 16000, "t", "e"});
+        second_ok.store(r.ok, std::memory_order_release);
+        if (r.ok) {
+            r.handle.release();
+        }
+        second_done.store(true, std::memory_order_release);
+    });
+
+    for (int i = 0; i < 100 && !second_done.load(std::memory_order_acquire); ++i) {
+        std::this_thread::sleep_for(10ms);
+    }
+    EXPECT_TRUE(second_done.load(std::memory_order_acquire))
+        << "attach on channel-b should not wait for channel-a FsMediaBugAdd";
+    EXPECT_TRUE(second_ok.load(std::memory_order_acquire));
+    EXPECT_FALSE(first_done.load(std::memory_order_acquire));
+
+    {
+        std::lock_guard<std::mutex> g(Mock().media_bug_add_block_mu);
+        Mock().media_bug_add_release = true;
+    }
+    Mock().media_bug_add_cv.notify_all();
+
+    first.join();
+    second.join();
+
+    mgr_.DetachAll("channel-a");
+    mgr_.DetachAll("channel-b");
 }
 
 // ---------------------------------------------------------------------------

@@ -43,6 +43,7 @@
 #include <cstdint>
 #include <memory>
 #include <regex>
+#include <source_location>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -61,6 +62,26 @@ enum class Level : int {
     kCritical = 5,
 };
 
+struct SourceLocation {
+    const char* file = "mod_open_switch";
+    const char* function = "osw_log_emit";
+    std::uint_least32_t line = 0;
+};
+
+struct FormatString {
+    const char* fmt;
+    SourceLocation location;
+
+    FormatString(const char* f,
+                 const std::source_location& loc = std::source_location::current()) noexcept
+        : fmt(f),
+          location(SourceLocation{
+              loc.file_name(),
+              loc.function_name(),
+              loc.line(),
+          }) {}
+};
+
 /// The function the wrapper forwards to. Default implementation in
 /// log.cc emits via switch_log_printf. Tests install their own sink
 /// via `SetSinkForTesting`.
@@ -75,7 +96,8 @@ enum class Level : int {
 using SinkFn = void (*)(Level level,
                         std::string_view subsystem,
                         std::string_view traceparent,
-                        std::string_view message) noexcept;
+                        std::string_view message,
+                        SourceLocation location) noexcept;
 
 /// Replace the global sink for testing. Returns the previous sink so
 /// tests can restore at tear-down. NOT thread-safe — tests are
@@ -134,6 +156,12 @@ class TraceScope {
 // Bare user data MUST go through "%s" — these are printf-style and
 // take any format string.
 
+void LogvAt(Level level,
+            SourceLocation location,
+            std::string_view subsystem,
+            const char* fmt,
+            std::va_list ap) noexcept;
+
 void Logv(Level level, std::string_view subsystem, const char* fmt, std::va_list ap) noexcept;
 
 void Logf(Level level, std::string_view subsystem, const char* fmt, ...) noexcept
@@ -141,14 +169,12 @@ void Logf(Level level, std::string_view subsystem, const char* fmt, ...) noexcep
 
 // Convenience wrappers — fixed level.
 
-#define OSW_LOG_DEFINE_LEVEL_FN(name, level_enum)                                 \
-    inline void name(std::string_view subsystem, const char* fmt, ...) noexcept   \
-        __attribute__((format(printf, 2, 3)));                                    \
-    inline void name(std::string_view subsystem, const char* fmt, ...) noexcept { \
-        std::va_list ap;                                                          \
-        va_start(ap, fmt);                                                        \
-        Logv(level_enum, subsystem, fmt, ap);                                     \
-        va_end(ap);                                                               \
+#define OSW_LOG_DEFINE_LEVEL_FN(name, level_enum)                                       \
+    inline void name(std::string_view subsystem, FormatString fmt_spec, ...) noexcept { \
+        std::va_list ap;                                                                \
+        va_start(ap, fmt_spec);                                                         \
+        LogvAt(level_enum, fmt_spec.location, subsystem, fmt_spec.fmt, ap);             \
+        va_end(ap);                                                                     \
     }
 
 OSW_LOG_DEFINE_LEVEL_FN(Trace, Level::kTrace)

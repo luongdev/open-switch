@@ -38,6 +38,7 @@ struct LogRecord {
     std::string subsystem;
     std::string traceparent;
     std::string message;
+    osw::log::SourceLocation location;
 };
 
 class TestSink {
@@ -53,13 +54,15 @@ class TestSink {
     static void Sink(osw::log::Level level,
                      std::string_view subsystem,
                      std::string_view traceparent,
-                     std::string_view message) noexcept {
+                     std::string_view message,
+                     osw::log::SourceLocation location) noexcept {
         std::lock_guard<std::mutex> lk(Mu());
         Records().push_back(LogRecord{
             level,
             std::string(subsystem),
             std::string(traceparent),
             std::string(message),
+            location,
         });
     }
     static void Clear() {
@@ -94,6 +97,16 @@ TEST_F(LogTest, LevelAndSubsystemPassThrough) {
     EXPECT_EQ(recs[1].level, osw::log::Level::kWarn);
     EXPECT_EQ(recs[1].subsystem, "evt");
     EXPECT_EQ(recs[1].message, "warn line");
+}
+
+TEST_F(LogTest, CapturesCallSiteLocation) {
+    const auto expected_line = __LINE__ + 1;
+    osw::log::Info("ctrl", "located");
+
+    auto& recs = TestSink::Records();
+    ASSERT_EQ(recs.size(), 1u);
+    EXPECT_NE(std::string(recs[0].location.file).find("log_test.cc"), std::string::npos);
+    EXPECT_EQ(recs[0].location.line, expected_line);
 }
 
 TEST_F(LogTest, TraceScopeIsThreadLocalAndNested) {

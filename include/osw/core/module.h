@@ -47,6 +47,7 @@ typedef struct switch_loadable_module_interface switch_loadable_module_interface
 namespace osw {
 
 namespace control {
+class ActiveBots;          // forward; defined in osw/control/active_bots.h
 class ActiveMediaStreams;  // forward; defined in osw/control/active_media_streams.h
 class GrpcServer;          // forward; defined in osw/control/server.h
 class IdempotencyCache;    // forward; defined in osw/control/idempotency_cache.h
@@ -54,7 +55,8 @@ class RpcMetrics;          // forward; defined in osw/control/rpc_metrics.h
 }  // namespace control
 
 namespace media {
-class MediaBugManager;  // forward; defined in osw/media/bug_manager.h
+class MediaBugManager;        // forward; defined in osw/media/bug_manager.h
+class SilenceDriverRegistry;  // forward; defined in osw/media/silence_driver.h
 }  // namespace media
 
 namespace events {
@@ -127,12 +129,16 @@ class Module {
     std::unique_ptr<control::IdempotencyCache> idempotency_cache_;
 
     // W6C media-plane subsystems. Construction order in Module::Load step 5.4:
-    //   1. bug_manager_         (MediaBugManager; CS_DESTROY handler registered here)
-    //   2. active_media_streams_ (per-stream BugHandle + StreamClient registry)
+    //   1. active_media_streams_ (per-stream BugHandle + StreamClient registry)
+    //   2. silence_driver_registry_ (W6.6 write-side parked-channel driver)
+    //   3. bug_manager_         (MediaBugManager; CS_DESTROY handler registered here)
     // Destruction order in Module::Shutdown step 7.5 (after gRPC server drained):
     //   active_media_streams_ first (TearDown calls client->Close(), then
-    //   bugs.clear() which calls bug_manager_->Detach), then bug_manager_.
+    //   bugs.clear() which calls bug_manager_->Detach), then silence registry,
+    //   then bug_manager_.
     std::unique_ptr<media::MediaBugManager> bug_manager_;
+    std::unique_ptr<media::SilenceDriverRegistry> silence_driver_registry_;
+    std::unique_ptr<control::ActiveBots> active_bots_;
     std::unique_ptr<control::ActiveMediaStreams> active_media_streams_;
 
     // W2 event-plane subsystems. Construction order in Module::Load:

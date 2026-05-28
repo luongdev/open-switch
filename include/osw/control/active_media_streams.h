@@ -81,6 +81,10 @@ class ActiveMediaStreams {
     /// alongside MediaBugManager::DetachAll). Idempotent.
     void RemoveForChannel(std::string_view channel_uuid) noexcept;
 
+    /// Remove write-replace playback streams for a channel before attaching a
+    /// new speaker-side media bug. Leaves read-only STT streams untouched.
+    std::size_t RemoveWriteReplaceForChannel(std::string_view channel_uuid) noexcept;
+
     [[nodiscard]] std::size_t Size() const noexcept;
 
   private:

@@ -116,11 +116,19 @@ grpc::Status HandleStartTts(grpc::ServerContext* /*ctx*/,
     if (!sg.Valid()) {
         return grpc::Status(grpc::StatusCode::NOT_FOUND, "channel not found");
     }
+    const std::size_t replaced = streams->RemoveWriteReplaceForChannel(req->channel_uuid());
+    if (replaced > 0) {
+        osw::log::Info(kSubsystem,
+                       "StartTts: removed %zu prior write-replace stream(s) on channel=%s",
+                       replaced,
+                       req->channel_uuid().c_str());
+    }
 
     // Build TtsPlayoutBuffer.
     const auto& ov = req->buffer_override();
     const std::uint32_t jitter_ms = ResolveBufferMs(ov, config);
     const std::uint32_t preroll_ms = ResolvePrerollMs(ov, config, jitter_ms);
+    const std::string stream_id = osw::events::GenerateUuidV7();
 
     osw::media::TtsPlayoutBuffer::Config buf_cfg;
     buf_cfg.target_ms = std::chrono::milliseconds(jitter_ms);
@@ -133,6 +141,7 @@ grpc::Status HandleStartTts(grpc::ServerContext* /*ctx*/,
 
     auto buffer = std::make_unique<osw::media::TtsPlayoutBuffer>(buf_cfg);
     auto* buf_raw = buffer.get();
+    buffer->SetStreamId(stream_id);
 
     // Build StreamClient. on_audio callback pushes into the jitter buffer.
     const std::string tenant_id = req->has_header() ? req->header().tenant_id() : std::string{};
@@ -145,12 +154,18 @@ grpc::Status HandleStartTts(grpc::ServerContext* /*ctx*/,
     sc.channels = 1;
     sc.codec = open_switch::media::v1::AudioCodec::PCM_S16LE;
     sc.start_message = req->start_message();
+    sc.half_close_writes_after_start = true;
     for (const auto& [k, v] : req->variables()) {
         sc.variables[k] = v;
     }
 
     osw::media::StreamCallbacks cbs;
     cbs.on_audio = [buf_raw](osw::media::AudioFrame f) noexcept { buf_raw->Push(std::move(f)); };
+    cbs.on_done = [buf_raw](grpc::Status /*status*/) noexcept {
+        if (buf_raw) {
+            buf_raw->SignalEndOfStream();
+        }
+    };
 
     auto channel =
         grpc::CreateChannel(req->upstream_endpoint(), grpc::InsecureChannelCredentials());
@@ -194,9 +209,7 @@ grpc::Status HandleStartTts(grpc::ServerContext* /*ctx*/,
     bug_mgr->SetBugCallback(
         bug_id, reinterpret_cast<void*>(OswStreamingWriteReplace), write_ctx.get());
 
-    // Mint stream_id and register.
-    const std::string stream_id = osw::events::GenerateUuidV7();
-    buffer->SetStreamId(stream_id);
+    // Register.
     buffer->SetTenantId(tenant_id);
 
     auto stream = std::make_unique<osw::control::ActiveMediaStream>();
@@ -244,11 +257,15 @@ grpc::Status osw::control::ControlServiceSkeleton::StartTts(
     grpc::ServerContext* ctx,
     const open_switch::control::v1::StartTtsRequest* req,
     open_switch::control::v1::StartTtsResponse* resp) {
+    const osw::Config* config = config_.load(std::memory_order_acquire);
+    if (!config) {
+        return grpc::Status(grpc::StatusCode::UNAVAILABLE, "media config not initialised");
+    }
     return osw::control::handlers::HandleStartTts(
         ctx,
         req,
         resp,
         bug_mgr_.load(std::memory_order_acquire),
         active_media_streams_.load(std::memory_order_acquire),
-        *config_);
+        *config);
 }

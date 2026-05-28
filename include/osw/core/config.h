@@ -139,13 +139,13 @@ struct Config {
 
     /// Pre-roll: the playback waits until the buffer accumulates at
     /// least this many ms before emitting the first non-silence frame.
-    /// Validate() clamps to [50, tts_jitter_buffer_ms]. Default 500.
-    std::uint32_t tts_preroll_ms = 500;
+    /// Validate() clamps to [50, tts_jitter_buffer_ms]. Default 200.
+    std::uint32_t tts_preroll_ms = 200;
 
     /// High-water: when buffer depth exceeds this, the producer drops
     /// the OLDEST queued frame on each Push. Validate() clamps to
-    /// [tts_jitter_buffer_ms, tts_max_jitter_buffer_ms]. Default 1500.
-    std::uint32_t tts_high_water_ms = 1500;
+    /// [tts_jitter_buffer_ms, tts_max_jitter_buffer_ms]. Default 3000.
+    std::uint32_t tts_high_water_ms = 3000;
 
     /// Hard cap on per-call jitter buffer override. Validate() clamps
     /// tts_jitter_buffer_ms to <= this and rejects per-call overrides
@@ -155,6 +155,25 @@ struct Config {
     /// Underrun policy: "silence" (default - clean for speech) or
     /// "repeat_last" (copies last 20 ms frame; better for music).
     std::string tts_underrun_policy = "silence";
+
+    // --- Media (W6.6) ----------------------------------------------------
+    /// Enable module-owned silence_stream://-1 driver threads for parked
+    /// WRITE_REPLACE channels that have no other write-side source.
+    bool silence_driver_enabled = true;
+
+    /// Hard cap on simultaneous silence driver threads.
+    std::uint32_t max_silence_drivers = 200;
+
+    // --- Bot media facade (W7 Track D) -----------------------------------
+    /// Max number of target channels per StartBot call. V1 demo scope is 2.
+    std::uint32_t bot_max_targets = 2;
+    /// Per-target fanout queue capacity in milliseconds. Used by the W7
+    /// BugFanout path; retained in config while StartBot facade lands.
+    std::uint32_t bot_target_queue_ms = 500;
+    /// StopBot drain timeout in milliseconds.
+    std::uint32_t bot_drain_timeout_ms = 2000;
+    /// Hard cap on simultaneous logical bots per channel.
+    std::uint32_t max_bots_per_channel = 1;
 };
 
 /// Validates the config. Returns Ok() or Fail(detail).

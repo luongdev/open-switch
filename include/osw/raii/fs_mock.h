@@ -41,12 +41,14 @@
 #endif
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <ctime>
 #include <functional>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // --- FreeSWITCH types (opaque forward decls) -------------------------
@@ -191,12 +193,16 @@ constexpr switch_call_cause_t SWITCH_CAUSE_INVALID_IDENTITY = 823;
 constexpr switch_call_cause_t SWITCH_CAUSE_STALE_DATE = 824;
 constexpr switch_call_cause_t SWITCH_CAUSE_REJECT_ALL = 825;
 
-// switch_channel_flag_t (switch_types.h:1473). Only the two flags used
-// by the W3C handlers are declared here. CF_ANSWERED = 1, CF_HOLD is the
-// value from v1.10.12 enum (exact numeric value matches the real header).
+// switch_channel_flag_t (switch_types.h:1473). The mock treats these as
+// bit flags because tests set Mock().next_channel_flags as a bitmask.
+// Exact production enum values are not needed in the mock; distinct bits
+// are enough for ChannelTestFlag assertions.
 using switch_channel_flag_t = int;
 constexpr switch_channel_flag_t CF_ANSWERED = 1;
 constexpr switch_channel_flag_t CF_HOLD = 4;
+constexpr switch_channel_flag_t CF_BROADCAST = 8;
+constexpr switch_channel_flag_t CF_BRIDGED = 16;
+constexpr switch_channel_flag_t CF_BREAK = 32;
 
 // switch_originate_flag_t (switch_types.h:330). SOF_NONE = 0 is all
 // we need in tests.
@@ -230,6 +236,14 @@ constexpr switch_media_bug_flag_t SMBF_WRITE_REPLACE = (1u << 2);
 constexpr switch_media_bug_flag_t SMBF_READ_REPLACE = (1u << 3);
 constexpr switch_media_bug_flag_t SMBF_FIRST = (1u << 26);
 
+using switch_media_flag_t = int;
+constexpr switch_media_flag_t SMF_NONE = 0;
+constexpr switch_media_flag_t SMF_ECHO_ALEG = (1 << 1);
+constexpr switch_media_flag_t SMF_ECHO_BLEG = (1 << 2);
+constexpr switch_media_flag_t SMF_FORCE = (1 << 3);
+constexpr switch_media_flag_t SMF_LOOP = (1 << 4);
+constexpr switch_media_flag_t SMF_PRIORITY = (1 << 8);
+
 // FF-018 callback typedef. The mock never invokes one — tests that exercise
 // the bind path simply assert on captured registrations.
 using switch_event_callback_t = void (*)(switch_event_t*);
@@ -261,6 +275,11 @@ struct MockState {
     std::atomic<int> event_unbind_calls{0};
     std::atomic<int> media_bug_add_calls{0};
     std::atomic<int> media_bug_remove_calls{0};
+    std::mutex media_bug_add_block_mu;
+    std::condition_variable media_bug_add_cv;
+    int media_bug_add_block_remaining = 0;
+    int media_bug_add_waiting = 0;
+    bool media_bug_add_release = false;
     std::atomic<int> xml_open_cfg_calls{0};
     std::atomic<int> xml_free_calls{0};
     // W3 control-plane counters (FF-021 + FF-022).
@@ -268,9 +287,14 @@ struct MockState {
     std::atomic<int> channel_hangup_calls{0};
     // W3 Track C — SetVariables / Hold / Unhold (FF-026..027).
     std::atomic<int> channel_set_variable_calls{0};
+    std::atomic<int> channel_get_variable_calls{0};
     std::atomic<int> channel_test_flag_calls{0};
+    std::atomic<int> channel_set_flag_calls{0};
     std::atomic<int> hold_uuid_calls{0};
     std::atomic<int> unhold_uuid_calls{0};
+    // W6.6 silence driver.
+    std::atomic<int> ivr_play_file_calls{0};
+    std::atomic<int> ivr_broadcast_calls{0};
 
     // Programmable return values for the next call. Set to non-default
     // to drive failure paths.
@@ -296,6 +320,12 @@ struct MockState {
     switch_status_t next_set_variable_status = SWITCH_STATUS_SUCCESS;
     // channel_test_flag returns a bitmask; the test sets flags it wants active.
     uint32_t next_channel_flags = 0;
+    std::unordered_map<std::string, std::string> next_channel_variables;
+    switch_status_t next_ivr_play_file_status = SWITCH_STATUS_SUCCESS;
+    switch_status_t next_ivr_broadcast_status = SWITCH_STATUS_SUCCESS;
+    bool ivr_play_file_block_until_break = true;
+    bool channel_break_set = false;
+    std::condition_variable play_file_cv;
     switch_status_t next_hold_uuid_status = SWITCH_STATUS_SUCCESS;
     switch_status_t next_unhold_uuid_status = SWITCH_STATUS_SUCCESS;
 
@@ -364,6 +394,25 @@ struct MockState {
         std::string value;
     };
     std::vector<CapturedSetVariable> set_variable_invocations;
+
+    struct CapturedSetFlag {
+        switch_channel_t* channel = nullptr;
+        switch_channel_flag_t flag = 0;
+    };
+    std::vector<CapturedSetFlag> set_flag_invocations;
+
+    struct CapturedIvrPlayFile {
+        switch_core_session_t* session = nullptr;
+        std::string file;
+    };
+    std::vector<CapturedIvrPlayFile> ivr_play_file_invocations;
+
+    struct CapturedIvrBroadcast {
+        std::string uuid;
+        std::string path;
+        switch_media_flag_t flags = SMF_NONE;
+    };
+    std::vector<CapturedIvrBroadcast> ivr_broadcast_invocations;
 
     struct CapturedHoldUuid {
         std::string uuid;
@@ -456,6 +505,13 @@ inline void MockReset() {
     m.event_unbind_calls = 0;
     m.media_bug_add_calls = 0;
     m.media_bug_remove_calls = 0;
+    {
+        std::lock_guard<std::mutex> g(m.media_bug_add_block_mu);
+        m.media_bug_add_block_remaining = 0;
+        m.media_bug_add_waiting = 0;
+        m.media_bug_add_release = false;
+    }
+    m.media_bug_add_cv.notify_all();
     m.xml_open_cfg_calls = 0;
     m.xml_free_calls = 0;
     m.next_session = nullptr;
@@ -487,11 +543,19 @@ inline void MockReset() {
     m.next_channel_get_state = CS_EXECUTE;
     // W3 Track C resets — SetVariables / Hold / Unhold (FF-026..027).
     m.channel_set_variable_calls = 0;
+    m.channel_get_variable_calls = 0;
     m.channel_test_flag_calls = 0;
+    m.channel_set_flag_calls = 0;
     m.hold_uuid_calls = 0;
     m.unhold_uuid_calls = 0;
+    m.ivr_play_file_calls = 0;
+    m.ivr_broadcast_calls = 0;
     m.next_set_variable_status = SWITCH_STATUS_SUCCESS;
     m.next_channel_flags = 0;
+    m.next_ivr_play_file_status = SWITCH_STATUS_SUCCESS;
+    m.next_ivr_broadcast_status = SWITCH_STATUS_SUCCESS;
+    m.ivr_play_file_block_until_break = true;
+    m.channel_break_set = false;
     m.next_hold_uuid_status = SWITCH_STATUS_SUCCESS;
     m.next_unhold_uuid_status = SWITCH_STATUS_SUCCESS;
     {
@@ -506,6 +570,10 @@ inline void MockReset() {
         m.session_transfer_invocations.clear();
         // W3 Track C.
         m.set_variable_invocations.clear();
+        m.next_channel_variables.clear();
+        m.set_flag_invocations.clear();
+        m.ivr_play_file_invocations.clear();
+        m.ivr_broadcast_invocations.clear();
         m.hold_uuid_invocations.clear();
         m.unhold_uuid_invocations.clear();
         // W6A.
@@ -714,6 +782,15 @@ inline switch_status_t MediaBugAdd(switch_core_session_t* session,
         cap.user_data = user_data;
         cap.flags = flags;
         m.media_bug_add_invocations.push_back(std::move(cap));
+    }
+    {
+        std::unique_lock<std::mutex> g(m.media_bug_add_block_mu);
+        if (m.media_bug_add_block_remaining > 0) {
+            --m.media_bug_add_block_remaining;
+            ++m.media_bug_add_waiting;
+            m.media_bug_add_cv.notify_all();
+            m.media_bug_add_cv.wait(g, [&m] { return m.media_bug_add_release; });
+        }
     }
     if (m.next_bug_add_status == SWITCH_STATUS_SUCCESS) {
         *bug_out = m.next_bug;
@@ -948,6 +1025,19 @@ inline switch_status_t ChannelSetVariable(switch_channel_t* channel,
     return m.next_set_variable_status;
 }
 
+inline const char* ChannelGetVariable(switch_channel_t* /*channel*/, const char* name) noexcept {
+    auto& m = Mock();
+    m.channel_get_variable_calls.fetch_add(1, std::memory_order_relaxed);
+    if (!name) {
+        return nullptr;
+    }
+    auto it = m.next_channel_variables.find(name);
+    if (it == m.next_channel_variables.end()) {
+        return nullptr;
+    }
+    return it->second.c_str();
+}
+
 // --- switch_channel_test_flag wrapper (FF-027) -----------------------
 //
 // Returns the bit of next_channel_flags that corresponds to `flag`.
@@ -958,6 +1048,66 @@ inline uint32_t ChannelTestFlag(switch_channel_t* /*channel*/,
     auto& m = Mock();
     m.channel_test_flag_calls.fetch_add(1, std::memory_order_relaxed);
     return m.next_channel_flags & static_cast<uint32_t>(flag);
+}
+
+// --- switch_channel_set_flag wrapper (FF-037) ------------------------
+//
+// Records flag writes. Setting CF_BREAK wakes any mock IvrPlayFile call
+// that is blocking on ivr_play_file_block_until_break.
+
+inline void ChannelSetFlag(switch_channel_t* channel, switch_channel_flag_t flag) noexcept {
+    auto& m = Mock();
+    m.channel_set_flag_calls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        MockState::CapturedSetFlag cap;
+        cap.channel = channel;
+        cap.flag = flag;
+        m.set_flag_invocations.push_back(cap);
+        if (flag == CF_BREAK) {
+            m.channel_break_set = true;
+        }
+    }
+    if (flag == CF_BREAK) {
+        m.play_file_cv.notify_all();
+    }
+}
+
+// --- switch_ivr_play_file wrapper (FF-037) ---------------------------
+//
+// Records the file and, by default, blocks until CF_BREAK is set via
+// ChannelSetFlag. This models the silence_stream://-1 lifetime closely
+// enough for registry start/stop unit tests without a real FS runtime.
+
+inline switch_status_t IvrPlayFile(switch_core_session_t* session, const char* file) noexcept {
+    auto& m = Mock();
+    m.ivr_play_file_calls.fetch_add(1, std::memory_order_relaxed);
+    std::unique_lock<std::mutex> lk(m.capture_mu);
+    MockState::CapturedIvrPlayFile cap;
+    cap.session = session;
+    cap.file = file ? file : "";
+    m.ivr_play_file_invocations.push_back(std::move(cap));
+    m.play_file_cv.notify_all();
+    if (m.ivr_play_file_block_until_break) {
+        m.play_file_cv.wait(lk, [&m]() { return m.channel_break_set; });
+    }
+    return m.next_ivr_play_file_status;
+}
+
+inline switch_status_t IvrBroadcast(const char* uuid,
+                                    const char* path,
+                                    switch_media_flag_t flags) noexcept {
+    auto& m = Mock();
+    m.ivr_broadcast_calls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        MockState::CapturedIvrBroadcast cap;
+        cap.uuid = uuid ? uuid : "";
+        cap.path = path ? path : "";
+        cap.flags = flags;
+        m.ivr_broadcast_invocations.push_back(std::move(cap));
+    }
+    return m.next_ivr_broadcast_status;
 }
 
 // --- switch_ivr_hold_uuid wrapper (FF-027) ---------------------------

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<include>
+  <context name="default">
+    <extension name="osw_e2e_park">
+      <condition field="destination_number" expression="^(9999|osw-e2e)$">
+        <action application="answer"/>
+        <action application="playback" data="silence_stream://-1"/>
+      </condition>
+    </extension>
+
+    <extension name="osw_echo">
+      <condition field="destination_number" expression="^9196$">
+        <action application="answer"/>
+        <action application="echo"/>
+      </condition>
+    </extension>
+  </context>
+</include>

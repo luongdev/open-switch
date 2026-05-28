@@ -16,6 +16,7 @@
 
 #include "open_switch/control/v1/control.pb.h"
 
+#include "osw/control/active_bots.h"
 #include "osw/control/active_media_streams.h"
 #include "osw/control/idempotency_cache.h"
 #include "osw/core/config.h"
@@ -114,6 +115,10 @@ void ControlServiceSkeleton::SetMediaBugManager(osw::media::MediaBugManager* mgr
 void ControlServiceSkeleton::SetActiveMediaStreams(
     osw::control::ActiveMediaStreams* streams) noexcept {
     active_media_streams_.store(streams, std::memory_order_release);
+}
+
+void ControlServiceSkeleton::SetActiveBots(osw::control::ActiveBots* bots) noexcept {
+    active_bots_.store(bots, std::memory_order_release);
 }
 
 void ControlServiceSkeleton::SetConfig(const osw::Config* config) noexcept {

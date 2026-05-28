@@ -184,11 +184,15 @@ grpc::Status osw::control::ControlServiceSkeleton::StartStt(
     grpc::ServerContext* ctx,
     const open_switch::control::v1::StartSttRequest* req,
     open_switch::control::v1::StartSttResponse* resp) {
+    const osw::Config* config = config_.load(std::memory_order_acquire);
+    if (!config) {
+        return grpc::Status(grpc::StatusCode::UNAVAILABLE, "media config not initialised");
+    }
     return osw::control::handlers::HandleStartStt(
         ctx,
         req,
         resp,
         bug_mgr_.load(std::memory_order_acquire),
         active_media_streams_.load(std::memory_order_acquire),
-        *config_);
+        *config);
 }

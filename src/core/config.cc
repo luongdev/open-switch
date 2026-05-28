@@ -140,6 +140,23 @@ ConfigValidation Validate(const Config& cfg) {
         }
     }
 
+    // --- Media (W6.6) -- silence driver ---------------------------------
+    if (cfg.max_silence_drivers < 1 || cfg.max_silence_drivers > 5000) {
+        return ConfigValidation::Fail("max_silence_drivers must be in [1, 5000]");
+    }
+    if (cfg.bot_max_targets < 1 || cfg.bot_max_targets > 8) {
+        return ConfigValidation::Fail("bot_max_targets must be in [1, 8]");
+    }
+    if (cfg.bot_target_queue_ms < 50 || cfg.bot_target_queue_ms > 5000) {
+        return ConfigValidation::Fail("bot_target_queue_ms must be in [50, 5000]");
+    }
+    if (cfg.bot_drain_timeout_ms < 100 || cfg.bot_drain_timeout_ms > 10000) {
+        return ConfigValidation::Fail("bot_drain_timeout_ms must be in [100, 10000]");
+    }
+    if (cfg.max_bots_per_channel < 1 || cfg.max_bots_per_channel > 4) {
+        return ConfigValidation::Fail("max_bots_per_channel must be in [1, 4]");
+    }
+
     return ConfigValidation::Ok();
 }
 

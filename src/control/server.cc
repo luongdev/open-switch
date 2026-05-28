@@ -19,6 +19,7 @@
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/server_builder.h>
 
+#include "osw/control/active_bots.h"
 #include "osw/control/active_media_streams.h"
 #include "osw/control/idempotency_cache.h"
 #include "osw/control/rpc_metrics.h"
@@ -111,6 +112,9 @@ bool GrpcServer::Start(const Config& config) {
     }
     if (pending_streams_) {
         service_->SetActiveMediaStreams(pending_streams_);
+    }
+    if (pending_bots_) {
+        service_->SetActiveBots(pending_bots_);
     }
     if (pending_media_cfg_) {
         service_->SetConfig(pending_media_cfg_);
@@ -251,6 +255,13 @@ void GrpcServer::SetActiveMediaStreams(osw::control::ActiveMediaStreams* streams
     pending_streams_ = streams;
     if (service_) {
         service_->SetActiveMediaStreams(streams);
+    }
+}
+
+void GrpcServer::SetActiveBots(osw::control::ActiveBots* bots) noexcept {
+    pending_bots_ = bots;
+    if (service_) {
+        service_->SetActiveBots(bots);
     }
 }
 

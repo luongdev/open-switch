@@ -31,6 +31,8 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <string>
+#include <vector>
 
 #include "osw/media/audio_frame.h"
 
@@ -55,7 +57,7 @@ class TtsPlayoutBuffer {
     };
 
     explicit TtsPlayoutBuffer(Config cfg) noexcept;
-    ~TtsPlayoutBuffer() noexcept = default;
+    ~TtsPlayoutBuffer() noexcept;
 
     TtsPlayoutBuffer(const TtsPlayoutBuffer&) = delete;
     TtsPlayoutBuffer& operator=(const TtsPlayoutBuffer&) = delete;
@@ -70,8 +72,10 @@ class TtsPlayoutBuffer {
     void Push(AudioFrame frame) noexcept;
 
     /// Consumer (FS write_replace bug callback, on the FS media thread).
-    /// Writes up to out_cap_samples of L16 into out; returns the
-    /// number of samples actually written. Behaviour:
+    /// Writes one stable replacement frame of L16 into out and returns the
+    /// number of samples written. Except for empty-buffer EOS, Pop() fills
+    /// out_cap_samples by draining across queued frames and padding with the
+    /// underrun policy if the queue runs dry. Behaviour:
     ///   - Pre-roll not yet reached AND not end-of-stream: write silence
     ///     (zeros), return count. Do NOT signal underrun (we're priming).
     ///   - Buffer has at least one frame: pop oldest, copy samples.
@@ -115,6 +119,10 @@ class TtsPlayoutBuffer {
     // Last frame emitted (for kRepeatLast policy). Protected by mu_.
     AudioFrame last_frame_;
     bool has_last_frame_ = false;
+    bool first_push_logged_ = false;
+    bool first_pop_logged_ = false;
+    bool first_preroll_silence_logged_ = false;
+    bool first_underrun_logged_ = false;
 
     // Atomics for snapshot readers (Prometheus, Health) — no mu_ needed.
     std::atomic<bool> preroll_reached_{false};
@@ -144,6 +152,19 @@ class TtsPlayoutBuffer {
     void RecomputeDepth() noexcept;
     void EmitUnderrunEvent(std::uint32_t samples_silenced, std::uint64_t depth_ms) noexcept;
     void EmitOverrunEvent(std::uint64_t frames_dropped, std::uint64_t depth_ms) noexcept;
+    void InitDebugDumpLocked() noexcept;
+    void DebugCaptureSamples(std::vector<std::int16_t>& dst,
+                             const std::int16_t* samples,
+                             std::uint32_t sample_count) noexcept;
+    void DebugFlushDumpsLocked() noexcept;
+
+    bool debug_audio_enabled_ = false;
+    bool debug_audio_checked_ = false;
+    bool debug_audio_flushed_ = false;
+    std::size_t debug_audio_max_samples_ = 0;
+    std::string debug_audio_dir_;
+    std::vector<std::int16_t> debug_push_samples_;
+    std::vector<std::int16_t> debug_pop_samples_;
 };
 
 }  // namespace osw::media

@@ -351,6 +351,13 @@ inline switch_status_t ChannelSetVariable(switch_channel_t* channel,
     return switch_channel_set_variable(channel, name, value);
 }
 
+inline const char* ChannelGetVariable(switch_channel_t* channel, const char* name) noexcept {
+    if (!channel || !name) {
+        return nullptr;
+    }
+    return switch_channel_get_variable(channel, name);
+}
+
 // --- switch_channel_test_flag (FF-027) --------------------------------
 //
 // FF-027: switch_channel_test_flag returns non-zero if `flag` is set.
@@ -362,6 +369,20 @@ inline switch_status_t ChannelSetVariable(switch_channel_t* channel,
 
 inline uint32_t ChannelTestFlag(switch_channel_t* channel, switch_channel_flag_t flag) noexcept {
     return switch_channel_test_flag(channel, flag);
+}
+
+// --- switch_channel_set_flag (FF-037) --------------------------------
+//
+// FF-037: CF_BREAK asks blocking IVR media loops such as
+// switch_ivr_play_file to break promptly at their next tick. The
+// silence-driver hotfix uses this to stop the module-owned
+// silence_stream://-1 driver when the last WRITE_REPLACE bug detaches.
+// Caller MUST hold the session read-lock (FF-016).
+
+inline void ChannelSetFlag(switch_channel_t* channel, switch_channel_flag_t flag) noexcept {
+    if (channel) {
+        switch_channel_set_flag(channel, flag);
+    }
 }
 
 // --- switch_ivr_hold_uuid (FF-027) ------------------------------------
@@ -382,6 +403,30 @@ inline switch_status_t HoldUuid(const char* uuid, const char* message, switch_bo
 
 inline switch_status_t UnholdUuid(const char* uuid) noexcept {
     return switch_ivr_unhold_uuid(uuid);
+}
+
+// --- switch_ivr_play_file (FF-037) ------------------------------------
+//
+// Drives a session's write side by playing an IVR media source. Used by
+// W6.6 to play "silence_stream://-1" until CF_BREAK is set. The wrapper
+// owns the zeroed switch_input_args_t so callers do not need to expose
+// FS-only struct details in their public headers or mock tests.
+
+inline switch_status_t IvrPlayFile(switch_core_session_t* session, const char* file) noexcept {
+    switch_input_args_t args{};
+    return switch_ivr_play_file(session, nullptr, file, &args);
+}
+
+// --- switch_ivr_broadcast ---------------------------------------------
+//
+// Queues media onto the channel's native media thread. Used by W6.6 to
+// drive parked WRITE_REPLACE channels without calling switch_ivr_play_file
+// from a module-owned background thread.
+
+inline switch_status_t IvrBroadcast(const char* uuid,
+                                    const char* path,
+                                    switch_media_flag_t flags) noexcept {
+    return switch_ivr_broadcast(uuid, path, flags);
 }
 
 // --- W6C media bug frame access (switch_core.h:322/336/342) -------------

@@ -126,6 +126,17 @@ grpc::Status StreamClient::Open(int open_deadline_ms) noexcept {
                                          "first server message was not StreamReady"));
                 return;
             }
+            if (config_.half_close_writes_after_start) {
+                {
+                    std::lock_guard<std::mutex> lock(ring_mu_);
+                    ring_closed_ = true;
+                }
+                stream_->WritesDone();
+                {
+                    std::lock_guard<std::mutex> lock(mu_);
+                    writes_done_ = true;
+                }
+            }
             p.set_value(grpc::Status::OK);
         });
 
@@ -169,8 +180,12 @@ grpc::Status StreamClient::Open(int open_deadline_ms) noexcept {
         open_ = true;
     }
 
-    reader_thread_ = std::thread(&StreamClient::ReaderLoop, this);
-    writer_thread_ = std::thread(&StreamClient::WriterLoop, this);
+    if (config_.half_close_writes_after_start) {
+        reader_thread_ = std::thread(&StreamClient::ReaderLoop, this);
+    } else {
+        reader_thread_ = std::thread(&StreamClient::ReaderLoop, this);
+        writer_thread_ = std::thread(&StreamClient::WriterLoop, this);
+    }
 
     return grpc::Status::OK;
 }
@@ -265,7 +280,11 @@ grpc::Status StreamClient::Close() noexcept {
 
     // Half-close the send side: tell the server we are done sending.
     if (stream_) {
-        stream_->WritesDone();
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!writes_done_) {
+            stream_->WritesDone();
+            writes_done_ = true;
+        }
     }
 
     // W6.5 P1-006 fix: bounded drain on the reader thread.
@@ -391,6 +410,16 @@ void StreamClient::ReaderLoop() noexcept {
                     auto frame = AudioFrame::FromProto(
                         msg.audio(), agreed_sample_rate_hz_, agreed_channels_);
                     if (frame.has_value()) {
+                        bool expected = false;
+                        if (first_rx_audio_logged_.compare_exchange_strong(
+                                expected, true, std::memory_order_relaxed)) {
+                            osw::log::Info("media",
+                                           "StreamClient::ReaderLoop: first audio "
+                                           "seq=%llu duration_samples=%u bytes=%zu",
+                                           static_cast<unsigned long long>(msg.audio().seq()),
+                                           msg.audio().duration_samples(),
+                                           msg.audio().payload().size());
+                        }
                         callbacks_.on_audio(std::move(*frame));
                     } else {
                         osw::log::Warn("media",
@@ -446,10 +475,16 @@ void StreamClient::ReaderLoop() noexcept {
         final_status_ = status;
     }
 
-    osw::log::Info("media",
-                   "StreamClient::ReaderLoop: stream finished; code=%d message=%s",
-                   static_cast<int>(status.error_code()),
-                   status.error_message().c_str());
+    if (status.error_message().empty()) {
+        osw::log::Info("media",
+                       "StreamClient::ReaderLoop: stream finished; code=%d",
+                       static_cast<int>(status.error_code()));
+    } else {
+        osw::log::Info("media",
+                       "StreamClient::ReaderLoop: stream finished; code=%d message=%s",
+                       static_cast<int>(status.error_code()),
+                       status.error_message().c_str());
+    }
 
     if (callbacks_.on_done) {
         callbacks_.on_done(status);

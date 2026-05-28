@@ -40,6 +40,7 @@ class MediaBugManager;
 
 namespace control {
 
+class ActiveBots;
 class ActiveMediaStreams;
 class IdempotencyCache;  // forward; defined in osw/control/idempotency_cache.h
 
@@ -73,6 +74,7 @@ class ControlServiceSkeleton final : public open_switch::control::v1::ControlSer
     /// outlive the gRPC server's RPC threads.
     void SetMediaBugManager(osw::media::MediaBugManager* mgr) noexcept;
     void SetActiveMediaStreams(osw::control::ActiveMediaStreams* streams) noexcept;
+    void SetActiveBots(osw::control::ActiveBots* bots) noexcept;
     void SetConfig(const osw::Config* config) noexcept;
 
     /// Inject the W2 event-plane bridges. Called by Module::Load after
@@ -173,6 +175,14 @@ class ControlServiceSkeleton final : public open_switch::control::v1::ControlSer
                                  const open_switch::control::v1::StopMediaStreamRequest* req,
                                  open_switch::control::v1::StopMediaStreamResponse* resp) override;
 
+    grpc::Status StartBot(grpc::ServerContext* ctx,
+                          const open_switch::control::v1::StartBotRequest* req,
+                          open_switch::control::v1::StartBotResponse* resp) override;
+
+    grpc::Status StopBot(grpc::ServerContext* ctx,
+                         const open_switch::control::v1::StopBotRequest* req,
+                         open_switch::control::v1::StopBotResponse* resp) override;
+
   private:
     osw::Health* health_;
     std::string module_version_;
@@ -203,6 +213,7 @@ class ControlServiceSkeleton final : public open_switch::control::v1::ControlSer
     // atomic<> for the same happens-before reason as broadcaster_ (C-3).
     std::atomic<osw::media::MediaBugManager*> bug_mgr_{nullptr};
     std::atomic<osw::control::ActiveMediaStreams*> active_media_streams_{nullptr};
+    std::atomic<osw::control::ActiveBots*> active_bots_{nullptr};
     std::atomic<const osw::Config*> config_{nullptr};
 };
 

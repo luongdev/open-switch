@@ -121,8 +121,16 @@ grpc::Status HandleStartVoicebot(grpc::ServerContext* /*ctx*/,
     if (!sg.Valid()) {
         return grpc::Status(grpc::StatusCode::NOT_FOUND, "channel not found");
     }
+    const std::size_t replaced = streams->RemoveWriteReplaceForChannel(req->channel_uuid());
+    if (replaced > 0) {
+        osw::log::Info(kSubsystem,
+                       "StartVoicebot: removed %zu prior write-replace stream(s) on channel=%s",
+                       replaced,
+                       req->channel_uuid().c_str());
+    }
 
     const std::string tenant_id = req->has_header() ? req->header().tenant_id() : std::string{};
+    const std::string stream_id = osw::events::GenerateUuidV7();
 
     // -----------------------------------------------------------------------
     // Build TtsPlayoutBuffer for the write (bot→caller) side.
@@ -142,6 +150,7 @@ grpc::Status HandleStartVoicebot(grpc::ServerContext* /*ctx*/,
 
     auto buffer = std::make_unique<osw::media::TtsPlayoutBuffer>(buf_cfg);
     auto* buf_raw = buffer.get();
+    buffer->SetStreamId(stream_id);
 
     // -----------------------------------------------------------------------
     // Build StreamClient — bidi stream carries mic audio up and TTS audio
@@ -161,6 +170,11 @@ grpc::Status HandleStartVoicebot(grpc::ServerContext* /*ctx*/,
 
     osw::media::StreamCallbacks cbs;
     cbs.on_audio = [buf_raw](osw::media::AudioFrame f) noexcept { buf_raw->Push(std::move(f)); };
+    cbs.on_done = [buf_raw](grpc::Status /*status*/) noexcept {
+        if (buf_raw) {
+            buf_raw->SignalEndOfStream();
+        }
+    };
 
     auto channel =
         grpc::CreateChannel(req->upstream_endpoint(), grpc::InsecureChannelCredentials());
@@ -231,10 +245,8 @@ grpc::Status HandleStartVoicebot(grpc::ServerContext* /*ctx*/,
         write_bug_id, reinterpret_cast<void*>(OswStreamingWriteReplace), write_ctx.get());
 
     // -----------------------------------------------------------------------
-    // Mint stream_id and register.
+    // Register.
     // -----------------------------------------------------------------------
-    const std::string stream_id = osw::events::GenerateUuidV7();
-    buffer->SetStreamId(stream_id);
     buffer->SetTenantId(tenant_id);
 
     auto stream = std::make_unique<osw::control::ActiveMediaStream>();
@@ -280,11 +292,15 @@ grpc::Status osw::control::ControlServiceSkeleton::StartVoicebot(
     grpc::ServerContext* ctx,
     const open_switch::control::v1::StartVoicebotRequest* req,
     open_switch::control::v1::StartVoicebotResponse* resp) {
+    const osw::Config* config = config_.load(std::memory_order_acquire);
+    if (!config) {
+        return grpc::Status(grpc::StatusCode::UNAVAILABLE, "media config not initialised");
+    }
     return osw::control::handlers::HandleStartVoicebot(
         ctx,
         req,
         resp,
         bug_mgr_.load(std::memory_order_acquire),
         active_media_streams_.load(std::memory_order_acquire),
-        *config_);
+        *config);
 }
