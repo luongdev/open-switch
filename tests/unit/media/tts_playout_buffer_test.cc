@@ -100,6 +100,30 @@ TEST(TtsPlayoutBufferTest, PrerollReachedStaysTrue) {
     EXPECT_TRUE(buf.PrerollReached());
 }
 
+TEST(TtsPlayoutBufferTest, FirstPushAndFirstAudioPopStateTransitions) {
+    auto buf = MakeBuffer(40);  // 2-frame preroll
+    EXPECT_FALSE(buf.FirstPushObserved());
+    EXPECT_FALSE(buf.FirstAudioPopObserved());
+
+    buf.Push(MakeFrame(123));
+    EXPECT_TRUE(buf.FirstPushObserved());
+    EXPECT_FALSE(buf.PrerollReached());
+    EXPECT_FALSE(buf.FirstAudioPopObserved());
+
+    std::vector<std::int16_t> out(kPtime20ms, std::int16_t{0x7FFF});
+    const std::uint32_t priming = buf.Pop(out.data(), kPtime20ms);
+    ASSERT_EQ(priming, kPtime20ms);
+    EXPECT_FALSE(buf.FirstAudioPopObserved());
+
+    buf.Push(MakeFrame(456));
+    ASSERT_TRUE(buf.PrerollReached());
+
+    const std::uint32_t played = buf.Pop(out.data(), kPtime20ms);
+    ASSERT_EQ(played, kPtime20ms);
+    EXPECT_TRUE(buf.FirstAudioPopObserved());
+    EXPECT_EQ(out[0], 123);
+}
+
 // ---------------------------------------------------------------------------
 // C2 — Pop before preroll returns silence
 // ---------------------------------------------------------------------------

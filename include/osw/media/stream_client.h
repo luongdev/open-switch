@@ -25,6 +25,7 @@
 #define OSW_MEDIA_STREAM_CLIENT_H_
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -59,6 +60,7 @@ struct StreamCallbacks {
 };
 
 struct StreamConfig {
+    std::string stream_id;  ///< optional module-owned stream id for logs
     std::string channel_uuid;
     std::string tenant_id;
     open_switch::media::v1::StreamStart::Purpose purpose;
@@ -182,6 +184,10 @@ class StreamClient {
     // W6.5 fix (Gemini-P1): per-stream monotonic seq + timestamp.
     std::atomic<std::uint64_t> seq_counter_{0};
     std::atomic<std::uint64_t> ts_counter_{0};
+
+    std::chrono::steady_clock::time_point open_started_at_{};
+    std::chrono::steady_clock::time_point ready_at_{};
+    std::string server_stream_id_;
 
     // ----------------------------------------------------------------
     // Threads

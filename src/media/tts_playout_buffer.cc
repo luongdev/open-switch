@@ -95,6 +95,14 @@ bool WriteAll(int fd, const void* data, std::size_t bytes) noexcept {
     return true;
 }
 
+long long MillisBetween(std::chrono::steady_clock::time_point start,
+                        std::chrono::steady_clock::time_point end) noexcept {
+    if (start.time_since_epoch().count() == 0) {
+        return -1;
+    }
+    return std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+}
+
 }  // namespace
 
 TtsPlayoutBuffer::TtsPlayoutBuffer(Config cfg) noexcept : cfg_(cfg) {}
@@ -117,14 +125,19 @@ void TtsPlayoutBuffer::Push(AudioFrame frame) noexcept {
 
     if (!first_push_logged_) {
         first_push_logged_ = true;
+        first_push_at_ = std::chrono::steady_clock::now();
         osw::log::Info(kSubsystem,
-                       "TtsPlayoutBuffer first push stream_id=%s samples=%zu rate=%u depth_ms=%u "
-                       "preroll_ms=%lld",
+                       "event=osw.tts_buffer.first_push stream_id=%s samples=%zu rate_hz=%u "
+                       "channels=%u depth_ms=%u preroll_ms=%lld high_water_ms=%lld "
+                       "since_create_ms=%lld",
                        stream_id_.c_str(),
                        queue_.back().sample_count(),
                        queue_.back().sample_rate_hz(),
+                       queue_.back().channels(),
                        depth_ms_,
-                       static_cast<long long>(cfg_.preroll_ms.count()));
+                       static_cast<long long>(cfg_.preroll_ms.count()),
+                       static_cast<long long>(cfg_.high_water_ms.count()),
+                       MillisBetween(created_at_, first_push_at_));
     }
 
     // Drop oldest frames while over high-water mark.
@@ -151,6 +164,15 @@ void TtsPlayoutBuffer::Push(AudioFrame frame) noexcept {
     if (!preroll_reached_.load(std::memory_order_relaxed) &&
         depth_ms_ >= static_cast<std::uint32_t>(cfg_.preroll_ms.count())) {
         preroll_reached_.store(true, std::memory_order_relaxed);
+        preroll_reached_at_ = std::chrono::steady_clock::now();
+        osw::log::Info(kSubsystem,
+                       "event=osw.tts_buffer.preroll_reached stream_id=%s depth_ms=%u "
+                       "preroll_ms=%lld since_first_push_ms=%lld since_create_ms=%lld",
+                       stream_id_.c_str(),
+                       depth_ms_,
+                       static_cast<long long>(cfg_.preroll_ms.count()),
+                       MillisBetween(first_push_at_, preroll_reached_at_),
+                       MillisBetween(created_at_, preroll_reached_at_));
     }
 }
 
@@ -226,13 +248,17 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
 
         if (!first_pop_logged_) {
             first_pop_logged_ = true;
+            const auto first_pop_at = std::chrono::steady_clock::now();
             osw::log::Info(kSubsystem,
-                           "TtsPlayoutBuffer first audio pop stream_id=%s samples=%u "
-                           "depth_ms=%u first_sample=%d",
+                           "event=osw.tts_buffer.first_audio_pop stream_id=%s samples=%u "
+                           "depth_ms=%u first_sample=%d since_first_push_ms=%lld "
+                           "since_preroll_reached_ms=%lld",
                            stream_id_.c_str(),
                            written,
                            depth_ms_,
-                           written > 0 ? static_cast<int>(out[0]) : 0);
+                           written > 0 ? static_cast<int>(out[0]) : 0,
+                           MillisBetween(first_push_at_, first_pop_at),
+                           MillisBetween(preroll_reached_at_, first_pop_at));
         }
 
         if (written == out_cap_samples) {
@@ -331,6 +357,16 @@ bool TtsPlayoutBuffer::PrerollReached() const noexcept {
 
 bool TtsPlayoutBuffer::EndOfStream() const noexcept {
     return eos_.load(std::memory_order_relaxed);
+}
+
+bool TtsPlayoutBuffer::FirstPushObserved() const noexcept {
+    std::lock_guard<std::mutex> g(mu_);
+    return first_push_logged_;
+}
+
+bool TtsPlayoutBuffer::FirstAudioPopObserved() const noexcept {
+    std::lock_guard<std::mutex> g(mu_);
+    return first_pop_logged_;
 }
 
 void TtsPlayoutBuffer::SetStreamId(std::string stream_id) noexcept {

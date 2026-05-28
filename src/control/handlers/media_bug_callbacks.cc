@@ -20,6 +20,7 @@
 #include "osw/media/bug_manager.h"
 #include "osw/media/stream_client.h"
 #include "osw/media/tts_playout_buffer.h"
+#include "osw/observability/log.h"
 #include "osw/raii/fs_api.h"
 
 // ---------------------------------------------------------------------------
@@ -27,6 +28,8 @@
 // ---------------------------------------------------------------------------
 
 namespace {
+
+constexpr const char* kWriteReplaceSubsystem = "media.write_replace";
 
 #if defined(OSW_TEST_FS_MOCK)
 constexpr int kAbcTypeRead = 1;          // SWITCH_ABC_TYPE_READ
@@ -167,6 +170,15 @@ extern "C" switch_bool_t OswStreamingWriteReplace(switch_media_bug_t* bug,
     frame->samples = written;
     frame->datalen = written * sizeof(std::int16_t);
     osw::raii::fs::MediaBugSetWriteReplaceFrame(bug, frame);
+    if (!ctx->first_set_frame_logged) {
+        ctx->first_set_frame_logged = true;
+        osw::log::Info(kWriteReplaceSubsystem,
+                       "event=osw.write_replace.first_set_frame stream_id=%s samples=%u "
+                       "payload_bytes=%u",
+                       ctx->stream_id.c_str(),
+                       static_cast<unsigned>(written),
+                       static_cast<unsigned>(frame->datalen));
+    }
 #else
     // In tests, switch_frame_t is opaque. Tests drive the buffer directly.
     (void)frame;
