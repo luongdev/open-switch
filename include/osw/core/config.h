@@ -139,13 +139,13 @@ struct Config {
 
     /// Pre-roll: the playback waits until the buffer accumulates at
     /// least this many ms before emitting the first non-silence frame.
-    /// Validate() clamps to [50, tts_jitter_buffer_ms]. Default 500.
-    std::uint32_t tts_preroll_ms = 500;
+    /// Validate() clamps to [50, tts_jitter_buffer_ms]. Default 200.
+    std::uint32_t tts_preroll_ms = 200;
 
     /// High-water: when buffer depth exceeds this, the producer drops
     /// the OLDEST queued frame on each Push. Validate() clamps to
-    /// [tts_jitter_buffer_ms, tts_max_jitter_buffer_ms]. Default 1500.
-    std::uint32_t tts_high_water_ms = 1500;
+    /// [tts_jitter_buffer_ms, tts_max_jitter_buffer_ms]. Default 3000.
+    std::uint32_t tts_high_water_ms = 3000;
 
     /// Hard cap on per-call jitter buffer override. Validate() clamps
     /// tts_jitter_buffer_ms to <= this and rejects per-call overrides
