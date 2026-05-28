@@ -10,6 +10,7 @@
 
 #include "osw/media/silence_driver.h"
 
+#include <cstring>
 #include <exception>
 #include <string>
 #include <utility>
@@ -30,6 +31,11 @@ constexpr switch_media_flag_t kSilenceBroadcastFlags =
 constexpr const char* kAuditStarted = "osw.media.silence_driver.started";
 constexpr const char* kAuditStopped = "osw.media.silence_driver.stopped";
 constexpr const char* kAuditCapReached = "osw.media.silence_driver.cap_reached";
+
+bool ChannelAlreadyHasWriteSource(switch_channel_t* channel) noexcept {
+    const char* app = osw::raii::fs::ChannelGetVariable(channel, "current_application");
+    return app && std::strcmp(app, "playback") == 0;
+}
 
 }  // namespace
 
@@ -97,6 +103,12 @@ void SilenceDriverRegistry::AttachOpportunistic(switch_core_session_t* session) 
         return;
     }
     if (osw::raii::fs::ChannelTestFlag(channel, CF_BRIDGED) != 0) {
+        return;
+    }
+    if (ChannelAlreadyHasWriteSource(channel)) {
+        osw::log::Debug(kSubsystem,
+                        "skip silence driver for channel '%s': current_application=playback",
+                        uuid.c_str());
         return;
     }
 

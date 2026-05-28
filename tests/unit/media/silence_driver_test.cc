@@ -140,6 +140,17 @@ TEST_F(SilenceDriverTest, SkipsWhenChannelBridged) {
     EXPECT_EQ(0, Mock().ivr_broadcast_calls.load());
 }
 
+TEST_F(SilenceDriverTest, SkipsWhenChannelAlreadyRunningPlayback) {
+    osw::Config cfg;
+    SilenceDriverRegistry registry(cfg);
+    Mock().next_channel_variables["current_application"] = "playback";
+
+    registry.AttachOpportunistic(FakeSession());
+
+    EXPECT_EQ(0u, registry.ActiveCount());
+    EXPECT_EQ(0, Mock().ivr_broadcast_calls.load());
+}
+
 TEST_F(SilenceDriverTest, DisabledByConfigDoesNotStart) {
     osw::Config cfg;
     cfg.silence_driver_enabled = false;

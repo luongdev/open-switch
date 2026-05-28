@@ -351,6 +351,13 @@ inline switch_status_t ChannelSetVariable(switch_channel_t* channel,
     return switch_channel_set_variable(channel, name, value);
 }
 
+inline const char* ChannelGetVariable(switch_channel_t* channel, const char* name) noexcept {
+    if (!channel || !name) {
+        return nullptr;
+    }
+    return switch_channel_get_variable(channel, name);
+}
+
 // --- switch_channel_test_flag (FF-027) --------------------------------
 //
 // FF-027: switch_channel_test_flag returns non-zero if `flag` is set.

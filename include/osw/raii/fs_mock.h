@@ -287,6 +287,7 @@ struct MockState {
     std::atomic<int> channel_hangup_calls{0};
     // W3 Track C — SetVariables / Hold / Unhold (FF-026..027).
     std::atomic<int> channel_set_variable_calls{0};
+    std::atomic<int> channel_get_variable_calls{0};
     std::atomic<int> channel_test_flag_calls{0};
     std::atomic<int> channel_set_flag_calls{0};
     std::atomic<int> hold_uuid_calls{0};
@@ -319,6 +320,7 @@ struct MockState {
     switch_status_t next_set_variable_status = SWITCH_STATUS_SUCCESS;
     // channel_test_flag returns a bitmask; the test sets flags it wants active.
     uint32_t next_channel_flags = 0;
+    std::unordered_map<std::string, std::string> next_channel_variables;
     switch_status_t next_ivr_play_file_status = SWITCH_STATUS_SUCCESS;
     switch_status_t next_ivr_broadcast_status = SWITCH_STATUS_SUCCESS;
     bool ivr_play_file_block_until_break = true;
@@ -541,6 +543,7 @@ inline void MockReset() {
     m.next_channel_get_state = CS_EXECUTE;
     // W3 Track C resets — SetVariables / Hold / Unhold (FF-026..027).
     m.channel_set_variable_calls = 0;
+    m.channel_get_variable_calls = 0;
     m.channel_test_flag_calls = 0;
     m.channel_set_flag_calls = 0;
     m.hold_uuid_calls = 0;
@@ -567,6 +570,7 @@ inline void MockReset() {
         m.session_transfer_invocations.clear();
         // W3 Track C.
         m.set_variable_invocations.clear();
+        m.next_channel_variables.clear();
         m.set_flag_invocations.clear();
         m.ivr_play_file_invocations.clear();
         m.ivr_broadcast_invocations.clear();
@@ -1019,6 +1023,19 @@ inline switch_status_t ChannelSetVariable(switch_channel_t* channel,
         m.set_variable_invocations.push_back(std::move(cap));
     }
     return m.next_set_variable_status;
+}
+
+inline const char* ChannelGetVariable(switch_channel_t* /*channel*/, const char* name) noexcept {
+    auto& m = Mock();
+    m.channel_get_variable_calls.fetch_add(1, std::memory_order_relaxed);
+    if (!name) {
+        return nullptr;
+    }
+    auto it = m.next_channel_variables.find(name);
+    if (it == m.next_channel_variables.end()) {
+        return nullptr;
+    }
+    return it->second.c_str();
 }
 
 // --- switch_channel_test_flag wrapper (FF-027) -----------------------
