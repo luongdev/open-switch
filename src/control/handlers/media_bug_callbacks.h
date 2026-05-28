@@ -16,6 +16,8 @@
 #ifndef OSW_CONTROL_HANDLERS_MEDIA_BUG_CALLBACKS_H_
 #define OSW_CONTROL_HANDLERS_MEDIA_BUG_CALLBACKS_H_
 
+#include <string>
+
 // Include FS headers or mock seam before any FS-type-using declarations.
 // Uses the canonical fs_api.h seam (same as all other FS-dependent handlers).
 #include "osw/media/stream_client.h"
@@ -29,6 +31,8 @@ namespace osw::control::handlers {
 struct WriteCallbackCtx {
     osw::media::StreamClient* client;
     osw::media::TtsPlayoutBuffer* buffer;
+    std::string stream_id;
+    bool first_set_frame_logged = false;
 };
 
 }  // namespace osw::control::handlers

@@ -164,6 +164,20 @@ grpc::Status HandleStartBot(grpc::ServerContext* ctx,
     if (!req || !resp) {
         return grpc::Status(grpc::StatusCode::INTERNAL, "null request or response");
     }
+    const std::string tenant_id = req->has_header() ? req->header().tenant_id() : std::string{};
+    const std::string request_id = req->has_header() ? req->header().request_id() : std::string{};
+    const std::string traceparent = req->has_header() ? req->header().traceparent() : std::string{};
+    osw::log::Info(kSubsystem,
+                   "event=osw.start_bot.received request_id=%s tenant_id=%s traceparent=%s "
+                   "purpose=%s target_count=%d write_target_count=%d sample_rate_hz=%u",
+                   request_id.c_str(),
+                   tenant_id.c_str(),
+                   traceparent.c_str(),
+                   PurposeName(req->purpose()),
+                   req->target_channel_uuids_size(),
+                   req->write_target_channel_uuids_size(),
+                   req->sample_rate_hz());
+
     if (!bug_mgr || !streams || !active_bots) {
         return grpc::Status(grpc::StatusCode::UNAVAILABLE, "media plane not initialised");
     }
@@ -233,7 +247,6 @@ grpc::Status HandleStartBot(grpc::ServerContext* ctx,
     resp->set_bot_id(bot_id);
     resp->set_negotiated_rate_hz(rate);
 
-    const std::string tenant_id = req->has_header() ? req->header().tenant_id() : std::string{};
     osw::audit::Emit("osw.media.bot.started",
                      {{"bot_id", bot_id},
                       {"tenant_id", tenant_id},

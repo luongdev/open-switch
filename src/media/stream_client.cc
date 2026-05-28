@@ -32,10 +32,20 @@
 namespace osw::media {
 
 namespace {
+constexpr const char* kSubsystem = "media.stream_client";
+
 // W6.5 P1-006 fix: bound on how long Close() will wait for the peer to
 // half-close after we send WritesDone before forcefully cancelling the
 // stream via context_->TryCancel().
 constexpr std::chrono::milliseconds kDrainTimeout{2000};
+
+long long MillisBetween(std::chrono::steady_clock::time_point start,
+                        std::chrono::steady_clock::time_point end) noexcept {
+    if (start.time_since_epoch().count() == 0) {
+        return -1;
+    }
+    return std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+}
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -65,6 +75,25 @@ grpc::Status StreamClient::Open(int open_deadline_ms) noexcept {
             return grpc::Status::OK;
         }
     }
+
+    const auto open_started = std::chrono::steady_clock::now();
+    open_started_at_ = open_started;
+    ready_at_ = {};
+    server_stream_id_.clear();
+
+    osw::log::Info(kSubsystem,
+                   "event=osw.media_stream.open.start stream_id=%s channel_uuid=%s "
+                   "tenant_id=%s traceparent=%s purpose=%d requested_rate_hz=%u "
+                   "channels=%u codec=%d open_deadline_ms=%d",
+                   config_.stream_id.c_str(),
+                   config_.channel_uuid.c_str(),
+                   config_.tenant_id.c_str(),
+                   config_.traceparent.c_str(),
+                   static_cast<int>(config_.purpose),
+                   config_.sample_rate_hz,
+                   config_.channels,
+                   static_cast<int>(config_.codec),
+                   open_deadline_ms);
 
     // W6.5 P1-005 fix: do NOT set ClientContext::set_deadline on the
     // long-lived context.  The previous code set a 5-second deadline on
@@ -166,13 +195,24 @@ grpc::Status StreamClient::Open(int open_deadline_ms) noexcept {
 
     agreed_sample_rate_hz_ = resp.ready().sample_rate_hz();
     agreed_channels_ = resp.ready().channels();
+    server_stream_id_ = resp.ready().server_stream_id();
+    ready_at_ = std::chrono::steady_clock::now();
 
-    osw::log::Info("media",
-                   "StreamClient::Open: stream ready; server_stream_id=%s "
-                   "rate=%u channels=%u",
-                   resp.ready().server_stream_id().c_str(),
+    // TODO(W6.4): add bounded latency histograms once media owns a
+    // module-lifetime metrics helper with stable label cardinality.
+    osw::log::Info(kSubsystem,
+                   "event=osw.media_stream.ready stream_id=%s server_stream_id=%s "
+                   "channel_uuid=%s tenant_id=%s traceparent=%s purpose=%d "
+                   "agreed_rate_hz=%u channels=%u open_duration_ms=%lld",
+                   config_.stream_id.c_str(),
+                   server_stream_id_.c_str(),
+                   config_.channel_uuid.c_str(),
+                   config_.tenant_id.c_str(),
+                   config_.traceparent.c_str(),
+                   static_cast<int>(config_.purpose),
                    agreed_sample_rate_hz_,
-                   agreed_channels_);
+                   agreed_channels_,
+                   MillisBetween(open_started, ready_at_));
 
     // Mark open before spawning threads.
     {
@@ -386,7 +426,7 @@ void StreamClient::WriterLoop() noexcept {
 
         if (!stream_->Write(entry.msg)) {
             // Write failed: stream broken or cancelled.
-            osw::log::Warn("media", "StreamClient::WriterLoop: Write() failed; exiting");
+            osw::log::Warn(kSubsystem, "StreamClient::WriterLoop: Write() failed; exiting");
             break;
         }
 
@@ -413,12 +453,31 @@ void StreamClient::ReaderLoop() noexcept {
                         bool expected = false;
                         if (first_rx_audio_logged_.compare_exchange_strong(
                                 expected, true, std::memory_order_relaxed)) {
-                            osw::log::Info("media",
-                                           "StreamClient::ReaderLoop: first audio "
-                                           "seq=%llu duration_samples=%u bytes=%zu",
-                                           static_cast<unsigned long long>(msg.audio().seq()),
-                                           msg.audio().duration_samples(),
-                                           msg.audio().payload().size());
+                            const auto first_audio_at = std::chrono::steady_clock::now();
+                            osw::log::Info(
+                                kSubsystem,
+                                "event=osw.stream_client.first_audio.received "
+                                "stream_id=%s server_stream_id=%s channel_uuid=%s "
+                                "tenant_id=%s traceparent=%s purpose=%d seq=%llu "
+                                "timestamp_samples=%llu duration_samples=%u "
+                                "payload_bytes=%zu sample_count=%zu rate_hz=%u "
+                                "channels=%u open_to_first_audio_ms=%lld "
+                                "ready_to_first_audio_ms=%lld",
+                                config_.stream_id.c_str(),
+                                server_stream_id_.c_str(),
+                                config_.channel_uuid.c_str(),
+                                config_.tenant_id.c_str(),
+                                config_.traceparent.c_str(),
+                                static_cast<int>(config_.purpose),
+                                static_cast<unsigned long long>(msg.audio().seq()),
+                                static_cast<unsigned long long>(msg.audio().timestamp_samples()),
+                                msg.audio().duration_samples(),
+                                msg.audio().payload().size(),
+                                frame->sample_count(),
+                                frame->sample_rate_hz(),
+                                frame->channels(),
+                                MillisBetween(open_started_at_, first_audio_at),
+                                MillisBetween(ready_at_, first_audio_at));
                         }
                         callbacks_.on_audio(std::move(*frame));
                     } else {
@@ -449,17 +508,17 @@ void StreamClient::ReaderLoop() noexcept {
             }
             case open_switch::media::v1::FromService::kReady:
                 // Unexpected StreamReady after handshake; log and ignore.
-                osw::log::Warn("media",
+                osw::log::Warn(kSubsystem,
                                "StreamClient::ReaderLoop: unexpected StreamReady mid-stream");
                 break;
             case open_switch::media::v1::FromService::kVariables:
                 // Variables message — not handled in V1; log and skip.
-                osw::log::Debug("media",
+                osw::log::Debug(kSubsystem,
                                 "StreamClient::ReaderLoop: Variables message (not handled in V1)");
                 break;
             case open_switch::media::v1::FromService::PAYLOAD_NOT_SET:
             default:
-                osw::log::Warn("media",
+                osw::log::Warn(kSubsystem,
                                "StreamClient::ReaderLoop: unknown payload_case %d",
                                static_cast<int>(msg.payload_case()));
                 break;
@@ -476,11 +535,11 @@ void StreamClient::ReaderLoop() noexcept {
     }
 
     if (status.error_message().empty()) {
-        osw::log::Info("media",
+        osw::log::Info(kSubsystem,
                        "StreamClient::ReaderLoop: stream finished; code=%d",
                        static_cast<int>(status.error_code()));
     } else {
-        osw::log::Info("media",
+        osw::log::Info(kSubsystem,
                        "StreamClient::ReaderLoop: stream finished; code=%d message=%s",
                        static_cast<int>(status.error_code()),
                        status.error_message().c_str());

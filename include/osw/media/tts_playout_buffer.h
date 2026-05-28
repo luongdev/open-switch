@@ -96,6 +96,8 @@ class TtsPlayoutBuffer {
     [[nodiscard]] std::uint64_t OverrunCount() const noexcept;
     [[nodiscard]] bool PrerollReached() const noexcept;
     [[nodiscard]] bool EndOfStream() const noexcept;
+    [[nodiscard]] bool FirstPushObserved() const noexcept;
+    [[nodiscard]] bool FirstAudioPopObserved() const noexcept;
 
     // --- Identifiers for Prometheus labels + audit events ----------------
     void SetStreamId(std::string stream_id) noexcept;
@@ -123,6 +125,9 @@ class TtsPlayoutBuffer {
     bool first_pop_logged_ = false;
     bool first_preroll_silence_logged_ = false;
     bool first_underrun_logged_ = false;
+    std::chrono::steady_clock::time_point created_at_{std::chrono::steady_clock::now()};
+    std::chrono::steady_clock::time_point first_push_at_{};
+    std::chrono::steady_clock::time_point preroll_reached_at_{};
 
     // Atomics for snapshot readers (Prometheus, Health) — no mu_ needed.
     std::atomic<bool> preroll_reached_{false};

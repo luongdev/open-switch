@@ -70,6 +70,7 @@ The following scope is explicitly out of V1:
 | W4 | Strip JWT/RBAC; keep TLS + audit + metrics | OAuth2/RBAC = V1.5 (per primary memory in MEMORY.md) |
 | W5 | IdempotencyCache LRU + TTL + in-flight condvar | Standard "exactly-once" guard for control RPCs |
 | W6 | MediaBugManager with stage-rank gating | Multi-bug calls have well-defined order without numeric priority |
+| **W6.4** | **Latency observability gate before demo close** | **Separates engine, edge, open-switch buffer, and RTP delay; W6.5 cannot close on "heard audio" alone** |
 | **W6.5** | **Multi-target bug attachment over conference / phantom** | **V1 max 3-way; eavesdrop API unimplementable on vanilla FS v1.10.12 (FF-002+003); conference latency cost too high** |
 | W7 | Eavesdrop = Layer 1 app + Layer 2 detector | FF-002 thread-id gate + FF-003 static symbol make removal unimplementable; detection-only via MEDIA_BUG_START |
 | W7 | Recording = `RECORDING_RELAY` module-owned (W7 Track B) + FS-native `record_session` opt-out | Operator dialplan ordering rule documented in `recording-with-bot.md`; module-owned variant enforces stage rank |

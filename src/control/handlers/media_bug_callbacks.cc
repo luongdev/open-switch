@@ -20,6 +20,7 @@
 #include "osw/media/bug_manager.h"
 #include "osw/media/stream_client.h"
 #include "osw/media/tts_playout_buffer.h"
+#include "osw/observability/log.h"
 #include "osw/raii/fs_api.h"
 
 // ---------------------------------------------------------------------------
@@ -35,6 +36,7 @@ constexpr int kAbcTypeWriteReplace = 3;  // SWITCH_ABC_TYPE_WRITE_REPLACE
 constexpr int kAbcTypeInit = 0;
 constexpr int kAbcTypeClose = 8;
 #else
+constexpr const char* kWriteReplaceSubsystem = "media.write_replace";
 constexpr int kAbcTypeRead = static_cast<int>(SWITCH_ABC_TYPE_READ);
 constexpr int kAbcTypeReadPing = static_cast<int>(SWITCH_ABC_TYPE_READ_PING);
 constexpr int kAbcTypeWriteReplace = static_cast<int>(SWITCH_ABC_TYPE_WRITE_REPLACE);
@@ -167,6 +169,15 @@ extern "C" switch_bool_t OswStreamingWriteReplace(switch_media_bug_t* bug,
     frame->samples = written;
     frame->datalen = written * sizeof(std::int16_t);
     osw::raii::fs::MediaBugSetWriteReplaceFrame(bug, frame);
+    if (!ctx->first_set_frame_logged) {
+        ctx->first_set_frame_logged = true;
+        osw::log::Info(kWriteReplaceSubsystem,
+                       "event=osw.write_replace.first_set_frame stream_id=%s samples=%u "
+                       "payload_bytes=%u",
+                       ctx->stream_id.c_str(),
+                       static_cast<unsigned>(written),
+                       static_cast<unsigned>(frame->datalen));
+    }
 #else
     // In tests, switch_frame_t is opaque. Tests drive the buffer directly.
     (void)frame;

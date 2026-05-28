@@ -157,12 +157,14 @@ grpc::Status HandleStartVoicebot(grpc::ServerContext* /*ctx*/,
     // down. on_audio callback pushes TTS frames into the jitter buffer.
     // -----------------------------------------------------------------------
     osw::media::StreamConfig sc;
+    sc.stream_id = stream_id;
     sc.channel_uuid = req->channel_uuid();
     sc.tenant_id = tenant_id;
     sc.purpose = open_switch::media::v1::StreamStart::VOICEBOT_DUPLEX;
     sc.sample_rate_hz = rate;
     sc.channels = 1;
     sc.codec = open_switch::media::v1::AudioCodec::PCM_S16LE;
+    sc.traceparent = req->has_header() ? req->header().traceparent() : std::string{};
     sc.start_message = req->start_message();
     for (const auto& [k, v] : req->variables()) {
         sc.variables[k] = v;
@@ -239,6 +241,7 @@ grpc::Status HandleStartVoicebot(grpc::ServerContext* /*ctx*/,
     auto write_ctx = std::make_unique<osw::control::handlers::WriteCallbackCtx>();
     write_ctx->client = client.get();
     write_ctx->buffer = buffer.get();
+    write_ctx->stream_id = stream_id;
 
     const std::uint64_t write_bug_id = osw::media::MediaBugManager::BugId(write_attach.handle);
     bug_mgr->SetBugCallback(
