@@ -72,7 +72,14 @@ using switch_media_bug_t = switch_media_bug;
 struct switch_xml;
 using switch_xml_t = switch_xml*;  // FS typedefs switch_xml_t to a pointer
 
-struct switch_frame;
+struct switch_frame {
+    void* data = nullptr;
+    uint32_t datalen = 0;
+    uint32_t samples = 0;
+    uint32_t rate = 0;
+    uint32_t channels = 0;
+    uint32_t timestamp = 0;
+};
 using switch_frame_t = switch_frame;
 
 struct switch_codec_implementation {
@@ -486,6 +493,7 @@ struct MockState {
     // Programmable return values for frame accessors.
     switch_frame_t* next_write_replace_frame = nullptr;
     switch_frame_t* next_read_replace_frame = nullptr;
+    switch_frame_t* next_media_bug_read_frame = nullptr;
     switch_status_t next_media_bug_read_status = SWITCH_STATUS_SUCCESS;
 
     struct CapturedSetWriteReplaceFrame {
@@ -1296,8 +1304,11 @@ inline switch_status_t MediaBugRead(switch_media_bug_t* bug,
     auto& m = Mock();
     m.media_bug_read_calls.fetch_add(1, std::memory_order_relaxed);
     (void)bug;
-    (void)frame;
     (void)fill;
+    if (m.next_media_bug_read_status == SWITCH_STATUS_SUCCESS && frame &&
+        m.next_media_bug_read_frame) {
+        *frame = *m.next_media_bug_read_frame;
+    }
     return m.next_media_bug_read_status;
 }
 

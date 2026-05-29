@@ -75,6 +75,15 @@ osw_add_unit_test(
     LIBS    osw_media
 )
 
+osw_add_unit_test(
+    NAME    recording_relay_test
+    LABEL   "media;unit;w7b"
+    SOURCES recording_relay_test.cc
+    LIBS    osw_media osw_media_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(recording_relay_test PRIVATE ${CMAKE_SOURCE_DIR})
+
 # --- tts_playout_buffer_test (Track C) ---------------------------------
 #
 # TtsPlayoutBuffer lives in osw_media_fs (uses osw::audit::Emit which calls
