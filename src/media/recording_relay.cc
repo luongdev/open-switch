@@ -22,7 +22,6 @@
 
 namespace {
 
-constexpr const char* kSubsystem = "media.recording_relay";
 constexpr std::uint32_t kBothInterleavedChannel = 3;
 constexpr std::chrono::milliseconds kTickInterval{5};
 constexpr std::chrono::minutes kAuditRateLimit{1};
