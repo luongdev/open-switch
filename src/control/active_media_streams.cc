@@ -65,11 +65,23 @@ ActiveMediaStreams::~ActiveMediaStreams() noexcept {
 
 bool ActiveMediaStreams::Insert(std::unique_ptr<ActiveMediaStream> s) noexcept {
     if (!s || s->stream_id.empty()) {
+        TearDown(std::move(s));
         return false;
     }
-    std::lock_guard<std::mutex> g(mu_);
-    const auto [it, ok] = by_id_.emplace(s->stream_id, std::move(s));
-    return ok;
+
+    bool inserted = false;
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        if (by_id_.find(s->stream_id) == by_id_.end()) {
+            by_id_.emplace(s->stream_id, std::move(s));
+            inserted = true;
+        }
+    }
+
+    if (!inserted) {
+        TearDown(std::move(s));
+    }
+    return inserted;
 }
 
 bool ActiveMediaStreams::Remove(std::string_view stream_id) noexcept {

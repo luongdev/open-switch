@@ -221,6 +221,15 @@ osw_add_unit_test(
 )
 target_include_directories(stop_media_stream_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
 
+osw_add_unit_test(
+    NAME    active_media_streams_test
+    LABEL   "control;unit;w6c;w7b"
+    SOURCES active_media_streams_test.cc
+    LIBS    osw_control osw_control_media_streaming_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(active_media_streams_test PRIVATE ${CMAKE_SOURCE_DIR})
+
 # W7 Track B — recording relay handler tests (FS-mock seam).
 #
 # start_recording_relay_handler_test uses an in-process MediaBridge

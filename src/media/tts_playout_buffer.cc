@@ -252,13 +252,14 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
             osw::log::Info(kSubsystem,
                            "event=osw.tts_buffer.first_audio_pop stream_id=%s samples=%u "
                            "depth_ms=%u first_sample=%d since_first_push_ms=%lld "
-                           "since_preroll_reached_ms=%lld",
+                           "since_preroll_reached_ms=%lld since_create_ms=%lld",
                            stream_id_.c_str(),
                            written,
                            depth_ms_,
                            written > 0 ? static_cast<int>(out[0]) : 0,
                            MillisBetween(first_push_at_, first_pop_at),
-                           MillisBetween(preroll_reached_at_, first_pop_at));
+                           MillisBetween(preroll_reached_at_, first_pop_at),
+                           MillisBetween(created_at_, first_pop_at));
         }
 
         if (written == out_cap_samples) {
