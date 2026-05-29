@@ -149,8 +149,12 @@ struct Config {
 
     /// Pre-roll: the playback waits until the buffer accumulates at
     /// least this many ms before emitting the first non-silence frame.
-    /// Validate() clamps to [50, tts_jitter_buffer_ms]. Default 200.
-    std::uint32_t tts_preroll_ms = 200;
+    /// Validate() clamps to [50, tts_jitter_buffer_ms]. Default 400.
+    /// Deeper pre-roll absorbs upstream token-generation stalls (which
+    /// otherwise drain the buffer mid-utterance and chop speech). This adds
+    /// to the text->audible latency; lower it per-call via StartTts
+    /// buffer_override when first-audio latency matters more than smoothness.
+    std::uint32_t tts_preroll_ms = 400;
 
     /// High-water: when buffer depth exceeds this, the producer drops
     /// the OLDEST queued frame on each Push. Validate() clamps to

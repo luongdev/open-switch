@@ -420,7 +420,7 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
                            SWITCH_CONFIG_INT,
                            CONFIG_RELOADABLE,
                            &int_tts_preroll,
-                           reinterpret_cast<const void*>(static_cast<std::intptr_t>(200)),
+                           reinterpret_cast<const void*>(static_cast<std::intptr_t>(400)),
                            &opt_ge50,
                            "ms",
                            "TTS playout pre-roll before first non-silence frame (ms)"),
