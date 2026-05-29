@@ -48,6 +48,7 @@
 #include "osw/media/bug_manager.h"
 #include "osw/media/purpose.h"
 #include "osw/media/silence_driver.h"
+#include "osw/observability/log.h"
 
 // ---------------------------------------------------------------------------
 // FS constants and type aliases used in this TU only.
@@ -184,49 +185,53 @@ inline switch_channel_t* FsSessionGetChannel(switch_core_session_t* session) noe
 extern "C" switch_bool_t OswMediaBugTrampoline(switch_media_bug_t* bug,
                                                void* user_data,
                                                switch_abc_type_t type) noexcept {
-    if (!user_data) {
-        return SWITCH_TRUE;
-    }
-    auto* ctx = static_cast<osw::media::BugCallbackContext*>(user_data);
+    try {
+        if (!user_data) {
+            return SWITCH_TRUE;
+        }
+        auto* ctx = static_cast<osw::media::BugCallbackContext*>(user_data);
 
-    const int itype = static_cast<int>(type);
+        const int itype = static_cast<int>(type);
 
-    if (itype == kAbcTypeInit) {
-        // W6.5 P1-001 fix: forward the real `bug` ptr (was `nullptr`).
-        // Track C callbacks call switch_core_media_bug_{get,set}_*_frame(bug)
-        // and would crash on a null bug ptr in production.
+        if (itype == kAbcTypeInit) {
+            // W6.5 P1-001 fix: forward the real `bug` ptr (was `nullptr`).
+            // Track C callbacks call switch_core_media_bug_{get,set}_*_frame(bug)
+            // and would crash on a null bug ptr in production.
+            if (ctx->user_cb) {
+                return ctx->user_cb(bug, ctx->user_data, type);
+            }
+            return SWITCH_TRUE;
+        }
+
+        if (itype == kAbcTypeClose) {
+            // FS is closing the bug. We MUST NOT touch ctx after asking the
+            // manager to detach — DetachInternal frees the record AND ctx.
+            // Capture every field we still need on the stack first.
+            osw::media::MediaBugManager* const mgr = ctx->manager;
+            const std::uint64_t bug_id = ctx->bug_id;
+            const auto user_cb = ctx->user_cb;
+            void* const cb_user_data = ctx->user_data;
+
+            if (mgr) {
+                // call_remove_callback=false: FS is already tearing the bug
+                // down; calling remove_callback from the close-callback would
+                // recurse / deadlock. DetachInternal still deletes ctx for us.
+                mgr->DetachInternal(bug_id, /*call_remove_callback=*/false);
+            }
+            // W6.5 P1-001 fix: forward the real `bug` ptr to user_cb's CLOSE
+            // handler so it can run any per-bug cleanup before FS frees the bug.
+            if (user_cb) {
+                return user_cb(bug, cb_user_data, type);
+            }
+            return SWITCH_TRUE;
+        }
+
+        // All other callback types — W6.5 P1-001 fix: forward real bug ptr.
         if (ctx->user_cb) {
             return ctx->user_cb(bug, ctx->user_data, type);
         }
-        return SWITCH_TRUE;
-    }
-
-    if (itype == kAbcTypeClose) {
-        // FS is closing the bug. We MUST NOT touch ctx after asking the
-        // manager to detach — DetachInternal frees the record AND ctx.
-        // Capture every field we still need on the stack first.
-        osw::media::MediaBugManager* const mgr = ctx->manager;
-        const std::uint64_t bug_id = ctx->bug_id;
-        const auto user_cb = ctx->user_cb;
-        void* const user_data = ctx->user_data;
-
-        if (mgr) {
-            // call_remove_callback=false: FS is already tearing the bug
-            // down; calling remove_callback from the close-callback would
-            // recurse / deadlock. DetachInternal still deletes ctx for us.
-            mgr->DetachInternal(bug_id, /*call_remove_callback=*/false);
-        }
-        // W6.5 P1-001 fix: forward the real `bug` ptr to user_cb's CLOSE
-        // handler so it can run any per-bug cleanup before FS frees the bug.
-        if (user_cb) {
-            return user_cb(bug, user_data, type);
-        }
-        return SWITCH_TRUE;
-    }
-
-    // All other callback types — W6.5 P1-001 fix: forward real bug ptr.
-    if (ctx->user_cb) {
-        return ctx->user_cb(bug, ctx->user_data, type);
+    } catch (...) {
+        osw::log::Error("media.bug_manager", "OswMediaBugTrampoline exception");
     }
     return SWITCH_TRUE;
 }

@@ -18,6 +18,7 @@
 #include "osw/observability/log.h"
 
 #include "src/control/control_service_skeleton.h"
+#include "src/control/handlers/idempotency_utils.h"
 
 namespace osw::control::handlers {
 
@@ -62,10 +63,20 @@ grpc::Status osw::control::ControlServiceSkeleton::StopBot(
     grpc::ServerContext* ctx,
     const open_switch::control::v1::StopBotRequest* req,
     open_switch::control::v1::StopBotResponse* resp) {
-    return osw::control::handlers::HandleStopBot(
-        ctx,
-        req,
+    const std::string tenant_id = (req && req->has_header()) ? req->header().tenant_id() : "";
+    const std::string request_id = (req && req->has_header()) ? req->header().request_id() : "";
+    return osw::control::handlers::RunIdempotent(
+        idempotency_cache_.load(std::memory_order_acquire),
+        "StopBot",
+        tenant_id,
+        request_id,
         resp,
-        active_bots_.load(std::memory_order_acquire),
-        active_media_streams_.load(std::memory_order_acquire));
+        [&]() {
+            return osw::control::handlers::HandleStopBot(
+                ctx,
+                req,
+                resp,
+                active_bots_.load(std::memory_order_acquire),
+                active_media_streams_.load(std::memory_order_acquire));
+        });
 }

@@ -31,6 +31,8 @@
 #include "osw/raii/fs_api.h"
 
 #include "src/control/control_service_skeleton.h"
+#include "src/control/handlers/idempotency_utils.h"
+#include "src/control/handlers/media_rate.h"
 
 namespace osw::control::handlers {
 
@@ -82,6 +84,19 @@ grpc::Status HandleStartRecordingRelay(
         return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
                             "recording relay requires active TTS or voicebot inject bug");
     }
+    grpc::Status write_rate_status =
+        ValidateRecordingWriteRate(sg.get(), rate, "StartRecordingRelay write");
+    if (!write_rate_status.ok()) {
+        return write_rate_status;
+    }
+    if (req->stereo()) {
+        grpc::Status read_rate_status =
+            ValidateReadStreamRate(sg.get(), rate, "StartRecordingRelay read");
+        if (!read_rate_status.ok()) {
+            return read_rate_status;
+        }
+    }
+    sg.Reset();
 
     const std::string tenant_id = req->has_header() ? req->header().tenant_id() : std::string{};
     const std::string stream_id = osw::events::GenerateUuidV7();
@@ -115,17 +130,41 @@ grpc::Status HandleStartRecordingRelay(
         return open_st;
     }
 
-    osw::media::BugConfig read_cfg;
-    read_cfg.purpose = osw::media::Purpose::kRecordingRelay;
-    read_cfg.fs_flags = kReadStreamFlag;
-    read_cfg.target_rate_hz = rate;
-    read_cfg.tenant_id = tenant_id;
-    read_cfg.stream_endpoint = req->relay_endpoint();
-
-    auto read_attach = bug_mgr->Attach(sg.get(), read_cfg);
-    if (!read_attach.ok) {
+    sg = osw::control::SessionGuard::Locate(req->channel_uuid());
+    if (!sg.Valid()) {
         client->Close();
-        return grpc::Status(read_attach.status_code, read_attach.error);
+        return grpc::Status(grpc::StatusCode::NOT_FOUND, "channel not found");
+    }
+    write_rate_status = ValidateRecordingWriteRate(sg.get(), rate, "StartRecordingRelay write");
+    if (!write_rate_status.ok()) {
+        client->Close();
+        return write_rate_status;
+    }
+    if (req->stereo()) {
+        grpc::Status read_rate_status =
+            ValidateReadStreamRate(sg.get(), rate, "StartRecordingRelay read");
+        if (!read_rate_status.ok()) {
+            client->Close();
+            return read_rate_status;
+        }
+    }
+    const std::uint32_t fs_read_rate = req->stereo() ? ReadMediaRate(sg.get()).sample_rate_hz : 0u;
+    const std::uint32_t fs_write_rate = WriteMediaRate(sg.get()).sample_rate_hz;
+
+    osw::media::MediaBugManager::AttachResult read_attach{};
+    if (req->stereo()) {
+        osw::media::BugConfig read_cfg;
+        read_cfg.purpose = osw::media::Purpose::kRecordingRelay;
+        read_cfg.fs_flags = kReadStreamFlag;
+        read_cfg.target_rate_hz = rate;
+        read_cfg.tenant_id = tenant_id;
+        read_cfg.stream_endpoint = req->relay_endpoint();
+
+        read_attach = bug_mgr->Attach(sg.get(), read_cfg);
+        if (!read_attach.ok) {
+            client->Close();
+            return grpc::Status(read_attach.status_code, read_attach.error);
+        }
     }
 
     osw::media::BugConfig write_cfg;
@@ -147,15 +186,19 @@ grpc::Status HandleStartRecordingRelay(
     relay_cfg.stream_id = stream_id;
     relay_cfg.stereo = req->stereo();
     relay_cfg.sample_rate_hz = rate;
+    relay_cfg.read_fs_rate_hz = fs_read_rate;
+    relay_cfg.write_fs_rate_hz = fs_write_rate;
     relay_cfg.desync_warn_ms = config.stereo_desync_warn_ms;
     relay_cfg.desync_timeout_ms = config.stereo_desync_timeout_ms;
 
     auto relay = std::make_unique<osw::media::RecordingRelay>(client.get(), std::move(relay_cfg));
     auto* relay_raw = relay.get();
 
-    bug_mgr->SetBugCallback(osw::media::MediaBugManager::BugId(read_attach.handle),
-                            reinterpret_cast<void*>(OswRecordingReadTap),
-                            relay_raw);
+    if (req->stereo()) {
+        bug_mgr->SetBugCallback(osw::media::MediaBugManager::BugId(read_attach.handle),
+                                reinterpret_cast<void*>(OswRecordingReadTap),
+                                relay_raw);
+    }
     bug_mgr->SetBugCallback(osw::media::MediaBugManager::BugId(write_attach.handle),
                             reinterpret_cast<void*>(OswRecordingWriteTap),
                             relay_raw);
@@ -165,7 +208,9 @@ grpc::Status HandleStartRecordingRelay(
     stream->channel_uuid = req->channel_uuid();
     stream->stream_id = stream_id;
     stream->purpose = open_switch::media::v1::StreamStart::RECORDING_RELAY;
-    stream->bugs.push_back(std::move(read_attach.handle));
+    if (req->stereo()) {
+        stream->bugs.push_back(std::move(read_attach.handle));
+    }
     stream->bugs.push_back(std::move(write_attach.handle));
     stream->client = std::move(client);
     stream->recording_ctx =
@@ -203,11 +248,21 @@ grpc::Status osw::control::ControlServiceSkeleton::StartRecordingRelay(
     if (!config) {
         return grpc::Status(grpc::StatusCode::UNAVAILABLE, "media config not initialised");
     }
-    return osw::control::handlers::HandleStartRecordingRelay(
-        ctx,
-        req,
+    const std::string tenant_id = (req && req->has_header()) ? req->header().tenant_id() : "";
+    const std::string request_id = (req && req->has_header()) ? req->header().request_id() : "";
+    return osw::control::handlers::RunIdempotent(
+        idempotency_cache_.load(std::memory_order_acquire),
+        "StartRecordingRelay",
+        tenant_id,
+        request_id,
         resp,
-        bug_mgr_.load(std::memory_order_acquire),
-        active_media_streams_.load(std::memory_order_acquire),
-        *config);
+        [&]() {
+            return osw::control::handlers::HandleStartRecordingRelay(
+                ctx,
+                req,
+                resp,
+                bug_mgr_.load(std::memory_order_acquire),
+                active_media_streams_.load(std::memory_order_acquire),
+                *config);
+        });
 }

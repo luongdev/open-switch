@@ -22,6 +22,7 @@
 
 #include "osw/media/resampler.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "osw/observability/log.h"
@@ -42,19 +43,41 @@ namespace {
 
 // V1 policy: only these pairs are supported.
 bool IsSupportedPair(int from_hz, int to_hz) noexcept {
-    if (from_hz == to_hz) {
-        return from_hz == 8000 || from_hz == 16000;
-    }
     return (from_hz == 8000 && to_hz == 16000) || (from_hz == 16000 && to_hz == 8000);
 }
 
+std::size_t ExpectedOutputSamples(std::size_t in_samples, int from_hz, int to_hz) noexcept {
+    if (in_samples == 0 || from_hz <= 0 || to_hz <= 0) {
+        return 0;
+    }
+    const std::uint64_t numerator =
+        static_cast<std::uint64_t>(in_samples) * static_cast<std::uint64_t>(to_hz);
+    const auto expected =
+        static_cast<std::size_t>((numerator + static_cast<std::uint64_t>(from_hz) - 1u) /
+                                 static_cast<std::uint64_t>(from_hz));
+    return expected + 16u;  // small FIR/tail headroom
+}
+
 }  // namespace
+
+bool Resampler::Supports(int from_hz, int to_hz) noexcept {
+    if (from_hz <= 0 || to_hz <= 0) {
+        return false;
+    }
+    if (from_hz == to_hz) {
+        return true;
+    }
+    return IsSupportedPair(from_hz, to_hz);
+}
 
 // ---------------------------------------------------------------------------
 // static Create
 // ---------------------------------------------------------------------------
 
 std::unique_ptr<Resampler> Resampler::Create(int from_hz, int to_hz) noexcept {
+    if (from_hz == to_hz) {
+        return nullptr;
+    }
     if (!IsSupportedPair(from_hz, to_hz)) {
         osw::log::Warn("media",
                        "Resampler::Create: unsupported pair %d → %d (V1 supports 8k↔16k only)",
@@ -63,13 +86,11 @@ std::unique_ptr<Resampler> Resampler::Create(int from_hz, int to_hz) noexcept {
         return nullptr;
     }
 
-    // Calculate an appropriate output buffer size.
-    // For 20ms ptime the largest input is 320 samples (16kHz mono).
-    // Upsampling 8→16: 160 in → 320 out; downsample 16→8: 320 in → 160 out.
-    // We allocate conservatively: max_input × ratio + a small headroom.
-    // The FS macro switch_resample_calc_buffer_size does: (to/from) * srclen * 2
-    // We use 1024 samples as the to_size (plenty for any V1 frame).
-    const std::uint32_t to_size = 1024;
+    // Bounded capacity for the FS-owned output buffer. Runtime Process()
+    // rejects inputs whose expected output would exceed this value, so a
+    // malformed or unusually large frame cannot overrun the resampler's
+    // fixed internal buffer.
+    const std::uint32_t to_size = 8192;
 
     switch_audio_resampler_t* res = nullptr;
     const switch_status_t status =
@@ -90,15 +111,16 @@ std::unique_ptr<Resampler> Resampler::Create(int from_hz, int to_hz) noexcept {
         return nullptr;
     }
 
-    return std::unique_ptr<Resampler>(new Resampler(static_cast<void*>(res), from_hz, to_hz));
+    return std::unique_ptr<Resampler>(
+        new Resampler(static_cast<void*>(res), from_hz, to_hz, to_size));
 }
 
 // ---------------------------------------------------------------------------
 // Constructor / Destructor
 // ---------------------------------------------------------------------------
 
-Resampler::Resampler(void* res, int from_hz, int to_hz) noexcept
-    : resampler_(res), from_hz_(from_hz), to_hz_(to_hz) {}
+Resampler::Resampler(void* res, int from_hz, int to_hz, std::size_t max_output_samples) noexcept
+    : resampler_(res), from_hz_(from_hz), to_hz_(to_hz), max_output_samples_(max_output_samples) {}
 
 Resampler::~Resampler() noexcept {
     if (resampler_ != nullptr) {
@@ -117,6 +139,15 @@ std::size_t Resampler::Process(const std::int16_t* in,
                                std::int16_t* out,
                                std::size_t out_cap) noexcept {
     if (resampler_ == nullptr || in == nullptr || out == nullptr || in_samples == 0) {
+        return 0;
+    }
+    const std::size_t expected = ExpectedOutputSamples(in_samples, from_hz_, to_hz_);
+    if (expected > max_output_samples_) {
+        osw::log::Warn("media",
+                       "Resampler::Process: input too large (%zu samples) for pair %d→%d",
+                       in_samples,
+                       from_hz_,
+                       to_hz_);
         return 0;
     }
 

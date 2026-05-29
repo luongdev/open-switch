@@ -25,6 +25,8 @@
 
     <!-- Idempotency dedup cache TTL (seconds) for request_id matches -->
     <param name="idempotency_ttl_seconds" value="300"/>
+    <param name="idempotency_cache_capacity" value="1500"/>
+    <param name="idempotency_in_flight_max_wait_seconds" value="30"/>
 
     <!-- Node identifier (used in event envelopes' node_id field).
          If empty, module reads HOSTNAME or generates a UUIDv7. -->
@@ -65,6 +67,13 @@
     <!-- gRPC channel pool: max idle channels per upstream endpoint -->
     <param name="upstream_channel_pool_size" value="8"/>
 
+    <!-- TTS / voicebot playout jitter buffer -->
+    <param name="tts_jitter_buffer_ms" value="1000"/>
+    <param name="tts_preroll_ms" value="200"/>
+    <param name="tts_high_water_ms" value="3000"/>
+    <param name="tts_max_jitter_buffer_ms" value="5000"/>
+    <param name="tts_underrun_policy" value="silence"/>
+
     <!-- Eavesdrop policy on bot-participating calls -->
     <!-- deny: hangup any eavesdrop attempt on bot channels (default) -->
     <!-- audit: allow but emit Tier 1 audit event -->
@@ -80,6 +89,16 @@
     <param name="stereo_desync_timeout_ms" value="25"/>
     <param name="recording_default_rate_hz" value="8000"/>
     <param name="warn_record_before_inject" value="true"/>
+
+    <!-- Module-owned silence driver for parked WRITE_REPLACE channels -->
+    <param name="silence_driver_enabled" value="true"/>
+    <param name="max_silence_drivers" value="200"/>
+
+    <!-- StartBot facade limits -->
+    <param name="bot_max_targets" value="2"/>
+    <param name="bot_target_queue_ms" value="500"/>
+    <param name="bot_drain_timeout_ms" value="2000"/>
+    <param name="max_bots_per_channel" value="1"/>
   </settings>
 
   <!-- Event routing: maps FS event name patterns to a tier.

@@ -310,9 +310,10 @@ TEST_F(StartRecordingRelayHandlerTest, StereoHappyPathAttachesReadWriteAndAudits
     EXPECT_TRUE(HasHeader(*event, "stereo", "true"));
 }
 
-TEST_F(StartRecordingRelayHandlerTest, MonoHappyPathUsesDefaultRateAndMixedSide) {
-    config_.recording_default_rate_hz = 24000;
+TEST_F(StartRecordingRelayHandlerTest, MonoHappyPathUsesDefaultRateAndWriteTapOnly) {
+    config_.recording_default_rate_hz = 8000;
     PrimeInjectBug();
+    const int bug_adds_before = osw::raii::fs::Mock().media_bug_add_calls.load();
 
     auto req = BaseRequest();
     req.set_stereo(false);
@@ -323,14 +324,25 @@ TEST_F(StartRecordingRelayHandlerTest, MonoHappyPathUsesDefaultRateAndMixedSide)
 
     ASSERT_TRUE(st.ok()) << st.error_message();
     EXPECT_FALSE(resp.stream_id().empty());
-    EXPECT_EQ(resp.negotiated_rate_hz(), 24000u);
+    EXPECT_EQ(resp.negotiated_rate_hz(), 8000u);
     EXPECT_EQ(streams_->Size(), 1u);
 
     const auto starts = sink_->Starts();
     ASSERT_EQ(starts.size(), 1u);
-    EXPECT_EQ(starts[0].sample_rate_hz(), 24000u);
+    EXPECT_EQ(starts[0].sample_rate_hz(), 8000u);
     EXPECT_EQ(starts[0].channels(), 1u);
     EXPECT_EQ(starts[0].side(), open_switch::media::v1::StreamStart::BOTH_MIXED);
+
+    auto& m = osw::raii::fs::Mock();
+    EXPECT_EQ(m.media_bug_add_calls.load(), bug_adds_before + 1);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        ASSERT_GE(m.media_bug_add_invocations.size(), 2u);
+        const auto& write_bug = m.media_bug_add_invocations.back();
+        EXPECT_EQ(write_bug.target, "recording_relay");
+        EXPECT_EQ(write_bug.flags & SMBF_READ_STREAM, 0u);
+        EXPECT_NE(write_bug.flags & SMBF_WRITE_STREAM, 0u);
+    }
 }
 
 }  // namespace

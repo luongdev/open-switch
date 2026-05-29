@@ -37,7 +37,7 @@
  *   BuildServerCredentials() and TlsReloader.
  *
  * Logger subsystem: "control.tls"
- * Audit: "osw.control.tls.reload" on each successful hot-reload.
+ * Audit: "osw.control.tls.reload" on each successful credential rebuild.
  *
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */

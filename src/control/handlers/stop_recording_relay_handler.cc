@@ -20,6 +20,7 @@
 #include "osw/observability/log.h"
 
 #include "src/control/control_service_skeleton.h"
+#include "src/control/handlers/idempotency_utils.h"
 
 namespace osw::control::handlers {
 
@@ -72,6 +73,16 @@ grpc::Status osw::control::ControlServiceSkeleton::StopRecordingRelay(
     grpc::ServerContext* ctx,
     const open_switch::control::v1::StopRecordingRelayRequest* req,
     open_switch::control::v1::StopRecordingRelayResponse* resp) {
-    return osw::control::handlers::HandleStopRecordingRelay(
-        ctx, req, resp, active_media_streams_.load(std::memory_order_acquire));
+    const std::string tenant_id = (req && req->has_header()) ? req->header().tenant_id() : "";
+    const std::string request_id = (req && req->has_header()) ? req->header().request_id() : "";
+    return osw::control::handlers::RunIdempotent(
+        idempotency_cache_.load(std::memory_order_acquire),
+        "StopRecordingRelay",
+        tenant_id,
+        request_id,
+        resp,
+        [&]() {
+            return osw::control::handlers::HandleStopRecordingRelay(
+                ctx, req, resp, active_media_streams_.load(std::memory_order_acquire));
+        });
 }

@@ -43,6 +43,10 @@ struct WriteCtxDeleter {
     void operator()(void* p) const noexcept;
 };
 
+struct ReadCtxDeleter {
+    void operator()(void* p) const noexcept;
+};
+
 struct RecordingCtxDeleter {
     void operator()(void* p) const noexcept;
 };
@@ -59,6 +63,8 @@ struct ActiveMediaStream {
     std::unique_ptr<osw::media::TtsPlayoutBuffer> tts_buffer;
     /// WriteCallbackCtx heap allocation. Freed after bugs.clear() in TearDown.
     std::unique_ptr<void, WriteCtxDeleter> write_ctx;
+    /// ReadCallbackCtx heap allocation. Freed after bugs.clear() in TearDown.
+    std::unique_ptr<void, ReadCtxDeleter> read_ctx;
     /// RecordingRelay heap allocation. Stopped before client close and freed
     /// after media bugs are detached.
     std::unique_ptr<void, RecordingCtxDeleter> recording_ctx;

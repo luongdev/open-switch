@@ -11,10 +11,11 @@ implements; does NOT redesign.
 
 Implement module-owned recording for bot-participating calls:
 
-1. **`RECORDING_RELAY` purpose attach** — two FS media bugs (one
-   READ_STREAM, one WRITE_STREAM) glued to a single bidi gRPC stream.
-   Both bugs are attached together by `StartRecordingRelay`; both
-   detach together on `StopRecordingRelay` or channel hangup.
+1. **`RECORDING_RELAY` purpose attach** — mono uses one WRITE_STREAM
+   bug so the sink hears the post-injection caller-ear mix. Stereo uses
+   two FS media bugs (READ_STREAM + WRITE_STREAM) glued to a single bidi
+   gRPC stream. Attached bugs detach together on `StopRecordingRelay`
+   or channel hangup.
 2. **MediaBugManager LATE-stage refinement** — `kRecordingRelay`
    attach is refused with `FAILED_PRECONDITION` unless ≥ 1 INJECT
    bug (`kTtsPlayback` or `kVoicebotDuplexWrite`) is already in the

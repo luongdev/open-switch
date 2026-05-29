@@ -11,8 +11,9 @@
  *     stream_->Write(). Exits when ring is closed+empty OR Write() fails.
  *   - reader_thread_: loops stream_->Read(), dispatches callbacks, calls
  *     stream_->Finish() when Read() returns false, fires on_done.
- *   - Close() (any thread): closes the ring, joins writer, calls
- *     stream_->WritesDone(), joins reader. Idempotent (guarded by mu_).
+ *   - Close() (any thread): closes the ring, joins writer, then joins
+ *     reader. The writer thread owns the normal WritesDone() half-close.
+ *     Idempotent (guarded by mu_).
  *
  * Lifetime contract (FF-034):
  *   stream_ MUST be destroyed before context_ (they are ordered that way
@@ -320,15 +321,6 @@ grpc::Status StreamClient::Close() noexcept {
         writer_thread_.join();
     }
 
-    // Half-close the send side: tell the server we are done sending.
-    if (stream_) {
-        std::lock_guard<std::mutex> lock(mu_);
-        if (!writes_done_) {
-            stream_->WritesDone();
-            writes_done_ = true;
-        }
-    }
-
     // W6.5 P1-006 fix: bounded drain on the reader thread.
     //
     // The previous code did `reader_thread_.join()` unbounded; if the peer
@@ -415,6 +407,7 @@ bool StreamClient::RingPopLocked(RingEntry& out) noexcept {
 // ---------------------------------------------------------------------------
 
 void StreamClient::WriterLoop() noexcept {
+    bool write_failed = false;
     for (;;) {
         RingEntry entry;
         {
@@ -429,6 +422,7 @@ void StreamClient::WriterLoop() noexcept {
         if (!stream_->Write(entry.msg)) {
             // Write failed: stream broken or cancelled.
             osw::log::Warn(kSubsystem, "StreamClient::WriterLoop: Write() failed; exiting");
+            write_failed = true;
             break;
         }
 
@@ -436,6 +430,20 @@ void StreamClient::WriterLoop() noexcept {
             frames_sent_.fetch_add(1, std::memory_order_relaxed);
         }
     }
+    if (!write_failed) {
+        WritesDoneOnce();
+    }
+}
+
+void StreamClient::WritesDoneOnce() noexcept {
+    std::unique_lock<std::mutex> lock(mu_);
+    if (writes_done_ || !stream_) {
+        return;
+    }
+    auto* stream = stream_.get();
+    writes_done_ = true;
+    lock.unlock();
+    stream->WritesDone();
 }
 
 // ---------------------------------------------------------------------------

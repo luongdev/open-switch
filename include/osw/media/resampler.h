@@ -7,10 +7,10 @@
  * FREESWITCH-FACTS FF-033). Not thread-safe; owned per StreamClient.
  *
  * V1 policy: only 8 kHz ↔ 16 kHz conversion pairs are supported.
- * Any other (from_hz, to_hz) pair returns nullptr from Create(); the
- * caller falls back to no-op (raw frame forwarding) and logs a warning.
- * The FS API itself accepts any rate; the restriction is policy, not
- * a FS limitation.
+ * Any other (from_hz, to_hz) pair returns nullptr from Create(); callers
+ * must reject or drop the stream rather than labeling raw audio at the
+ * wrong rate. The FS API itself accepts more rates; the restriction is
+ * policy, not a FS limitation.
  *
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
@@ -29,9 +29,13 @@ namespace osw::media {
 class Resampler {
   public:
     /// Allowed pairs in V1: (8000, 16000) and (16000, 8000).
-    /// (8000, 8000) is also accepted as a degenerate pass-through.
-    /// Any other pair returns nullptr.
+    /// Same-rate pairs are handled by callers as pass-through and do not
+    /// require a Resampler instance.
     static std::unique_ptr<Resampler> Create(int from_hz, int to_hz) noexcept;
+
+    /// True when a stream from `from_hz` to `to_hz` can be represented
+    /// without rate lying. Same-rate positive pairs are pass-through.
+    [[nodiscard]] static bool Supports(int from_hz, int to_hz) noexcept;
 
     ~Resampler() noexcept;
     Resampler(const Resampler&) = delete;
@@ -54,11 +58,12 @@ class Resampler {
     // Stored as void* to avoid pulling switch_audio_resampler_t into
     // every consumer's translation unit.  resampler.cc casts back to
     // switch_audio_resampler_t* which it includes via <switch_resample.h>.
-    explicit Resampler(void* res, int from_hz, int to_hz) noexcept;
+    explicit Resampler(void* res, int from_hz, int to_hz, std::size_t max_output_samples) noexcept;
 
     void* resampler_ = nullptr;  ///< actually switch_audio_resampler_t*
     int from_hz_ = 0;
     int to_hz_ = 0;
+    std::size_t max_output_samples_ = 0;
 };
 
 }  // namespace osw::media

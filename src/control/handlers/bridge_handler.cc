@@ -75,10 +75,13 @@ grpc::Status ControlServiceSkeleton::Bridge(grpc::ServerContext* /*ctx*/,
 
     // --- Idempotency deduplication ----------------------------------------
     const std::string request_id = req->has_header() ? req->header().request_id() : std::string{};
+    const std::string tenant_id = req->has_header() ? req->header().tenant_id() : std::string{};
+    const std::string idempotency_key =
+        osw::control::MakeIdempotencyKey("Bridge", tenant_id, request_id);
 
     IdempotencyCache* cache = idempotency_cache_.load(std::memory_order_acquire);
-    if (cache != nullptr && !request_id.empty()) {
-        auto result = cache->LookupOrReserve(request_id);
+    if (cache != nullptr && !idempotency_key.empty()) {
+        auto result = cache->LookupOrReserve(idempotency_key);
         if (result.state == IdempotencyCache::State::kHit) {
             if (resp->ParseFromString(result.entry.serialized_response)) {
                 osw::log::Debug(kSubsystem, "Bridge: cache hit request_id=%s", request_id.c_str());
@@ -92,7 +95,7 @@ grpc::Status ControlServiceSkeleton::Bridge(grpc::ServerContext* /*ctx*/,
     // Used at every definitive return point below.
     // Transient errors (INTERNAL from null channel) call cache->Cancel instead.
     const auto cache_and_return = [&](grpc::Status status) -> grpc::Status {
-        if (cache != nullptr && !request_id.empty()) {
+        if (cache != nullptr && !idempotency_key.empty()) {
             IdempotencyCache::Entry e;
             e.status = status;
             if (!resp->SerializeToString(&e.serialized_response)) {
@@ -104,17 +107,17 @@ grpc::Status ControlServiceSkeleton::Bridge(grpc::ServerContext* /*ctx*/,
                                "Bridge: SerializeToString failed for request_id=%s; "
                                "cancelling cache reservation to avoid corrupted retry",
                                request_id.c_str());
-                cache->Cancel(request_id);
+                cache->Cancel(idempotency_key);
             } else {
                 e.expires_at = std::chrono::steady_clock::now() + cache->Ttl();
-                cache->Store(request_id, std::move(e));
+                cache->Store(idempotency_key, std::move(e));
             }
         }
         return status;
     };
     const auto cancel_and_return = [&](grpc::Status status) -> grpc::Status {
-        if (cache != nullptr && !request_id.empty()) {
-            cache->Cancel(request_id);
+        if (cache != nullptr && !idempotency_key.empty()) {
+            cache->Cancel(idempotency_key);
         }
         return status;
     };

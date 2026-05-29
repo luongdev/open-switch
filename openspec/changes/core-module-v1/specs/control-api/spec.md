@@ -73,7 +73,7 @@ a new call). Callers SHOULD always set it.
 ## Idempotency
 
 The module maintains a per-process LRU cache keyed by
-`(tenant_id, request_id)` with TTL `idempotency_ttl_seconds`
+`(method, tenant_id, request_id)` with TTL `idempotency_ttl_seconds`
 (default 300). Each entry holds one of three values:
 
 - **In-flight marker** + `std::condition_variable` for waiters
@@ -86,10 +86,10 @@ made explicit):
 
 | Scenario | Module action |
 |---|---|
-| First call with `(tenant, request_id)` | Insert in-flight marker. Execute. On completion of the handler — whether success OR non-success — replace the marker with the cached response (see "Error-path cleanup" below). Return the response. |
-| Repeat call within TTL with same `(tenant, request_id)` AND same method, **original still in-flight** | Block on the in-flight marker's condvar with a "shadow deadline" = `min(gRPC deadline, idempotency_in_flight_max_wait)`. When original completes: return the same response. If shadow deadline expires first: return `ALREADY_EXISTS` with message "Originate in flight; await original or use a fresh request_id". |
-| Repeat call within TTL with same `(tenant, request_id)` AND same method, **original completed (success or error)** | Return cached response WITHOUT re-execution. |
-| Repeat call within TTL with same `(tenant, request_id)` but DIFFERENT method | Reject with `ALREADY_EXISTS`. |
+| First call with `(method, tenant, request_id)` | Insert in-flight marker. Execute. On completion of the handler — whether success OR non-success — replace the marker with the cached response (see "Error-path cleanup" below). Return the response. |
+| Repeat call within TTL with same `(method, tenant, request_id)`, **original still in-flight** | Block on the in-flight marker's condvar with a "shadow deadline" = `min(gRPC deadline, idempotency_in_flight_max_wait)`. When original completes: return the same response. If shadow deadline expires first, the abandoned in-flight marker expires and a later retry can execute with a fresh reservation. |
+| Repeat call within TTL with same `(method, tenant, request_id)`, **original completed (success or error)** | Return cached response WITHOUT re-execution. |
+| Repeat call within TTL with same `(tenant, request_id)` but DIFFERENT method | Independent cache entry; no cross-method collision. |
 | Repeat call AFTER TTL expired | Treated as new request. |
 
 Why the in-flight block (vs the round-1 draft which left this
@@ -112,7 +112,7 @@ module MUST:
    original caller). Errors are cacheable for idempotency
    purposes.
 2. `notify_all()` the marker's condition variable so any waiters
-   on the same `(tenant, request_id)` unblock immediately.
+   on the same `(method, tenant, request_id)` unblock immediately.
 3. Subsequent retries within TTL receive the same error response
    from cache, byte-for-byte identical to what the original caller
    saw.
@@ -200,7 +200,7 @@ telephony errors.
 | `OK` | Success. Always with `ErrorDetail.type=TYPE_UNSPECIFIED` (= unset). |
 | `INVALID_ARGUMENT` | Missing required field, malformed value, unknown enum, unsupported sample rate, etc. |
 | `NOT_FOUND` | Target channel UUID does not exist, dialplan context not found, etc. |
-| `ALREADY_EXISTS` | request_id reused for different method (see Idempotency). |
+| `ALREADY_EXISTS` | Duplicate resource or operation-specific uniqueness conflict. |
 | `PERMISSION_DENIED` | Tenant ACL rejected the operation. |
 | `UNAUTHENTICATED` | API key invalid or mTLS verification failed. |
 | `RESOURCE_EXHAUSTED` | Rate limit hit; concurrent call cap; port pool exhausted. |
@@ -614,8 +614,10 @@ can Stop without the stream_id if they have those.
 
 #### Recording relay
 
-`StartRecordingRelay` attaches a module-owned read tap plus write tap
-and sends recording audio to `relay_endpoint` as `RECORDING_RELAY`.
+`StartRecordingRelay` sends recording audio to `relay_endpoint` as
+`RECORDING_RELAY`. Mono mode attaches only a WRITE_STREAM tap and
+forwards the post-injection caller-ear mix. Stereo mode attaches READ_STREAM
+plus WRITE_STREAM and forwards L/R interleaved audio.
 The call is refused with `FAILED_PRECONDITION` unless a module-owned
 INJECT bug (`StartTts` or `StartVoicebot` write side) is already
 active on the channel. This keeps module-managed recordings behind bot
@@ -626,7 +628,7 @@ message StartRecordingRelayRequest {
   RequestHeader header = 1;
   string channel_uuid = 2;
   string relay_endpoint = 3;
-  bool stereo = 4;          // false = mono mixed, true = L/R interleaved
+  bool stereo = 4;          // false = mono post-injection write side, true = L/R
   uint32 sample_rate_hz = 5; // 0 = recording_default_rate_hz
 }
 

@@ -282,6 +282,10 @@ TEST_F(SetVariablesHandlerTest, ReservedPrefixReturnsInvalidArgument) {
         "wait_for_silence",
         "transfer_after_bridge",
         "session_in_hangup_hook",
+        "osw_bot_session",
+        "osw_bot_purpose",
+        "osw_eavesdrop_policy",
+        "osw_tenant",
         // Case-insensitive variants.
         "SIP_H_X-Custom",
         "API_ON_HANGUP",

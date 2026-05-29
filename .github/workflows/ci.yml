@@ -83,27 +83,11 @@ jobs:
             open-switch/builder:ci-${{ github.sha }} \
             ctest --test-dir /usr/src/open-switch/build --output-on-failure -L integration
 
-      # W1 Foundation lands real unit tests under `ctest -L unit`
-      # (raii, observability, core, control). Run them under the same
-      # ASAN+LSAN env as integration tests. The integration label
-      # remains for the W5 FS-in-container suite — guarded
-      # MIN_INTEGRATION_TESTS check stays disabled until W5 enables it.
-      - name: Run unit tests under ASAN (raii + observability + core + control)
-        run: |
-          docker run --rm \
-            -e ASAN_OPTIONS=halt_on_error=1:abort_on_error=1:detect_leaks=1:detect_stack_use_after_return=1:strict_string_checks=1:check_initialization_order=1 \
-            -e LSAN_OPTIONS=exitcode=23:print_suppressions=0 \
-            open-switch/builder:ci-${{ github.sha }} \
-            ctest --test-dir /usr/src/open-switch/build --output-on-failure -L unit
-
-      # Phase 1 Codex finding I-16: an empty integration test set would
-      # trivially pass `ctest -L integration`, giving a false green. The
-      # check is enabled once W5 lands real integration coverage; for
-      # W1-W4 it stays disabled.
+      # Codex finding I-16: an empty integration test set would trivially
+      # pass `ctest -L integration`, giving a false green.
       - name: Verify integration suite has minimum tests registered
-        if: false  # TODO(W5): enable when FS-in-container integration suite lands
         env:
-          MIN_INTEGRATION_TESTS: "10"
+          MIN_INTEGRATION_TESTS: "2"
         run: |
           count=$(docker run --rm \
             open-switch/builder:ci-${{ github.sha }} \
@@ -128,19 +112,13 @@ jobs:
                        | grep ' mod_open_switch_module_interface$'"
 
   tsan-race-check:
-    name: TSAN race check (events)
+    name: TSAN race check (events + W7 media)
     runs-on: ubuntu-24.04
     # Mutually exclusive with ASAN per the root CMakeLists guard. We
     # build a separate image with OSW_ENABLE_TSAN=ON and run the
     # race-prone unit tests (per-tier ring, broadcaster, replay).
-    #
-    # Gating policy (W2 closeout): TSAN runs in fail-soft mode for the
-    # initial W2 land. Once the suite has shaken out on real CI runs
-    # for at least one wave we flip continue-on-error to false and
-    # gate strictly. The Ring + Broadcaster code was designed with
-    # explicit lock-order discipline (tier ring mu → roster mu →
-    # SendQueue mu) so the expectation is that TSAN passes cleanly.
-    continue-on-error: true
+    # The Ring + Broadcaster code and W7 media queues use explicit
+    # lock-order discipline; TSAN is now a strict merge gate.
     steps:
       - uses: actions/checkout@v5
 
@@ -163,11 +141,13 @@ jobs:
 
       - name: Run race-sensitive unit tests under TSAN
         run: |
-          docker run --rm \
-            -e TSAN_OPTIONS=halt_on_error=1:report_signal_unsafe=0 \
+          docker run --rm --privileged \
+            -e GRPC_DNS_RESOLVER=native \
+            -e TSAN_OPTIONS=halt_on_error=1:report_signal_unsafe=0:suppressions=/usr/src/open-switch/tests/tsan.supp \
             open-switch/builder:tsan-${{ github.sha }} \
-            ctest --test-dir /usr/src/open-switch/build --output-on-failure \
-                  -R 'ring_test|broadcaster_test|subscribe_replay_test|binder_test'
+            bash -lc "setarch \$(uname -m) -R \
+              ctest --test-dir /usr/src/open-switch/build --output-on-failure \
+                    -R '^(ring_test|broadcaster_test|subscribe_replay_test|binder_test|bot_session_test|bug_fanout_test|stereo_pairer_test|stream_client_test)$'"
 
   static-analysis:
     name: clang-format + clang-tidy

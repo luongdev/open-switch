@@ -29,7 +29,9 @@
 #include "osw/raii/fs_api.h"
 
 #include "src/control/control_service_skeleton.h"
+#include "src/control/handlers/idempotency_utils.h"
 #include "src/control/handlers/media_bug_callbacks.h"
+#include "src/control/handlers/media_rate.h"
 
 namespace osw::control::handlers {
 
@@ -67,14 +69,22 @@ grpc::Status HandleStartStt(grpc::ServerContext* /*ctx*/,
         return grpc::Status(grpc::StatusCode::UNAVAILABLE, "media plane not initialised");
     }
 
-    auto sg = osw::control::SessionGuard::Locate(req->channel_uuid());
-    if (!sg.Valid()) {
-        return grpc::Status(grpc::StatusCode::NOT_FOUND, "channel not found");
+    {
+        auto sg = osw::control::SessionGuard::Locate(req->channel_uuid());
+        if (!sg.Valid()) {
+            return grpc::Status(grpc::StatusCode::NOT_FOUND, "channel not found");
+        }
+        grpc::Status rate_status = ValidateReadStreamRate(sg.get(), rate, "StartStt read");
+        if (!rate_status.ok()) {
+            return rate_status;
+        }
     }
 
     const std::string tenant_id = req->has_header() ? req->header().tenant_id() : std::string{};
+    const std::string stream_id = osw::events::GenerateUuidV7();
 
     osw::media::StreamConfig sc;
+    sc.stream_id = stream_id;
     sc.channel_uuid = req->channel_uuid();
     sc.tenant_id = tenant_id;
     sc.purpose = open_switch::media::v1::StreamStart::STT_TRANSCRIBE;
@@ -124,6 +134,18 @@ grpc::Status HandleStartStt(grpc::ServerContext* /*ctx*/,
         return open_st;
     }
 
+    auto sg = osw::control::SessionGuard::Locate(req->channel_uuid());
+    if (!sg.Valid()) {
+        client->Close();
+        return grpc::Status(grpc::StatusCode::NOT_FOUND, "channel not found");
+    }
+    grpc::Status rate_status = ValidateReadStreamRate(sg.get(), rate, "StartStt read");
+    if (!rate_status.ok()) {
+        client->Close();
+        return rate_status;
+    }
+    const std::uint32_t fs_read_rate = ReadMediaRate(sg.get()).sample_rate_hz;
+
     osw::media::BugConfig bug_cfg;
     bug_cfg.purpose = osw::media::Purpose::kSttTranscribe;
     bug_cfg.fs_flags = kReadStreamFlag;
@@ -140,11 +162,13 @@ grpc::Status HandleStartStt(grpc::ServerContext* /*ctx*/,
         return grpc::Status(attach.status_code, attach.error);
     }
 
-    // Wire read-tap callback: user_data is the StreamClient*.
+    // Wire read-tap callback.
+    auto read_ctx = std::make_unique<osw::control::handlers::ReadCallbackCtx>();
+    read_ctx->client = client.get();
+    read_ctx->stream_rate_hz = rate;
+    read_ctx->fs_rate_hz = fs_read_rate;
     const std::uint64_t bug_id = osw::media::MediaBugManager::BugId(attach.handle);
-    bug_mgr->SetBugCallback(bug_id, reinterpret_cast<void*>(OswStreamingReadTap), client.get());
-
-    const std::string stream_id = osw::events::GenerateUuidV7();
+    bug_mgr->SetBugCallback(bug_id, reinterpret_cast<void*>(OswStreamingReadTap), read_ctx.get());
 
     auto stream = std::make_unique<osw::control::ActiveMediaStream>();
     stream->channel_uuid = req->channel_uuid();
@@ -152,6 +176,7 @@ grpc::Status HandleStartStt(grpc::ServerContext* /*ctx*/,
     stream->purpose = open_switch::media::v1::StreamStart::STT_TRANSCRIBE;
     stream->bugs.push_back(std::move(attach.handle));
     stream->client = std::move(client);
+    stream->read_ctx = std::unique_ptr<void, osw::control::ReadCtxDeleter>(read_ctx.release());
     // tts_buffer and write_ctx remain null for STT.
 
     if (!streams->Insert(std::move(stream))) {
@@ -188,11 +213,21 @@ grpc::Status osw::control::ControlServiceSkeleton::StartStt(
     if (!config) {
         return grpc::Status(grpc::StatusCode::UNAVAILABLE, "media config not initialised");
     }
-    return osw::control::handlers::HandleStartStt(
-        ctx,
-        req,
+    const std::string tenant_id = (req && req->has_header()) ? req->header().tenant_id() : "";
+    const std::string request_id = (req && req->has_header()) ? req->header().request_id() : "";
+    return osw::control::handlers::RunIdempotent(
+        idempotency_cache_.load(std::memory_order_acquire),
+        "StartStt",
+        tenant_id,
+        request_id,
         resp,
-        bug_mgr_.load(std::memory_order_acquire),
-        active_media_streams_.load(std::memory_order_acquire),
-        *config);
+        [&]() {
+            return osw::control::handlers::HandleStartStt(
+                ctx,
+                req,
+                resp,
+                bug_mgr_.load(std::memory_order_acquire),
+                active_media_streams_.load(std::memory_order_acquire),
+                *config);
+        });
 }

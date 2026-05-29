@@ -1,0 +1,16 @@
+# ThreadSanitizer suppressions for third-party runtime internals.
+#
+# gRPC's event engine starts background threads that share Abseil container
+# state in ways TSAN reports inside the dependency. Keep these suppressions
+# scoped to grpc/absl symbols so module-owned media/control code still gates.
+
+race:grpc_core::*
+race:grpc_event_engine::experimental::*
+race:grpc_*
+race:gpr_*
+race:do_embiggen
+race:ares_*
+race:config_nameserver
+race:init_by_resolv_conf
+race:absl::*
+race:absl::lts_*::container_internal::*

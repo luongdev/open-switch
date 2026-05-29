@@ -66,7 +66,7 @@ void HandleOswEavesdropApp(switch_core_session_t* session, const char* data) noe
                     switch_channel_t* supervisor_channel =
                         ::osw::raii::fs::SessionGetChannel(session);
                     (void)::osw::raii::fs::ChannelHangup(supervisor_channel,
-                                                         SWITCH_CAUSE_CALL_REJECTED);
+                                                         SWITCH_CAUSE_POLICY_REJECTED);
                     return;
                 }
                 delegate_to_fs = true;

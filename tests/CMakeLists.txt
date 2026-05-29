@@ -10,8 +10,9 @@
 #                   Cheap, run on every PR.
 #   unit          - Per-subsystem unit tests (config, log, health,
 #                   server start/stop). FS-mock seam where applicable.
-#   integration   - Cross-subsystem integration tests. Currently empty;
-#                   populated in W5 when a real-FS harness exists.
+#   integration   - Cross-subsystem tests registered as CI integration
+#                   coverage. The current W7 suite reuses in-process gRPC
+#                   handler binaries until the real-FS harness lands.
 #
 # ASAN + LSAN gating is inherited from the root CMakeLists.txt's
 # OSW_ENABLE_ASAN option. The CI workflow already runs ctest -L unit
@@ -87,3 +88,4 @@ function(osw_add_unit_test)
 endfunction()
 
 add_subdirectory(unit)
+add_subdirectory(integration)

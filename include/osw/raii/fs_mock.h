@@ -75,6 +75,13 @@ using switch_xml_t = switch_xml*;  // FS typedefs switch_xml_t to a pointer
 struct switch_frame;
 using switch_frame_t = switch_frame;
 
+struct switch_codec_implementation {
+    uint32_t samples_per_second = 16000;
+    uint32_t actual_samples_per_second = 16000;
+    uint8_t number_of_channels = 1;
+};
+using switch_codec_implementation_t = switch_codec_implementation;
+
 struct switch_loadable_module_interface;
 using switch_loadable_module_interface_t = switch_loadable_module_interface;
 
@@ -126,6 +133,7 @@ constexpr switch_call_cause_t SWITCH_CAUSE_NO_USER_RESPONSE = 18;
 constexpr switch_call_cause_t SWITCH_CAUSE_NO_ANSWER = 19;
 constexpr switch_call_cause_t SWITCH_CAUSE_SUBSCRIBER_ABSENT = 20;
 constexpr switch_call_cause_t SWITCH_CAUSE_CALL_REJECTED = 21;
+constexpr switch_call_cause_t SWITCH_CAUSE_POLICY_REJECTED = SWITCH_CAUSE_CALL_REJECTED;
 constexpr switch_call_cause_t SWITCH_CAUSE_NUMBER_CHANGED = 22;
 constexpr switch_call_cause_t SWITCH_CAUSE_REDIRECTION_TO_NEW_DESTINATION = 23;
 constexpr switch_call_cause_t SWITCH_CAUSE_EXCHANGE_ROUTING_ERROR = 25;
@@ -280,6 +288,8 @@ struct MockState {
     std::atomic<int> media_bug_add_calls{0};
     std::atomic<int> media_bug_remove_calls{0};
     std::atomic<int> media_bug_count_calls{0};
+    std::atomic<int> session_get_read_impl_calls{0};
+    std::atomic<int> session_get_write_impl_calls{0};
     std::mutex media_bug_add_block_mu;
     std::condition_variable media_bug_add_cv;
     int media_bug_add_block_remaining = 0;
@@ -315,6 +325,10 @@ struct MockState {
     switch_status_t next_bug_add_status = SWITCH_STATUS_SUCCESS;
     switch_status_t next_bug_remove_status = SWITCH_STATUS_SUCCESS;
     std::uint32_t next_media_bug_count = 0;
+    switch_status_t next_get_read_impl_status = SWITCH_STATUS_SUCCESS;
+    switch_status_t next_get_write_impl_status = SWITCH_STATUS_SUCCESS;
+    switch_codec_implementation_t next_read_impl{};
+    switch_codec_implementation_t next_write_impl{};
     switch_xml_t next_xml_root = nullptr;
     // W3 originate / hangup programmable returns.
     switch_status_t next_originate_status = SWITCH_STATUS_SUCCESS;
@@ -528,6 +542,8 @@ inline void MockReset() {
     m.media_bug_add_calls = 0;
     m.media_bug_remove_calls = 0;
     m.media_bug_count_calls = 0;
+    m.session_get_read_impl_calls = 0;
+    m.session_get_write_impl_calls = 0;
     {
         std::lock_guard<std::mutex> g(m.media_bug_add_block_mu);
         m.media_bug_add_block_remaining = 0;
@@ -548,6 +564,10 @@ inline void MockReset() {
     m.next_bug_add_status = SWITCH_STATUS_SUCCESS;
     m.next_bug_remove_status = SWITCH_STATUS_SUCCESS;
     m.next_media_bug_count = 0;
+    m.next_get_read_impl_status = SWITCH_STATUS_SUCCESS;
+    m.next_get_write_impl_status = SWITCH_STATUS_SUCCESS;
+    m.next_read_impl = switch_codec_implementation_t{};
+    m.next_write_impl = switch_codec_implementation_t{};
     m.next_xml_root = nullptr;
     m.originate_calls = 0;
     m.channel_hangup_calls = 0;
@@ -988,6 +1008,32 @@ inline const char* SessionGetUuid(switch_core_session_t* session) noexcept {
     }
     const auto& uuid = Mock().next_bleg_uuid;
     return uuid.empty() ? nullptr : uuid.c_str();
+}
+
+inline switch_status_t SessionGetReadImpl(switch_core_session_t* session,
+                                          switch_codec_implementation_t* impp) noexcept {
+    auto& m = Mock();
+    m.session_get_read_impl_calls.fetch_add(1, std::memory_order_relaxed);
+    if (!session || !impp) {
+        return SWITCH_STATUS_FALSE;
+    }
+    if (m.next_get_read_impl_status == SWITCH_STATUS_SUCCESS) {
+        *impp = m.next_read_impl;
+    }
+    return m.next_get_read_impl_status;
+}
+
+inline switch_status_t SessionGetWriteImpl(switch_core_session_t* session,
+                                           switch_codec_implementation_t* impp) noexcept {
+    auto& m = Mock();
+    m.session_get_write_impl_calls.fetch_add(1, std::memory_order_relaxed);
+    if (!session || !impp) {
+        return SWITCH_STATUS_FALSE;
+    }
+    if (m.next_get_write_impl_status == SWITCH_STATUS_SUCCESS) {
+        *impp = m.next_write_impl;
+    }
+    return m.next_get_write_impl_status;
 }
 
 // W3 Track B — Bridge / Execute / BlindTransfer (FF-023..025) -------

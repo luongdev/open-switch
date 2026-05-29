@@ -114,7 +114,7 @@ TEST_F(EavesdropDetectorTest, EmitsAuditForBotMarkedDenyPolicy) {
         std::lock_guard<std::mutex> g(m.capture_mu);
         ASSERT_EQ(m.hangup_invocations.size(), 1u);
         EXPECT_EQ(m.hangup_invocations[0].channel, kTargetChannel);
-        EXPECT_EQ(m.hangup_invocations[0].cause, SWITCH_CAUSE_CALL_REJECTED);
+        EXPECT_EQ(m.hangup_invocations[0].cause, SWITCH_CAUSE_POLICY_REJECTED);
     }
 }
 

@@ -28,6 +28,7 @@
 
 #include "osw/media/audio_frame.h"
 #include "osw/media/bug_handle.h"
+#include "osw/media/resampler.h"
 
 namespace osw::media {
 
@@ -58,6 +59,10 @@ class BotSession;
 struct BotReadTapCtx {
     BotSession* bot = nullptr;
     std::string channel_uuid;
+    std::uint32_t stream_rate_hz = 0;
+    std::uint32_t fs_rate_hz = 0;
+    std::unique_ptr<Resampler> resampler;
+    bool resampler_error_logged = false;
 };
 
 /// Context passed to the W7 bot write-replace callback. Owned by BotSession
@@ -65,6 +70,9 @@ struct BotReadTapCtx {
 struct BotWriteReplaceCtx {
     BotSession* bot = nullptr;
     std::string channel_uuid;
+    std::uint32_t fs_rate_hz = 0;
+    std::unique_ptr<Resampler> resampler;
+    bool resampler_error_logged = false;
     bool first_set_frame_logged = false;
 };
 

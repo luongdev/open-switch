@@ -157,10 +157,30 @@ W7 ships when:
       report.
 - [ ] Wave-closeout doc `W7-review-report.md` written by the
       orchestrator and committed.
-- [ ] `make protos.lint && make protos && make edge.build &&
-      make edge.test && make edge.lint && make engine.test &&
-      make engine.lint && make llama.gate && make leakage.scan`
-      all green on a fresh build from `main` HEAD.
+- [ ] Fresh Docker builder from `main` HEAD builds and passes the repo
+      gates:
+
+      ```bash
+      docker buildx build \
+        --build-arg OSW_ENABLE_ASAN=ON \
+        --build-arg OSW_BUILD_TESTS=ON \
+        --build-arg BUILD_TYPE=Debug \
+        --build-arg BASE_TAG=1.10.12-trixie \
+        --target fs-builder \
+        -f deploy/docker/Dockerfile.builder \
+        --load \
+        -t open-switch/builder:w7-gate \
+        .
+
+      docker run --rm \
+        -e ASAN_OPTIONS=halt_on_error=1:abort_on_error=1:detect_leaks=1 \
+        -e LSAN_OPTIONS=exitcode=23:print_suppressions=0 \
+        open-switch/builder:w7-gate \
+        ctest --test-dir /usr/src/open-switch/build --output-on-failure -L unit
+
+      docker run --rm open-switch/builder:w7-gate \
+        ctest --test-dir /usr/src/open-switch/build --output-on-failure -L integration
+      ```
 
 ## Track briefs
 

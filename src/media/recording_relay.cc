@@ -11,7 +11,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
-#include <limits>
 #include <utility>
 
 #include "open_switch/media/v1/media.pb.h"
@@ -46,12 +45,15 @@ std::int16_t ReadInt16Le(const std::vector<std::uint8_t>& bytes, std::size_t sam
     return static_cast<std::int16_t>(value);
 }
 
-std::int16_t AverageSamples(std::int16_t left, std::int16_t right) noexcept {
-    const int mixed = (static_cast<int>(left) + static_cast<int>(right)) / 2;
-    return static_cast<std::int16_t>(
-        std::clamp(mixed,
-                   static_cast<int>(std::numeric_limits<std::int16_t>::min()),
-                   static_cast<int>(std::numeric_limits<std::int16_t>::max())));
+std::size_t ResampledCapacity(std::size_t in_samples,
+                              std::uint32_t from_hz,
+                              std::uint32_t to_hz) noexcept {
+    if (in_samples == 0 || from_hz == 0 || to_hz == 0) {
+        return 0;
+    }
+    const std::uint64_t numerator =
+        static_cast<std::uint64_t>(in_samples) * static_cast<std::uint64_t>(to_hz);
+    return static_cast<std::size_t>((numerator + from_hz - 1u) / from_hz) + 16u;
 }
 
 #if !defined(OSW_TEST_FS_MOCK)
@@ -88,6 +90,10 @@ RecordingRelay::~RecordingRelay() noexcept {
 }
 
 void RecordingRelay::Start() noexcept {
+    if (!config_.stereo) {
+        stopped_.store(false, std::memory_order_release);
+        return;
+    }
     if (tick_thread_.joinable()) {
         return;
     }
@@ -123,20 +129,40 @@ bool RecordingRelay::Stopped() const noexcept {
 }
 
 void RecordingRelay::PushReadFrame(std::uint64_t fs_timestamp_samples,
+                                   std::uint32_t sample_rate_hz,
                                    std::span<const std::int16_t> samples) noexcept {
-    PushSide(true, fs_timestamp_samples, samples);
+    if (!config_.stereo) {
+        return;
+    }
+    PushSide(true, fs_timestamp_samples, sample_rate_hz, samples);
 }
 
 void RecordingRelay::PushWriteFrame(std::uint64_t fs_timestamp_samples,
+                                    std::uint32_t sample_rate_hz,
                                     std::span<const std::int16_t> samples) noexcept {
-    PushSide(false, fs_timestamp_samples, samples);
+    if (!config_.stereo) {
+        FlushMonoFrame(fs_timestamp_samples, sample_rate_hz, samples);
+        return;
+    }
+    PushSide(false, fs_timestamp_samples, sample_rate_hz, samples);
 }
 
 void RecordingRelay::PushSide(bool left,
                               std::uint64_t fs_timestamp_samples,
+                              std::uint32_t sample_rate_hz,
                               std::span<const std::int16_t> samples) noexcept {
     if (Stopped() || !client_ || samples.empty()) {
         return;
+    }
+    const std::uint32_t source_rate =
+        sample_rate_hz != 0 ? sample_rate_hz
+                            : (left ? config_.read_fs_rate_hz : config_.write_fs_rate_hz);
+    std::vector<std::int16_t> converted;
+    if (!ResampleIfNeeded(left, source_rate, samples, &converted)) {
+        return;
+    }
+    if (!converted.empty()) {
+        samples = std::span<const std::int16_t>(converted.data(), converted.size());
     }
     const std::uint64_t before_desync = pairer_.DesyncCount();
     auto paired = left ? pairer_.PushLeft(fs_timestamp_samples, samples)
@@ -153,6 +179,34 @@ void RecordingRelay::PushSide(bool left,
     }
     if (paired.has_value()) {
         FlushPairedFrame(std::move(*paired));
+    }
+}
+
+void RecordingRelay::FlushMonoFrame(std::uint64_t /*fs_timestamp_samples*/,
+                                    std::uint32_t sample_rate_hz,
+                                    std::span<const std::int16_t> samples) noexcept {
+    if (Stopped() || !client_ || samples.empty()) {
+        return;
+    }
+    try {
+        std::vector<std::int16_t> owned;
+        const std::uint32_t source_rate =
+            sample_rate_hz != 0 ? sample_rate_hz : config_.write_fs_rate_hz;
+        if (!ResampleIfNeeded(false, source_rate, samples, &owned)) {
+            return;
+        }
+        if (owned.empty()) {
+            owned.assign(samples.begin(), samples.end());
+        }
+        const std::uint64_t seq = client_->NextSeq();
+        const std::uint64_t timestamp =
+            client_->AdvanceTimestamp(static_cast<std::uint32_t>(owned.size()));
+        AudioFrame frame(std::move(owned), config_.sample_rate_hz, 1, seq, timestamp, 0);
+        if (!client_->SendAudio(std::move(frame))) {
+            EmitRateLimited("osw.recording.send_overflow", &last_overflow_emit_);
+        }
+    } catch (...) {
+        EmitRateLimited("osw.recording.send_overflow", &last_overflow_emit_);
     }
 }
 
@@ -198,12 +252,7 @@ void RecordingRelay::FlushPairedFrame(PairedFrame paired) noexcept {
                 samples.push_back(ReadInt16Le(paired.interleaved, i));
             }
         } else {
-            samples.reserve(paired.samples_per_channel);
-            for (std::uint32_t i = 0; i < paired.samples_per_channel; ++i) {
-                const std::int16_t left = ReadInt16Le(paired.interleaved, i * 2u);
-                const std::int16_t right = ReadInt16Le(paired.interleaved, i * 2u + 1u);
-                samples.push_back(AverageSamples(left, right));
-            }
+            return;
         }
 
         const std::uint64_t seq = client_->NextSeq();
@@ -216,6 +265,48 @@ void RecordingRelay::FlushPairedFrame(PairedFrame paired) noexcept {
     } catch (...) {
         EmitRateLimited("osw.recording.send_overflow", &last_overflow_emit_);
     }
+}
+
+bool RecordingRelay::ResampleIfNeeded(bool left,
+                                      std::uint32_t from_hz,
+                                      std::span<const std::int16_t> in,
+                                      std::vector<std::int16_t>* out) noexcept {
+    if (!out || in.empty()) {
+        return false;
+    }
+    if (from_hz == 0) {
+        return false;
+    }
+    if (from_hz == config_.sample_rate_hz) {
+        return true;
+    }
+    std::lock_guard<std::mutex> lock(resampler_mu_);
+    auto& resampler = left ? read_resampler_ : write_resampler_;
+    bool& logged = left ? read_resampler_error_logged_ : write_resampler_error_logged_;
+    if (!resampler) {
+        resampler =
+            Resampler::Create(static_cast<int>(from_hz), static_cast<int>(config_.sample_rate_hz));
+    }
+    if (!resampler) {
+        if (!logged) {
+            logged = true;
+            osw::log::Error("media.recording_relay",
+                            "unsupported recording relay rate pair stream_id=%s from_hz=%u "
+                            "to_hz=%u",
+                            config_.stream_id.c_str(),
+                            from_hz,
+                            config_.sample_rate_hz);
+        }
+        return false;
+    }
+    out->resize(ResampledCapacity(in.size(), from_hz, config_.sample_rate_hz));
+    const std::size_t written = resampler->Process(in.data(), in.size(), out->data(), out->size());
+    if (written == 0) {
+        out->clear();
+        return false;
+    }
+    out->resize(written);
+    return true;
 }
 
 void RecordingRelay::EmitRateLimited(const char* subclass,
@@ -240,57 +331,65 @@ void RecordingRelay::EmitRateLimited(const char* subclass,
 extern "C" switch_bool_t OswRecordingReadTap(switch_media_bug_t* bug,
                                              void* user_data,
                                              switch_abc_type_t type) noexcept {
-    const int t = static_cast<int>(type);
-    if (t == kAbcTypeInit || t == kAbcTypeClose) {
-        return SWITCH_TRUE;
-    }
-    if (t != kAbcTypeRead) {
-        return SWITCH_TRUE;
-    }
     auto* relay = static_cast<osw::media::RecordingRelay*>(user_data);
-    if (!relay || relay->Stopped()) {
-        return SWITCH_TRUE;
-    }
+    try {
+        const int t = static_cast<int>(type);
+        if (t == kAbcTypeInit || t == kAbcTypeClose) {
+            return SWITCH_TRUE;
+        }
+        if (t != kAbcTypeRead) {
+            return SWITCH_TRUE;
+        }
+        if (!relay || relay->Stopped()) {
+            return SWITCH_TRUE;
+        }
 
 #if !defined(OSW_TEST_FS_MOCK)
-    switch_frame_t frame{};
-    if (osw::raii::fs::MediaBugRead(bug, &frame, SWITCH_FALSE) != SWITCH_STATUS_SUCCESS ||
-        !frame.data || frame.datalen == 0) {
-        return SWITCH_TRUE;
-    }
-    const auto samples = MonoSamplesFromFrame(frame);
-    relay->PushReadFrame(static_cast<std::uint64_t>(frame.timestamp), samples);
+        switch_frame_t frame{};
+        if (osw::raii::fs::MediaBugRead(bug, &frame, SWITCH_FALSE) != SWITCH_STATUS_SUCCESS ||
+            !frame.data || frame.datalen == 0) {
+            return SWITCH_TRUE;
+        }
+        const auto samples = MonoSamplesFromFrame(frame);
+        relay->PushReadFrame(static_cast<std::uint64_t>(frame.timestamp), frame.rate, samples);
 #else
-    (void)bug;
+        (void)bug;
 #endif
+    } catch (...) {
+        osw::log::Error("media.recording_relay", "OswRecordingReadTap exception");
+    }
     return SWITCH_TRUE;
 }
 
 extern "C" switch_bool_t OswRecordingWriteTap(switch_media_bug_t* bug,
                                               void* user_data,
                                               switch_abc_type_t type) noexcept {
-    const int t = static_cast<int>(type);
-    if (t == kAbcTypeInit || t == kAbcTypeClose) {
-        return SWITCH_TRUE;
-    }
-    if (t != kAbcTypeWrite) {
-        return SWITCH_TRUE;
-    }
     auto* relay = static_cast<osw::media::RecordingRelay*>(user_data);
-    if (!relay || relay->Stopped()) {
-        return SWITCH_TRUE;
-    }
+    try {
+        const int t = static_cast<int>(type);
+        if (t == kAbcTypeInit || t == kAbcTypeClose) {
+            return SWITCH_TRUE;
+        }
+        if (t != kAbcTypeWrite) {
+            return SWITCH_TRUE;
+        }
+        if (!relay || relay->Stopped()) {
+            return SWITCH_TRUE;
+        }
 
 #if !defined(OSW_TEST_FS_MOCK)
-    switch_frame_t frame{};
-    if (osw::raii::fs::MediaBugRead(bug, &frame, SWITCH_FALSE) != SWITCH_STATUS_SUCCESS ||
-        !frame.data || frame.datalen == 0) {
-        return SWITCH_TRUE;
-    }
-    const auto samples = MonoSamplesFromFrame(frame);
-    relay->PushWriteFrame(static_cast<std::uint64_t>(frame.timestamp), samples);
+        switch_frame_t frame{};
+        if (osw::raii::fs::MediaBugRead(bug, &frame, SWITCH_FALSE) != SWITCH_STATUS_SUCCESS ||
+            !frame.data || frame.datalen == 0) {
+            return SWITCH_TRUE;
+        }
+        const auto samples = MonoSamplesFromFrame(frame);
+        relay->PushWriteFrame(static_cast<std::uint64_t>(frame.timestamp), frame.rate, samples);
 #else
-    (void)bug;
+        (void)bug;
 #endif
+    } catch (...) {
+        osw::log::Error("media.recording_relay", "OswRecordingWriteTap exception");
+    }
     return SWITCH_TRUE;
 }

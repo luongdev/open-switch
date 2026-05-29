@@ -24,9 +24,15 @@
 #include "osw/media/bug_manager.h"
 #include "osw/observability/audit.h"
 #include "osw/observability/log.h"
+#include "osw/raii/fs_api.h"
+#include "osw/raii/session_lock.h"
+#include "osw/security/eavesdrop_marker.h"
+#include "osw/security/eavesdrop_policy.h"
 
 #include "src/control/control_service_skeleton.h"
+#include "src/control/handlers/idempotency_utils.h"
 #include "src/control/handlers/media_bug_callbacks.h"
+#include "src/control/handlers/media_rate.h"
 
 namespace osw::control::handlers {
 
@@ -113,6 +119,54 @@ grpc::Status ValidateStartBot(const StartBotRequest& req,
     return grpc::Status::OK;
 }
 
+bool SupportsRead(StartBotRequest::Purpose purpose) noexcept {
+    return purpose == StartBotRequest::STT_LISTEN || purpose == StartBotRequest::VOICEBOT_DUPLEX ||
+           purpose == StartBotRequest::WHISPER;
+}
+
+bool SupportsWrite(StartBotRequest::Purpose purpose) noexcept {
+    return purpose == StartBotRequest::TTS_BROADCAST ||
+           purpose == StartBotRequest::VOICEBOT_DUPLEX || purpose == StartBotRequest::WHISPER;
+}
+
+bool ShouldWriteTarget(const StartBotRequest& req, const std::string& channel_uuid) {
+    if (!SupportsWrite(req.purpose())) {
+        return false;
+    }
+    if (req.purpose() != StartBotRequest::WHISPER) {
+        return true;
+    }
+    for (const auto& uuid : req.write_target_channel_uuids()) {
+        if (uuid == channel_uuid) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void MaybeWarnRecordBeforeInject(switch_core_session_t* session,
+                                 const std::string& channel_uuid,
+                                 const std::string& tenant_id,
+                                 const char* purpose,
+                                 const osw::Config& config) noexcept {
+    if (!session || !config.warn_record_before_inject) {
+        return;
+    }
+    const std::uint32_t native_record_count =
+        osw::raii::fs::MediaBugCount(session, "record_session");
+    if (native_record_count == 0) {
+        return;
+    }
+    osw::audit::EmitSubclass(
+        "osw.recording.warn_record_before_inject",
+        {{"channel_uuid", channel_uuid},
+         {"tenant_id", tenant_id},
+         {"inject_purpose", purpose ? purpose : "bot"},
+         {"native_record_count", std::to_string(native_record_count)},
+         {"remediation",
+          "Reorder dialplan: attach bot media before record_session, or use StartRecordingRelay"}});
+}
+
 }  // namespace
 
 grpc::Status HandleStartBot(grpc::ServerContext* ctx,
@@ -154,6 +208,22 @@ grpc::Status HandleStartBot(grpc::ServerContext* ctx,
         if (active_bots->ChannelAtCapacity(channel_uuid, config.max_bots_per_channel)) {
             return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
                                 "channel already has maximum active bots");
+        }
+        osw::SessionLock lock(channel_uuid.c_str());
+        if (!lock) {
+            return grpc::Status(grpc::StatusCode::NOT_FOUND, "channel not found: " + channel_uuid);
+        }
+        if (SupportsRead(req->purpose())) {
+            grpc::Status read_rate = ValidateReadStreamRate(lock.get(), rate, "StartBot read");
+            if (!read_rate.ok()) {
+                return read_rate;
+            }
+        }
+        if (ShouldWriteTarget(*req, channel_uuid)) {
+            grpc::Status write_rate = ValidateWriteStreamRate(lock.get(), rate, "StartBot write");
+            if (!write_rate.ok()) {
+                return write_rate;
+            }
         }
     }
 
@@ -209,6 +279,21 @@ grpc::Status HandleStartBot(grpc::ServerContext* ctx,
         return attach_st;
     }
 
+    const osw::security::EavesdropPolicy effective_policy =
+        osw::security::ResolveEffectivePolicy(config, tenant_id);
+    for (const auto& channel_uuid : req->target_channel_uuids()) {
+        osw::SessionLock lock(channel_uuid.c_str());
+        if (!lock) {
+            continue;
+        }
+        osw::security::MarkBotSession(
+            lock.get(), PurposeName(req->purpose()), effective_policy, tenant_id);
+        if (ShouldWriteTarget(*req, channel_uuid)) {
+            MaybeWarnRecordBeforeInject(
+                lock.get(), channel_uuid, tenant_id, PurposeName(req->purpose()), config);
+        }
+    }
+
     ActiveBot bot;
     bot.bot_id = bot_id;
     bot.target_channel_uuids = session->TargetUuids();
@@ -252,12 +337,22 @@ grpc::Status osw::control::ControlServiceSkeleton::StartBot(
     if (!config) {
         return grpc::Status(grpc::StatusCode::UNAVAILABLE, "media config not initialised");
     }
-    return osw::control::handlers::HandleStartBot(
-        ctx,
-        req,
+    const std::string tenant_id = (req && req->has_header()) ? req->header().tenant_id() : "";
+    const std::string request_id = (req && req->has_header()) ? req->header().request_id() : "";
+    return osw::control::handlers::RunIdempotent(
+        idempotency_cache_.load(std::memory_order_acquire),
+        "StartBot",
+        tenant_id,
+        request_id,
         resp,
-        bug_mgr_.load(std::memory_order_acquire),
-        active_media_streams_.load(std::memory_order_acquire),
-        active_bots_.load(std::memory_order_acquire),
-        *config);
+        [&]() {
+            return osw::control::handlers::HandleStartBot(
+                ctx,
+                req,
+                resp,
+                bug_mgr_.load(std::memory_order_acquire),
+                active_media_streams_.load(std::memory_order_acquire),
+                active_bots_.load(std::memory_order_acquire),
+                *config);
+        });
 }
