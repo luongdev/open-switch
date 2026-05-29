@@ -203,14 +203,17 @@ jobs:
           docker run --rm \
             open-switch/builder:ci-tidy-${{ github.sha }} \
             bash -c "cd /usr/src/open-switch && \
-                     find src -name '*.cc' \
-                       -not -path 'src/observability/log_default_sink.cc' \
-                       | xargs clang-tidy -p build --warnings-as-errors='*'"
+                     run-clang-tidy -p build \
+                       -j \$(nproc) \
+                       -quiet \
+                       -warnings-as-errors='*' \
+                       '^/usr/src/open-switch/src/(?!observability/log_default_sink\\.cc$).*\\.cc$'"
           # log_default_sink.cc and other FS-dependent TUs include
           # <switch.h>; clang-tidy on macOS hosts struggled with FS
           # macros earlier. We rely on the Linux builder image's tidy
-          # which has the FS headers and gRPC available — this command
-          # exercises the full set there.
+          # which has the FS headers and gRPC available. run-clang-tidy
+          # keeps the full src/ coverage but fans out over runner cores
+          # instead of processing every compile_commands entry serially.
 
   docs-lint:
     name: Spec docs lint (markdownlint)
