@@ -40,6 +40,7 @@
 
 #include "osw/core/module.h"
 #include "osw/observability/log.h"
+#include "osw/security/eavesdrop_app.h"
 
 // FF-009: declare-then-define the load + shutdown entry points so
 // SWITCH_MODULE_DEFINITION can take their addresses.
@@ -74,6 +75,8 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_open_switch_load) {
                               "module interface\n");
             return SWITCH_STATUS_GENERR;
         }
+
+        osw::security::RegisterOswEavesdropApp(module_interface);
 
         if (!osw::Module::Instance().Load(pool, *module_interface)) {
             // osw::Module::Load logs the detailed failure cause.

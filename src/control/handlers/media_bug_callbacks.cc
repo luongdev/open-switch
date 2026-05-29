@@ -14,9 +14,11 @@
 // Include FS headers or mock seam first via the canonical seam.
 #include "src/control/handlers/media_bug_callbacks.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "osw/media/audio_frame.h"
+#include "osw/media/bot_session.h"
 #include "osw/media/bug_manager.h"
 #include "osw/media/stream_client.h"
 #include "osw/media/tts_playout_buffer.h"
@@ -43,6 +45,8 @@ constexpr int kAbcTypeWriteReplace = static_cast<int>(SWITCH_ABC_TYPE_WRITE_REPL
 constexpr int kAbcTypeInit = static_cast<int>(SWITCH_ABC_TYPE_INIT);
 constexpr int kAbcTypeClose = static_cast<int>(SWITCH_ABC_TYPE_CLOSE);
 #endif
+
+constexpr const char* kBotCallbackSubsystem = "media.bot_callback";
 
 // The BugCallbackContext is defined in bug_manager.cc. We access it via the
 // type defined there — it is deliberately public-but-internal in that TU.
@@ -84,28 +88,20 @@ extern "C" switch_bool_t OswStreamingReadTap(switch_media_bug_t* bug,
         return SWITCH_TRUE;
     }
 
-    // Get the read-replace frame (read tap uses SMBF_READ_STREAM, which
-    // uses switch_core_media_bug_get_read_replace_frame in WRITE_REPLACE
-    // mode — but for READ_STREAM we use the read frame directly).
-    // For SMBF_READ_STREAM, the correct API is get_read_replace_frame
-    // (used in read-stream callbacks when SMBF_READ_REPLACE is not set
-    // the frame is still available via this call with a copy).
-    auto* frame = osw::raii::fs::MediaBugGetReadReplaceFrame(bug);
-    if (!frame) {
-        return SWITCH_TRUE;
-    }
-
 #if !defined(OSW_TEST_FS_MOCK)
-    // In production, switch_frame_t has data / datalen / samples / rate fields.
-    if (frame->datalen == 0 || !frame->data) {
+    // SMBF_READ_STREAM callbacks must pull the current frame with
+    // switch_core_media_bug_read. Read-replace accessors are for
+    // READ_REPLACE-style bugs and do not carry plain read-stream audio.
+    switch_frame_t frame{};
+    if (osw::raii::fs::MediaBugRead(bug, &frame, SWITCH_FALSE) != SWITCH_STATUS_SUCCESS ||
+        frame.datalen == 0 || !frame.data) {
         return SWITCH_TRUE;
     }
 
-    const auto* src = static_cast<const std::int16_t*>(frame->data);
-    const std::uint32_t n_samples = frame->datalen / sizeof(std::int16_t);
-    const std::uint32_t rate = frame->rate;
-    const std::uint32_t ch =
-        (frame->channels > 0) ? static_cast<std::uint32_t>(frame->channels) : 1;
+    const auto* src = static_cast<const std::int16_t*>(frame.data);
+    const std::uint32_t n_samples = frame.datalen / sizeof(std::int16_t);
+    const std::uint32_t rate = frame.rate;
+    const std::uint32_t ch = (frame.channels > 0) ? static_cast<std::uint32_t>(frame.channels) : 1;
 
     std::vector<std::int16_t> samples(src, src + n_samples);
 
@@ -124,7 +120,7 @@ extern "C" switch_bool_t OswStreamingReadTap(switch_media_bug_t* bug,
     // In tests, switch_frame_t is opaque (incomplete type). The test injects
     // frames through the buffer->Push path directly; the callback is invoked
     // as a no-op in mock mode (tests drive the buffer directly).
-    (void)frame;
+    (void)bug;
 #endif
 
     return SWITCH_TRUE;
@@ -183,5 +179,120 @@ extern "C" switch_bool_t OswStreamingWriteReplace(switch_media_bug_t* bug,
     (void)frame;
 #endif
 
+    return SWITCH_TRUE;
+}
+
+extern "C" switch_bool_t OswBotReadTap(switch_media_bug_t* bug,
+                                       void* user_data,
+                                       switch_abc_type_t type) noexcept {
+    auto* ctx = static_cast<osw::media::BotReadTapCtx*>(user_data);
+    try {
+        const int t = static_cast<int>(type);
+
+        if (t == kAbcTypeClose) {
+            if (ctx && ctx->bot) {
+                ctx->bot->OnTargetClose(ctx->channel_uuid, /*direction=*/0);
+            }
+            return SWITCH_TRUE;
+        }
+        if (t == kAbcTypeInit || (t != kAbcTypeRead && t != kAbcTypeReadPing)) {
+            return SWITCH_TRUE;
+        }
+        if (!ctx || !ctx->bot || ctx->bot->IsStopped()) {
+            return SWITCH_TRUE;
+        }
+
+#if !defined(OSW_TEST_FS_MOCK)
+        switch_frame_t frame{};
+        if (osw::raii::fs::MediaBugRead(bug, &frame, SWITCH_FALSE) != SWITCH_STATUS_SUCCESS ||
+            frame.datalen == 0 || !frame.data) {
+            return SWITCH_TRUE;
+        }
+        const auto* src = static_cast<const std::int16_t*>(frame.data);
+        const std::uint32_t n_samples = frame.datalen / sizeof(std::int16_t);
+        const std::uint32_t rate = frame.rate;
+        const std::uint32_t channels =
+            (frame.channels > 0) ? static_cast<std::uint32_t>(frame.channels) : 1;
+        ctx->bot->OnTargetReadFrame(
+            ctx->channel_uuid, frame.timestamp, src, n_samples, rate, channels);
+#else
+        (void)bug;
+#endif
+
+        return SWITCH_TRUE;
+    } catch (...) {
+        osw::log::Error(kBotCallbackSubsystem,
+                        "OswBotReadTap exception channel=%s",
+                        ctx ? ctx->channel_uuid.c_str() : "?");
+    }
+    return SWITCH_TRUE;
+}
+
+extern "C" switch_bool_t OswBotWriteReplace(switch_media_bug_t* bug,
+                                            void* user_data,
+                                            switch_abc_type_t type) noexcept {
+    auto* ctx = static_cast<osw::media::BotWriteReplaceCtx*>(user_data);
+    try {
+        const int t = static_cast<int>(type);
+
+        if (t == kAbcTypeClose) {
+            if (ctx && ctx->bot) {
+                ctx->bot->OnTargetClose(ctx->channel_uuid, /*direction=*/1);
+            }
+            return SWITCH_TRUE;
+        }
+        if (t == kAbcTypeInit || t != kAbcTypeWriteReplace) {
+            return SWITCH_TRUE;
+        }
+        if (!ctx || !ctx->bot || ctx->bot->IsStopped()) {
+            return SWITCH_TRUE;
+        }
+
+        auto frame_opt = ctx->bot->PopWriteFrame(ctx->channel_uuid);
+        if (!frame_opt.has_value()) {
+            // Passthrough when bot is silent: leave FS's write_replace_frame_out
+            // untouched by intentionally not calling MediaBugSetWriteReplaceFrame.
+            return SWITCH_TRUE;
+        }
+
+#if !defined(OSW_TEST_FS_MOCK)
+        auto* frame = osw::raii::fs::MediaBugGetWriteReplaceFrame(bug);
+        if (!frame || !frame->data || frame->datalen == 0) {
+            return SWITCH_TRUE;
+        }
+
+        auto* dst = static_cast<std::int16_t*>(frame->data);
+        const std::uint32_t cap_samples = frame->datalen / sizeof(std::int16_t);
+        const std::uint32_t copy_samples = std::min<std::uint32_t>(
+            cap_samples, static_cast<std::uint32_t>(frame_opt->sample_count()));
+        if (copy_samples == 0) {
+            return SWITCH_TRUE;
+        }
+
+        std::memcpy(dst, frame_opt->data(), copy_samples * sizeof(std::int16_t));
+        frame->samples = copy_samples;
+        frame->datalen = copy_samples * sizeof(std::int16_t);
+        frame->rate = frame_opt->sample_rate_hz();
+        osw::raii::fs::MediaBugSetWriteReplaceFrame(bug, frame);
+
+        if (!ctx->first_set_frame_logged) {
+            ctx->first_set_frame_logged = true;
+            osw::log::Info(kWriteReplaceSubsystem,
+                           "event=osw.bot.write_replace.first_set_frame bot_target=%s samples=%u "
+                           "payload_bytes=%u",
+                           ctx->channel_uuid.c_str(),
+                           static_cast<unsigned>(copy_samples),
+                           static_cast<unsigned>(frame->datalen));
+        }
+#else
+        osw::raii::fs::MediaBugSetWriteReplaceFrame(bug, nullptr);
+#endif
+
+        return SWITCH_TRUE;
+    } catch (...) {
+        osw::log::Error(kBotCallbackSubsystem,
+                        "OswBotWriteReplace exception channel=%s",
+                        ctx ? ctx->channel_uuid.c_str() : "?");
+    }
     return SWITCH_TRUE;
 }

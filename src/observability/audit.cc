@@ -40,18 +40,12 @@ namespace {
 
 constexpr const char* kSubsystem = "audit";
 
-// Internal core: returns false on any failure path. Never throws.
-bool EmitImpl(std::string_view name, const std::vector<Header>& headers) noexcept {
-    if (name.empty()) {
-        osw::log::Warn(kSubsystem, "audit::Emit refused empty name");
+bool EmitFullSubclass(std::string_view subclass, const std::vector<Header>& headers) noexcept {
+    if (subclass.empty()) {
+        osw::log::Warn(kSubsystem, "audit::Emit refused empty subclass");
         return false;
     }
-
-    // Build the full subclass: "osw.audit." + name.
-    std::string full_subclass;
-    full_subclass.reserve(kSubclassPrefix.size() + name.size());
-    full_subclass.append(kSubclassPrefix);
-    full_subclass.append(name);
+    const std::string full_subclass(subclass);
 
     // FF-020: switch_event_create_subclass for SWITCH_EVENT_CUSTOM with a
     // non-NULL subclass. Returns SUCCESS with *ev populated, or any other
@@ -107,6 +101,21 @@ bool EmitImpl(std::string_view name, const std::vector<Header>& headers) noexcep
     return true;
 }
 
+// Internal core: returns false on any failure path. Never throws.
+bool EmitImpl(std::string_view name, const std::vector<Header>& headers) noexcept {
+    if (name.empty()) {
+        osw::log::Warn(kSubsystem, "audit::Emit refused empty name");
+        return false;
+    }
+
+    // Build the full subclass: "osw.audit." + name.
+    std::string full_subclass;
+    full_subclass.reserve(kSubclassPrefix.size() + name.size());
+    full_subclass.append(kSubclassPrefix);
+    full_subclass.append(name);
+    return EmitFullSubclass(full_subclass, headers);
+}
+
 }  // namespace
 
 bool Emit(std::string_view name, const std::vector<Header>& headers) noexcept {
@@ -121,9 +130,26 @@ bool Emit(std::string_view name, const std::vector<Header>& headers) noexcept {
     }
 }
 
+bool EmitSubclass(std::string_view subclass, const std::vector<Header>& headers) noexcept {
+    try {
+        return EmitFullSubclass(subclass, headers);
+    } catch (const std::exception& e) {
+        osw::log::Error(kSubsystem, "audit::EmitSubclass threw: %s", e.what());
+        return false;
+    } catch (...) {
+        osw::log::Error(kSubsystem, "audit::EmitSubclass threw unknown exception");
+        return false;
+    }
+}
+
 bool Emit(std::string_view name, HeadersInit headers) noexcept {
     std::vector<Header> vec(headers.begin(), headers.end());
     return Emit(name, vec);
+}
+
+bool EmitSubclass(std::string_view subclass, HeadersInit headers) noexcept {
+    std::vector<Header> vec(headers.begin(), headers.end());
+    return EmitSubclass(subclass, vec);
 }
 
 }  // namespace osw::audit

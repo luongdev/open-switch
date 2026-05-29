@@ -25,6 +25,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 // Forward-declare the proto type so callers that only need the in-process
@@ -44,7 +45,9 @@ class AudioFrame {
                std::uint32_t sample_rate_hz,
                std::uint32_t channels,
                std::uint64_t seq,
-               std::uint64_t timestamp_samples) noexcept;
+               std::uint64_t timestamp_samples,
+               std::uint32_t channel = 0,
+               std::string channel_uuid = {}) noexcept;
 
     AudioFrame(const AudioFrame&) = default;
     AudioFrame(AudioFrame&&) noexcept = default;
@@ -56,6 +59,8 @@ class AudioFrame {
     [[nodiscard]] std::size_t sample_count() const noexcept { return samples_.size(); }
     [[nodiscard]] std::uint32_t sample_rate_hz() const noexcept { return sample_rate_hz_; }
     [[nodiscard]] std::uint32_t channels() const noexcept { return channels_; }
+    [[nodiscard]] std::uint32_t channel() const noexcept { return channel_; }
+    [[nodiscard]] const std::string& channel_uuid() const noexcept { return channel_uuid_; }
     [[nodiscard]] std::uint64_t seq() const noexcept { return seq_; }
     [[nodiscard]] std::uint64_t timestamp_samples() const noexcept { return timestamp_samples_; }
 
@@ -86,6 +91,8 @@ class AudioFrame {
     std::vector<std::int16_t> samples_;
     std::uint32_t sample_rate_hz_ = 0;
     std::uint32_t channels_ = 1;
+    std::uint32_t channel_ = 0;
+    std::string channel_uuid_;
     std::uint64_t seq_ = 0;
     std::uint64_t timestamp_samples_ = 0;
 };

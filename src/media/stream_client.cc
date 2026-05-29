@@ -24,6 +24,7 @@
 
 #include "osw/media/stream_client.h"
 
+#include <algorithm>
 #include <chrono>
 #include <future>
 
@@ -57,7 +58,7 @@ StreamClient::StreamClient(std::shared_ptr<grpc::Channel> channel,
                            StreamCallbacks callbacks) noexcept
     : channel_(std::move(channel)), config_(std::move(config)), callbacks_(std::move(callbacks)) {
     stub_ = open_switch::media::v1::MediaBridge::NewStub(channel_);
-    ring_.resize(kRingCapacity);
+    ring_.resize(std::max<std::size_t>(1, config_.send_ring_capacity_frames));
 }
 
 StreamClient::~StreamClient() noexcept {
@@ -123,6 +124,7 @@ grpc::Status StreamClient::Open(int open_deadline_ms) noexcept {
     ss->set_sample_rate_hz(config_.sample_rate_hz);
     ss->set_channels(config_.channels);
     ss->set_codec(config_.codec);
+    ss->set_side(config_.side);
     ss->set_traceparent(config_.traceparent);
     ss->set_start_message(config_.start_message);
     for (const auto& [k, v] : config_.variables) {
@@ -251,15 +253,15 @@ bool StreamClient::SendAudio(AudioFrame frame) noexcept {
         if (ring_closed_) {
             return false;
         }
-        if (ring_count_ == kRingCapacity) {
+        if (ring_count_ == ring_.size()) {
             // Drop oldest: advance tail.
-            ring_tail_ = (ring_tail_ + 1) % kRingCapacity;
+            ring_tail_ = (ring_tail_ + 1) % ring_.size();
             --ring_count_;
             frames_dropped_.fetch_add(1, std::memory_order_relaxed);
             dropped = true;
         }
         ring_[ring_head_] = std::move(entry);
-        ring_head_ = (ring_head_ + 1) % kRingCapacity;
+        ring_head_ = (ring_head_ + 1) % ring_.size();
         ++ring_count_;
     }
     ring_cv_.notify_one();
@@ -282,13 +284,13 @@ void StreamClient::SendControl(open_switch::media::v1::Control msg) noexcept {
         if (ring_closed_) {
             return;
         }
-        if (ring_count_ == kRingCapacity) {
-            ring_tail_ = (ring_tail_ + 1) % kRingCapacity;
+        if (ring_count_ == ring_.size()) {
+            ring_tail_ = (ring_tail_ + 1) % ring_.size();
             --ring_count_;
             frames_dropped_.fetch_add(1, std::memory_order_relaxed);
         }
         ring_[ring_head_] = std::move(entry);
-        ring_head_ = (ring_head_ + 1) % kRingCapacity;
+        ring_head_ = (ring_head_ + 1) % ring_.size();
         ++ring_count_;
     }
     ring_cv_.notify_one();
@@ -388,13 +390,13 @@ std::uint64_t StreamClient::frames_dropped() const noexcept {
 // ---------------------------------------------------------------------------
 
 void StreamClient::RingPushLocked(RingEntry entry) noexcept {
-    if (ring_count_ == kRingCapacity) {
-        ring_tail_ = (ring_tail_ + 1) % kRingCapacity;
+    if (ring_count_ == ring_.size()) {
+        ring_tail_ = (ring_tail_ + 1) % ring_.size();
         --ring_count_;
         frames_dropped_.fetch_add(1, std::memory_order_relaxed);
     }
     ring_[ring_head_] = std::move(entry);
-    ring_head_ = (ring_head_ + 1) % kRingCapacity;
+    ring_head_ = (ring_head_ + 1) % ring_.size();
     ++ring_count_;
 }
 
@@ -403,7 +405,7 @@ bool StreamClient::RingPopLocked(RingEntry& out) noexcept {
         return false;
     }
     out = std::move(ring_[ring_tail_]);
-    ring_tail_ = (ring_tail_ + 1) % kRingCapacity;
+    ring_tail_ = (ring_tail_ + 1) % ring_.size();
     --ring_count_;
     return true;
 }

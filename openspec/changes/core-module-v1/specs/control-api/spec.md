@@ -612,6 +612,41 @@ message Start<Purpose>Response {
 module also tracks streams by `(channel_uuid, purpose)` so callers
 can Stop without the stream_id if they have those.
 
+#### Recording relay
+
+`StartRecordingRelay` attaches a module-owned read tap plus write tap
+and sends recording audio to `relay_endpoint` as `RECORDING_RELAY`.
+The call is refused with `FAILED_PRECONDITION` unless a module-owned
+INJECT bug (`StartTts` or `StartVoicebot` write side) is already
+active on the channel. This keeps module-managed recordings behind bot
+injection in the FS media-bug chain.
+
+```protobuf
+message StartRecordingRelayRequest {
+  RequestHeader header = 1;
+  string channel_uuid = 2;
+  string relay_endpoint = 3;
+  bool stereo = 4;          // false = mono mixed, true = L/R interleaved
+  uint32 sample_rate_hz = 5; // 0 = recording_default_rate_hz
+}
+
+message StopRecordingRelayRequest {
+  RequestHeader header = 1;
+  string channel_uuid = 2;
+  string stream_id = 3; // empty = stop all recording relays on channel
+}
+```
+
+Config knobs:
+
+- `recording_send_ring_ms` default `500`.
+- `stereo_desync_warn_ms` default `5`.
+- `stereo_desync_timeout_ms` default `25`.
+- `recording_default_rate_hz` default `8000`.
+- `warn_record_before_inject` default `true`; when `StartTts` or
+  `StartVoicebot` finds an FS-native `record_session` bug already
+  attached, the module emits `osw.recording.warn_record_before_inject`.
+
 ### SubscribeEvents
 
 Server-streaming RPC. Module sends `EventEnvelope` messages to the

@@ -58,6 +58,31 @@ TEST_F(TierTest, AuditSubclassRoutesToTier1) {
     EXPECT_EQ(c.Classify("CUSTOM", "osw.audit.subscriber_kicked"), Tier::k1Critical);
 }
 
+TEST_F(TierTest, EavesdropSubclassesRouteToTier1) {
+    TierClassifier c(osw::events::MakeDefaultRules());
+    EXPECT_EQ(c.Classify("CUSTOM", "osw.eavesdrop.denied"), Tier::k1Critical);
+    EXPECT_EQ(c.Classify("CUSTOM", "osw.eavesdrop.audit"), Tier::k1Critical);
+    EXPECT_EQ(c.Classify("CUSTOM", "osw.eavesdrop.allowed"), Tier::k1Critical);
+    EXPECT_EQ(c.Classify("CUSTOM", "osw.eavesdrop.detected_post_attach"), Tier::k1Critical);
+}
+
+TEST_F(TierTest, RecordingSubclassesRouteToDocumentedTiers) {
+    TierClassifier c(osw::events::MakeDefaultRules());
+    EXPECT_EQ(c.Classify("CUSTOM", "osw.recording.relay_started"), Tier::k1Critical);
+    EXPECT_EQ(c.Classify("CUSTOM", "osw.recording.relay_stopped"), Tier::k1Critical);
+    EXPECT_EQ(c.Classify("CUSTOM", "osw.recording.warn_record_before_inject"), Tier::k1Critical);
+    EXPECT_EQ(c.Classify("CUSTOM", "osw.recording.send_overflow"), Tier::k2State);
+    EXPECT_EQ(c.Classify("CUSTOM", "osw.recording.lr_desync"), Tier::k2State);
+}
+
+TEST_F(TierTest, BotSubclassesRouteToDocumentedTiers) {
+    TierClassifier c(osw::events::MakeDefaultRules());
+    EXPECT_EQ(c.Classify("CUSTOM", "osw.media.bot.started"), Tier::k1Critical);
+    EXPECT_EQ(c.Classify("CUSTOM", "osw.media.bot.stopped"), Tier::k1Critical);
+    EXPECT_EQ(c.Classify("CUSTOM", "osw.media.bot.target_attach_failed"), Tier::k1Critical);
+    EXPECT_EQ(c.Classify("CUSTOM", "osw.media.bot.target_drop"), Tier::k2State);
+}
+
 TEST_F(TierTest, SofiaRegisterExactSubclassRoutesToTier2) {
     TierClassifier c(osw::events::MakeDefaultRules());
     EXPECT_EQ(c.Classify("CUSTOM", "sofia::register"), Tier::k2State);

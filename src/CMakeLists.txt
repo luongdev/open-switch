@@ -20,6 +20,7 @@
 # osw_core_fs, osw_control_fs) are linked exclusively into the .so.
 
 add_subdirectory(observability)
+add_subdirectory(security)
 add_subdirectory(control)
 add_subdirectory(core)
 add_subdirectory(events)
@@ -96,6 +97,8 @@ target_link_libraries(mod_open_switch
         osw_control
         "$<LINK_LIBRARY:WHOLE_ARCHIVE,osw_observability_fs>"
         osw_observability
+        osw_security_fs
+        osw_security
         osw_media_fs
         osw_media
         osw_proto

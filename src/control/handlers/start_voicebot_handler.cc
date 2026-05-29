@@ -35,6 +35,8 @@
 #include "osw/observability/audit.h"
 #include "osw/observability/log.h"
 #include "osw/raii/fs_api.h"
+#include "osw/security/eavesdrop_marker.h"
+#include "osw/security/eavesdrop_policy.h"
 
 #include "src/control/control_service_skeleton.h"
 #include "src/control/handlers/media_bug_callbacks.h"
@@ -88,6 +90,34 @@ osw::media::TtsPlayoutBuffer::UnderrunPolicy ParseUnderrunPolicy(const std::stri
         return osw::media::TtsPlayoutBuffer::UnderrunPolicy::kRepeatLast;
     }
     return osw::media::TtsPlayoutBuffer::UnderrunPolicy::kSilence;
+}
+
+void MaybeWarnRecordBeforeInject(switch_core_session_t* session,
+                                 const std::string& channel_uuid,
+                                 const std::string& tenant_id,
+                                 const osw::Config& config) noexcept {
+    if (!config.warn_record_before_inject || !session) {
+        return;
+    }
+    const std::uint32_t native_record_count =
+        osw::raii::fs::MediaBugCount(session, "record_session");
+    if (native_record_count == 0) {
+        return;
+    }
+    osw::audit::EmitSubclass(
+        "osw.recording.warn_record_before_inject",
+        {{"channel_uuid", channel_uuid},
+         {"tenant_id", tenant_id},
+         {"inject_purpose", "voicebot"},
+         {"native_record_count", std::to_string(native_record_count)},
+         {"remediation",
+          "Reorder dialplan: attach bot media before record_session, or use StartRecordingRelay"}});
+    osw::log::Warn(kSubsystem,
+                   "StartVoicebot: record_session bug already present before inject channel=%s "
+                   "tenant_id=%s count=%u",
+                   channel_uuid.c_str(),
+                   tenant_id.c_str(),
+                   native_record_count);
 }
 
 }  // namespace
@@ -237,6 +267,9 @@ grpc::Status HandleStartVoicebot(grpc::ServerContext* /*ctx*/,
                        write_attach.error.c_str());
         return grpc::Status(write_attach.status_code, write_attach.error);
     }
+    MaybeWarnRecordBeforeInject(sg.get(), req->channel_uuid(), tenant_id, config);
+    osw::security::MarkBotSession(
+        sg.get(), "voicebot", osw::security::ResolveEffectivePolicy(config, tenant_id), tenant_id);
 
     auto write_ctx = std::make_unique<osw::control::handlers::WriteCallbackCtx>();
     write_ctx->client = client.get();

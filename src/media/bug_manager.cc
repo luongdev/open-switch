@@ -422,8 +422,14 @@ MediaBugManager::AttachResult MediaBugManager::Attach(switch_core_session_t* ses
     {
         std::lock_guard<std::mutex> lk(mu_);
 
-        // Duplicate purpose check.
-        if (HasPurpose(uuid, cfg.purpose)) {
+        if (cfg.purpose == Purpose::kRecordingRelay && !HasInjectBugLocked(uuid)) {
+            validation_failure = AttachResult{false,
+                                              grpc::StatusCode::FAILED_PRECONDITION,
+                                              "recording relay requires an active INJECT bug "
+                                              "(tts_playback or voicebot_duplex_write)",
+                                              BugHandle{}};
+            validation_failed = true;
+        } else if (cfg.purpose != Purpose::kRecordingRelay && HasPurpose(uuid, cfg.purpose)) {
             validation_failure = AttachResult{
                 false,
                 grpc::StatusCode::ALREADY_EXISTS,
@@ -744,6 +750,11 @@ std::size_t MediaBugManager::TotalActiveBugCount() const noexcept {
     return by_id_.size();
 }
 
+bool MediaBugManager::HasInjectBug(const std::string& channel_uuid) const noexcept {
+    std::lock_guard<std::mutex> lk(mu_);
+    return HasInjectBugLocked(channel_uuid);
+}
+
 // ---------------------------------------------------------------------------
 // State handler registration.
 // ---------------------------------------------------------------------------
@@ -825,6 +836,24 @@ bool MediaBugManager::HasPurpose(const std::string& uuid, Purpose p) const noexc
         if (it != by_id_.end()) {
             const BugRecord* rec = static_cast<const BugRecord*>(it->second);
             if (rec->purpose == p) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool MediaBugManager::HasInjectBugLocked(const std::string& uuid) const noexcept {
+    auto cit = by_channel_.find(uuid);
+    if (cit == by_channel_.end()) {
+        return false;
+    }
+    for (std::uint64_t id : cit->second) {
+        auto it = by_id_.find(id);
+        if (it != by_id_.end()) {
+            const BugRecord* rec = static_cast<const BugRecord*>(it->second);
+            if (rec->purpose == Purpose::kTtsPlayback ||
+                rec->purpose == Purpose::kVoicebotDuplexWrite) {
                 return true;
             }
         }

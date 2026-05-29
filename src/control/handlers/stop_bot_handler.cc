@@ -45,8 +45,8 @@ grpc::Status HandleStopBot(grpc::ServerContext* /*ctx*/,
 
     if (was_active) {
         const std::string tenant_id = req->has_header() ? req->header().tenant_id() : std::string{};
-        osw::audit::Emit("osw.media.bot.stopped",
-                         {{"bot_id", req->bot_id()}, {"tenant_id", tenant_id}});
+        osw::audit::EmitSubclass("osw.media.bot.stopped",
+                                 {{"bot_id", req->bot_id()}, {"tenant_id", tenant_id}});
         osw::log::Info(kSubsystem, "StopBot OK: bot_id=%s", req->bot_id().c_str());
     } else {
         osw::log::Debug(

@@ -34,6 +34,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include <grpcpp/security/server_credentials.h>
@@ -96,7 +97,7 @@ class GrpcServer {
     /// Set the module + freeswitch version strings the Health RPC
     /// should report. Called by Module::Load before Start so that
     /// Snapshot includes the right values.
-    void SetVersions(std::string module_version, std::string freeswitch_version);
+    void SetVersions(std::string_view module_version, std::string_view freeswitch_version);
 
     /// Inject the W2 event-plane bridges (Broadcaster + RingSet)
     /// into the ControlServiceSkeleton so that the SubscribeEvents

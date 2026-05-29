@@ -31,6 +31,7 @@ add_library(osw_media STATIC
     # Track B
     audio_frame.cc
     stream_client.cc
+    stereo_pairer.cc
     # W7 Track D
     bug_fanout.cc
 )
@@ -55,6 +56,10 @@ add_library(osw_media_fs STATIC
     bug_manager.cc
     # W6.6
     silence_driver.cc
+    # W7 Track B
+    recording_relay.cc
+    # W7 Track D
+    bot_session.cc
     # Track B
     resampler.cc
     # Track C
@@ -93,6 +98,8 @@ if(OSW_BUILD_TESTS)
     add_library(osw_media_test_helpers STATIC
         bug_manager.cc
         silence_driver.cc
+        recording_relay.cc
+        bot_session.cc
     )
     target_include_directories(osw_media_test_helpers
         PUBLIC

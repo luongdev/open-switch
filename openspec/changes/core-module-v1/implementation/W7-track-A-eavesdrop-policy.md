@@ -18,10 +18,11 @@ mechanisms work together:
    channel's `osw_eavesdrop_policy` variable, hangs up on `deny`,
    audits on `audit`, delegates to `switch_ivr_eavesdrop_session` on
    `audit` / `allow`. Emits Tier-1 audit before any bug attaches.
-2. **Layer 2 — `MEDIA_BUG_START` detector (DETECTION-ONLY backstop)**:
+2. **Layer 2 — `MEDIA_BUG_START` detector (fail-closed deny backstop)**:
    binds the FS event; if the bug function is `"eavesdrop"` and the
    target channel has `osw_bot_session=true`, emits a Tier-1 audit
-   event. Does NOT remove the bug — see "Why detection only" below.
+   event. On `deny`, immediately hangs up the bot-marked target
+   channel. Does NOT remove the bug — see "Why no bug removal" below.
 3. **Channel-var marker on `StartTts` / `StartVoicebot`**: when one of
    the two RPCs attaches an INJECT bug, set the marker channel
    variables. This is what Layer 1 / Layer 2 read.
@@ -432,7 +433,12 @@ void OnMediaBugStart(switch_event_t* event, void* /*user_data*/) {
                            target.channel(),
                            effective,
                            /*detected_at=*/"2_post_attach_detection",
-                           /*decision=*/"detected_only");
+                           /*decision=*/effective == EavesdropPolicy::kDeny
+                               ? "detected_hangup_target"
+                               : "detected_only");
+        if (effective == EavesdropPolicy::kDeny) {
+            switch_channel_hangup(target.channel(), SWITCH_CAUSE_CALL_REJECTED);
+        }
     } catch (const std::exception& e) {
         osw::log::Error("eavesdrop_detector: exception: {}", e.what());
     } catch (...) {
@@ -467,12 +473,13 @@ void UnbindEavesdropDetector() {
 }  // namespace osw::security
 ```
 
-**Important.** Per `security-and-eavesdrop.md`, Layer 2 is
-**DETECTION-ONLY**. The handler MUST NOT call
-`switch_core_media_bug_remove_callback` on the eavesdrop bug — even
-if the symbol were reachable, FF-002's thread-id gate would make it a
-silent no-op (and the wrong code path could crash). The sub-agent
-MUST NOT add a "removal path" here regardless of how tempting it is.
+**Important.** Per `security-and-eavesdrop.md`, Layer 2 fails closed
+for `deny` by hanging up the target bot channel after audit. The
+handler MUST NOT call `switch_core_media_bug_remove_callback` on the
+eavesdrop bug — even if the symbol were reachable, FF-002's thread-id
+gate would make it a silent no-op (and the wrong code path could
+crash). The sub-agent MUST NOT add a "removal path" here regardless
+of how tempting it is.
 
 Audit emit MUST be cheap: classifier + ring enqueue. The Tier-1 ring
 already exists (W2). Rate-limiting is delegated to a downstream sink;
@@ -613,10 +620,10 @@ Test (`tier_test.cc`):
 | `Layer1_TargetNotFound_NoOp` | Unknown target UUID → WARN, no audit, no hangup |
 | `Layer2_IgnoresNonEavesdropBugs` (eavesdrop_detector_test.cc) | Other bug functions don't emit eavesdrop audits |
 | `Layer2_IgnoresUnmarkedSessions` | Non-bot sessions don't emit eavesdrop audits |
-| `Layer2_EmitsAuditForBotMarked_DenyPolicy` | bot-marked + deny → Tier 1 audit subclass `detected_post_attach`, `policy_applied=deny`, bug NOT removed |
-| `Layer2_EmitsAuditForBotMarked_AuditPolicy` | Same flow with policy=audit |
-| `Layer2_EmitsAuditWhenPolicyVarMissing` | Missing policy var → default deny |
-| `Layer2_DoesNotRemoveBug` | switch_core_media_bug_remove_callback is NOT called |
+| `Layer2_EmitsAuditForBotMarked_DenyPolicy` | bot-marked + deny → Tier 1 audit subclass `detected_post_attach`, `policy_applied=deny`, target hangup fail-closed, bug NOT removed |
+| `Layer2_EmitsAuditForBotMarked_AuditPolicy` | Same flow with policy=audit, no target hangup |
+| `Layer2_EmitsAuditWhenPolicyVarMissing` | Missing policy var → default deny + target hangup |
+| `Layer2_DoesNotRemoveBug` | switch_core_media_bug_remove_callback is NOT called; deny remediation is target hangup |
 | `TierClassifier_AllFourSubclassesTier1` | Classifier routes all 4 subclasses to Tier 1 |
 | `Integration_NonBotEavesdrop_NoEnforcement` | Eavesdrop on a non-bot call: no policy, no audit |
 | `Integration_TenantOverrideAllow` | Tenant with allow_eavesdrop=true + policy=audit overrides module default deny |
@@ -665,7 +672,8 @@ designs/security-and-eavesdrop.md:
 
   - Layer 2: MEDIA_BUG_START event handler emits Tier-1 audit when
     a bug with function=eavesdrop attaches to a session marked
-    osw_bot_session=true. Detection only; does NOT remove the bug
+    osw_bot_session=true. For "deny", it fails closed by hanging up
+    the bot-marked target channel. It does NOT remove the bug
     (FF-002 thread-id gate + FF-003 static symbol make removal
     unimplementable against vanilla FS v1.10.12).
 

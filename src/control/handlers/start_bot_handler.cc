@@ -1,10 +1,8 @@
 /*
  * src/control/handlers/start_bot_handler.cc
  *
- * W7 Track D StartBot facade. This first implementation reuses the W6
- * single-target media handlers per target, so the demo path can call one
- * logical StartBot and still get module-owned bug lifecycle + W6.6 silence
- * driving on parked channels.
+ * W7 Track D StartBot. The first real slice supports TTS_BROADCAST with one
+ * upstream stream and one WRITE_REPLACE bug/fanout queue per target.
  *
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
@@ -13,24 +11,22 @@
 
 #include <set>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #include <grpcpp/grpcpp.h>
 
 #include "open_switch/control/v1/control.pb.h"
-#include "open_switch/media/v1/media.pb.h"
 
 #include "osw/control/active_bots.h"
-#include "osw/control/active_media_streams.h"
-#include "osw/control/handlers/start_tts_handler.h"
-#include "osw/control/handlers/start_voicebot_handler.h"
 #include "osw/core/config.h"
 #include "osw/events/envelope.h"
+#include "osw/media/bot_session.h"
+#include "osw/media/bug_manager.h"
 #include "osw/observability/audit.h"
 #include "osw/observability/log.h"
 
 #include "src/control/control_service_skeleton.h"
+#include "src/control/handlers/media_bug_callbacks.h"
 
 namespace osw::control::handlers {
 
@@ -84,21 +80,25 @@ grpc::Status ValidateStartBot(const StartBotRequest& req,
         return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                             "write_target_channel_uuids is only valid for WHISPER");
     }
-    if (req.drain_timeout_ms() != 0) {
-        return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
-                            "per-bot drain_timeout_ms override is not supported yet");
+    if (req.purpose() == StartBotRequest::WHISPER) {
+        if (req.write_target_channel_uuids().empty()) {
+            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                                "WHISPER requires write_target_channel_uuids");
+        }
+        for (const auto& uuid : req.write_target_channel_uuids()) {
+            if (!seen.contains(uuid)) {
+                return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                                    "write target not in target_channel_uuids");
+            }
+        }
     }
 
     switch (req.purpose()) {
         case StartBotRequest::TTS_BROADCAST:
-        case StartBotRequest::VOICEBOT_DUPLEX:
-            break;
         case StartBotRequest::STT_LISTEN:
+        case StartBotRequest::VOICEBOT_DUPLEX:
         case StartBotRequest::WHISPER:
-            return grpc::Status(
-                grpc::StatusCode::UNIMPLEMENTED,
-                "StartBot STT_LISTEN/WHISPER requires W7 fanout/read path; TTS_BROADCAST and "
-                "VOICEBOT_DUPLEX are available");
+            break;
         default:
             return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "purpose required");
     }
@@ -113,54 +113,16 @@ grpc::Status ValidateStartBot(const StartBotRequest& req,
     return grpc::Status::OK;
 }
 
-void CopyCommonTtsFields(const StartBotRequest& req,
-                         std::string_view channel_uuid,
-                         std::uint32_t rate,
-                         open_switch::control::v1::StartTtsRequest* out) {
-    out->mutable_header()->CopyFrom(req.header());
-    out->set_channel_uuid(std::string(channel_uuid));
-    out->set_upstream_endpoint(req.upstream_endpoint());
-    out->set_sample_rate_hz(rate);
-    out->set_start_message(req.start_message());
-    for (const auto& [key, value] : req.variables()) {
-        (*out->mutable_variables())[key] = value;
-    }
-    out->mutable_buffer_override()->CopyFrom(req.buffer_override());
-}
-
-void CopyCommonVoicebotFields(const StartBotRequest& req,
-                              std::string_view channel_uuid,
-                              std::uint32_t rate,
-                              open_switch::control::v1::StartVoicebotRequest* out) {
-    out->mutable_header()->CopyFrom(req.header());
-    out->set_channel_uuid(std::string(channel_uuid));
-    out->set_upstream_endpoint(req.upstream_endpoint());
-    out->set_sample_rate_hz(rate);
-    out->set_start_message(req.start_message());
-    for (const auto& [key, value] : req.variables()) {
-        (*out->mutable_variables())[key] = value;
-    }
-    out->mutable_buffer_override()->CopyFrom(req.buffer_override());
-}
-
-void RollBackStreams(const std::vector<std::string>& stream_ids, ActiveMediaStreams* streams) {
-    if (!streams) {
-        return;
-    }
-    for (const auto& stream_id : stream_ids) {
-        streams->Remove(stream_id);
-    }
-}
-
 }  // namespace
 
 grpc::Status HandleStartBot(grpc::ServerContext* ctx,
                             const StartBotRequest* req,
                             open_switch::control::v1::StartBotResponse* resp,
                             osw::media::MediaBugManager* bug_mgr,
-                            osw::control::ActiveMediaStreams* streams,
+                            osw::control::ActiveMediaStreams* /*streams*/,
                             osw::control::ActiveBots* active_bots,
                             const osw::Config& config) {
+    (void)ctx;
     if (!req || !resp) {
         return grpc::Status(grpc::StatusCode::INTERNAL, "null request or response");
     }
@@ -178,7 +140,7 @@ grpc::Status HandleStartBot(grpc::ServerContext* ctx,
                    req->write_target_channel_uuids_size(),
                    req->sample_rate_hz());
 
-    if (!bug_mgr || !streams || !active_bots) {
+    if (!bug_mgr || !active_bots) {
         return grpc::Status(grpc::StatusCode::UNAVAILABLE, "media plane not initialised");
     }
 
@@ -195,48 +157,66 @@ grpc::Status HandleStartBot(grpc::ServerContext* ctx,
         }
     }
 
-    std::vector<std::string> stream_ids;
-    stream_ids.reserve(req->target_channel_uuids().size());
+    const std::string bot_id = osw::events::GenerateUuidV7();
 
+    osw::media::BotSessionConfig bot_cfg;
+    bot_cfg.bot_id = bot_id;
+    bot_cfg.tenant_id = tenant_id;
+    bot_cfg.upstream_endpoint = req->upstream_endpoint();
+    bot_cfg.traceparent = traceparent;
+    bot_cfg.purpose = req->purpose();
+    bot_cfg.sample_rate_hz = rate;
+    bot_cfg.start_message = req->start_message();
+    bot_cfg.target_queue_ms = config.bot_target_queue_ms;
+    bot_cfg.drain_timeout_ms =
+        req->drain_timeout_ms() != 0 ? req->drain_timeout_ms() : config.bot_drain_timeout_ms;
     for (const auto& channel_uuid : req->target_channel_uuids()) {
-        if (req->purpose() == StartBotRequest::TTS_BROADCAST) {
-            open_switch::control::v1::StartTtsRequest child_req;
-            open_switch::control::v1::StartTtsResponse child_resp;
-            CopyCommonTtsFields(*req, channel_uuid, rate, &child_req);
-            grpc::Status st =
-                HandleStartTts(ctx, &child_req, &child_resp, bug_mgr, streams, config);
-            if (!st.ok()) {
-                RollBackStreams(stream_ids, streams);
-                return st;
-            }
-            stream_ids.push_back(child_resp.stream_id());
-            continue;
-        }
+        bot_cfg.target_channel_uuids.push_back(channel_uuid);
+    }
+    for (const auto& channel_uuid : req->write_target_channel_uuids()) {
+        bot_cfg.write_target_channel_uuids.push_back(channel_uuid);
+    }
+    for (const auto& [key, value] : req->variables()) {
+        bot_cfg.variables[key] = value;
+    }
 
-        open_switch::control::v1::StartVoicebotRequest child_req;
-        open_switch::control::v1::StartVoicebotResponse child_resp;
-        CopyCommonVoicebotFields(*req, channel_uuid, rate, &child_req);
-        grpc::Status st =
-            HandleStartVoicebot(ctx, &child_req, &child_resp, bug_mgr, streams, config);
-        if (!st.ok()) {
-            RollBackStreams(stream_ids, streams);
-            return st;
-        }
-        stream_ids.push_back(child_resp.stream_id());
+    auto channel =
+        grpc::CreateChannel(req->upstream_endpoint(), grpc::InsecureChannelCredentials());
+    auto session = std::make_unique<osw::media::BotSession>(std::move(bot_cfg), std::move(channel));
+
+    grpc::Status open_st = session->Open(5000);
+    if (!open_st.ok()) {
+        osw::log::Warn(kSubsystem,
+                       "StartBot: upstream open failed bot_id=%s ep=%s: %s",
+                       bot_id.c_str(),
+                       req->upstream_endpoint().c_str(),
+                       open_st.error_message().c_str());
+        return open_st;
+    }
+
+    grpc::Status attach_st = session->Attach(*bug_mgr,
+                                             reinterpret_cast<void*>(OswBotWriteReplace),
+                                             reinterpret_cast<void*>(OswBotReadTap));
+    if (!attach_st.ok()) {
+        osw::audit::EmitSubclass(
+            "osw.media.bot.target_attach_failed",
+            {{"bot_id", bot_id}, {"tenant_id", tenant_id}, {"error", attach_st.error_message()}});
+        osw::log::Warn(kSubsystem,
+                       "StartBot: attach failed bot_id=%s: %s",
+                       bot_id.c_str(),
+                       attach_st.error_message().c_str());
+        session->Stop();
+        return attach_st;
     }
 
     ActiveBot bot;
-    const std::string bot_id = osw::events::GenerateUuidV7();
     bot.bot_id = bot_id;
-    for (const auto& channel_uuid : req->target_channel_uuids()) {
-        bot.target_channel_uuids.push_back(channel_uuid);
-    }
-    bot.stream_ids = stream_ids;
+    bot.target_channel_uuids = session->TargetUuids();
+    bot.session = std::move(session);
 
     const ActiveBotInsertResult insert_result =
         active_bots->Insert(std::move(bot), config.max_bots_per_channel);
     if (insert_result != ActiveBotInsertResult::kInserted) {
-        RollBackStreams(stream_ids, streams);
         if (insert_result == ActiveBotInsertResult::kChannelCapacityExceeded) {
             return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
                                 "channel already has maximum active bots");
@@ -247,11 +227,12 @@ grpc::Status HandleStartBot(grpc::ServerContext* ctx,
     resp->set_bot_id(bot_id);
     resp->set_negotiated_rate_hz(rate);
 
-    osw::audit::Emit("osw.media.bot.started",
-                     {{"bot_id", bot_id},
-                      {"tenant_id", tenant_id},
-                      {"purpose", PurposeName(req->purpose())},
-                      {"target_count", std::to_string(req->target_channel_uuids().size())}});
+    osw::audit::EmitSubclass(
+        "osw.media.bot.started",
+        {{"bot_id", bot_id},
+         {"tenant_id", tenant_id},
+         {"purpose", PurposeName(req->purpose())},
+         {"target_count", std::to_string(req->target_channel_uuids().size())}});
     osw::log::Info(kSubsystem,
                    "StartBot OK: bot_id=%s purpose=%s targets=%d rate=%u",
                    bot_id.c_str(),

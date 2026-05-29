@@ -30,6 +30,8 @@
 #include "osw/observability/audit.h"
 #include "osw/observability/log.h"
 #include "osw/raii/fs_api.h"
+#include "osw/security/eavesdrop_marker.h"
+#include "osw/security/eavesdrop_policy.h"
 
 #include "src/control/control_service_skeleton.h"
 #include "src/control/handlers/media_bug_callbacks.h"
@@ -82,6 +84,34 @@ osw::media::TtsPlayoutBuffer::UnderrunPolicy ParseUnderrunPolicy(const std::stri
         return osw::media::TtsPlayoutBuffer::UnderrunPolicy::kRepeatLast;
     }
     return osw::media::TtsPlayoutBuffer::UnderrunPolicy::kSilence;
+}
+
+void MaybeWarnRecordBeforeInject(switch_core_session_t* session,
+                                 const std::string& channel_uuid,
+                                 const std::string& tenant_id,
+                                 const osw::Config& config) noexcept {
+    if (!config.warn_record_before_inject || !session) {
+        return;
+    }
+    const std::uint32_t native_record_count =
+        osw::raii::fs::MediaBugCount(session, "record_session");
+    if (native_record_count == 0) {
+        return;
+    }
+    osw::audit::EmitSubclass(
+        "osw.recording.warn_record_before_inject",
+        {{"channel_uuid", channel_uuid},
+         {"tenant_id", tenant_id},
+         {"inject_purpose", "tts"},
+         {"native_record_count", std::to_string(native_record_count)},
+         {"remediation",
+          "Reorder dialplan: attach bot media before record_session, or use StartRecordingRelay"}});
+    osw::log::Warn(kSubsystem,
+                   "StartTts: record_session bug already present before inject channel=%s "
+                   "tenant_id=%s count=%u",
+                   channel_uuid.c_str(),
+                   tenant_id.c_str(),
+                   native_record_count);
 }
 
 }  // namespace
@@ -200,6 +230,9 @@ grpc::Status HandleStartTts(grpc::ServerContext* /*ctx*/,
                        attach.error.c_str());
         return grpc::Status(attach.status_code, attach.error);
     }
+    MaybeWarnRecordBeforeInject(sg.get(), req->channel_uuid(), tenant_id, config);
+    osw::security::MarkBotSession(
+        sg.get(), "tts", osw::security::ResolveEffectivePolicy(config, tenant_id), tenant_id);
 
     // Allocate WriteCallbackCtx and wire it into the BugCallbackContext
     // via MediaBugManager::SetBugCallback.

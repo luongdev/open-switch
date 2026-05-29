@@ -83,7 +83,15 @@ TEST(AudioFrameTest, F4_DurationMs8kMono) {
 // F5 — ToProto + FromProto round trip
 // ---------------------------------------------------------------------------
 TEST(AudioFrameTest, F5_ProtoRoundTrip) {
-    auto original = MakeMono8k(7, 999);
+    std::vector<std::int16_t> samples(160, 7);
+    AudioFrame original(
+        std::move(samples),
+        8000,
+        1,
+        7,
+        999,
+        static_cast<std::uint32_t>(open_switch::media::v1::AudioFrame::BOTH_INTERLEAVED),
+        "chan-a");
 
     open_switch::media::v1::AudioFrame proto;
     original.ToProto(&proto);
@@ -91,6 +99,8 @@ TEST(AudioFrameTest, F5_ProtoRoundTrip) {
     EXPECT_EQ(proto.seq(), 7u);
     EXPECT_EQ(proto.timestamp_samples(), 999u);
     EXPECT_EQ(proto.duration_samples(), 160u);
+    EXPECT_EQ(proto.channel(), open_switch::media::v1::AudioFrame::BOTH_INTERLEAVED);
+    EXPECT_EQ(proto.channel_uuid(), "chan-a");
     // Payload size = 160 samples × 1 channel × 2 bytes = 320 bytes.
     EXPECT_EQ(proto.payload().size(), 320u);
 
@@ -101,6 +111,9 @@ TEST(AudioFrameTest, F5_ProtoRoundTrip) {
     EXPECT_EQ(recovered->sample_count(), 160u);
     EXPECT_EQ(recovered->sample_rate_hz(), 8000u);
     EXPECT_EQ(recovered->channels(), 1u);
+    EXPECT_EQ(recovered->channel(),
+              static_cast<std::uint32_t>(open_switch::media::v1::AudioFrame::BOTH_INTERLEAVED));
+    EXPECT_EQ(recovered->channel_uuid(), "chan-a");
 
     // Sample-level equality.
     for (std::size_t i = 0; i < 160; ++i) {

@@ -76,6 +76,8 @@ add_library(osw_control_fs STATIC
     handlers/start_stt_handler.cc
     handlers/start_voicebot_handler.cc
     handlers/stop_media_stream_handler.cc
+    handlers/start_recording_relay_handler.cc
+    handlers/stop_recording_relay_handler.cc
     # W7 Track D — logical bot facade
     handlers/start_bot_handler.cc
     handlers/stop_bot_handler.cc
@@ -94,6 +96,7 @@ target_link_libraries(osw_control_fs PUBLIC
     osw_media_fs                             # for MediaBugManager, TtsPlayoutBuffer (Track C)
     osw_observability
     osw_observability_fs                     # for osw::audit::Emit
+    osw_security_fs                          # W7 Track A bot-session eavesdrop marker
     osw_proto
     Threads::Threads
 )
@@ -138,6 +141,8 @@ if(OSW_BUILD_TESTS)
         handlers/start_stt_handler.cc
         handlers/start_voicebot_handler.cc
         handlers/stop_media_stream_handler.cc
+        handlers/start_recording_relay_handler.cc
+        handlers/stop_recording_relay_handler.cc
         handlers/start_bot_handler.cc
         handlers/stop_bot_handler.cc
         # Stub for SubscribeEvents so the test binary vtable is complete
@@ -159,6 +164,7 @@ if(OSW_BUILD_TESTS)
         osw_media_tts_test_helpers
         osw_observability
         osw_audit_test_helpers
+        osw_security_test_helpers
         osw_media_test_helpers
         osw_proto
         Threads::Threads
@@ -200,6 +206,8 @@ if(OSW_BUILD_TESTS)
         handlers/start_stt_handler.cc
         handlers/start_voicebot_handler.cc
         handlers/stop_media_stream_handler.cc
+        handlers/start_recording_relay_handler.cc
+        handlers/stop_recording_relay_handler.cc
         handlers/start_bot_handler.cc
         handlers/stop_bot_handler.cc
         # Stub for SubscribeEvents (same rationale as w3a helpers).
@@ -220,6 +228,7 @@ if(OSW_BUILD_TESTS)
         osw_media_tts_test_helpers
         osw_observability
         osw_audit_test_helpers
+        osw_security_test_helpers
         osw_media_test_helpers
         osw_proto
         Threads::Threads
@@ -258,6 +267,8 @@ if(OSW_BUILD_TESTS)
         handlers/start_stt_handler.cc
         handlers/start_voicebot_handler.cc
         handlers/stop_media_stream_handler.cc
+        handlers/start_recording_relay_handler.cc
+        handlers/stop_recording_relay_handler.cc
         handlers/start_bot_handler.cc
         handlers/stop_bot_handler.cc
         handlers/subscribe_events_stub.cc
@@ -277,6 +288,7 @@ if(OSW_BUILD_TESTS)
         osw_media_tts_test_helpers
         osw_observability
         osw_audit_test_helpers
+        osw_security_test_helpers
         osw_media_test_helpers
         osw_proto
         Threads::Threads

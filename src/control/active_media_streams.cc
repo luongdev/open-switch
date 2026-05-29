@@ -8,6 +8,8 @@
 
 #include "osw/control/active_media_streams.h"
 
+#include "osw/media/recording_relay.h"
+
 #include "src/control/handlers/media_bug_callbacks.h"
 
 namespace osw::control {
@@ -15,6 +17,10 @@ namespace osw::control {
 // WriteCtxDeleter: typed deleter for the WriteCallbackCtx void* owner.
 void WriteCtxDeleter::operator()(void* p) const noexcept {
     delete static_cast<osw::control::handlers::WriteCallbackCtx*>(p);
+}
+
+void RecordingCtxDeleter::operator()(void* p) const noexcept {
+    delete static_cast<osw::media::RecordingRelay*>(p);
 }
 
 }  // namespace osw::control
@@ -83,6 +89,22 @@ bool ActiveMediaStreams::Remove(std::string_view stream_id) noexcept {
     return true;
 }
 
+bool ActiveMediaStreams::RemoveIfPurpose(
+    std::string_view stream_id, open_switch::media::v1::StreamStart::Purpose purpose) noexcept {
+    std::unique_ptr<ActiveMediaStream> owned;
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        auto it = by_id_.find(std::string(stream_id));
+        if (it == by_id_.end() || !it->second || it->second->purpose != purpose) {
+            return false;
+        }
+        owned = std::move(it->second);
+        by_id_.erase(it);
+    }
+    TearDown(std::move(owned));
+    return true;
+}
+
 void ActiveMediaStreams::RemoveForChannel(std::string_view channel_uuid) noexcept {
     std::vector<std::unique_ptr<ActiveMediaStream>> victims;
     {
@@ -99,6 +121,27 @@ void ActiveMediaStreams::RemoveForChannel(std::string_view channel_uuid) noexcep
     for (auto& s : victims) {
         TearDown(std::move(s));
     }
+}
+
+std::size_t ActiveMediaStreams::RemovePurposeForChannel(
+    std::string_view channel_uuid, open_switch::media::v1::StreamStart::Purpose purpose) noexcept {
+    std::vector<std::unique_ptr<ActiveMediaStream>> victims;
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        for (auto it = by_id_.begin(); it != by_id_.end();) {
+            if (it->second && it->second->channel_uuid == channel_uuid &&
+                it->second->purpose == purpose) {
+                victims.push_back(std::move(it->second));
+                it = by_id_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (auto& s : victims) {
+        TearDown(std::move(s));
+    }
+    return victims.size();
 }
 
 std::size_t ActiveMediaStreams::RemoveWriteReplaceForChannel(
@@ -136,6 +179,19 @@ void ActiveMediaStreams::TearDown(std::unique_ptr<ActiveMediaStream> s) noexcept
     if (!s) {
         return;
     }
+    if (s->recording_ctx) {
+        auto* relay = static_cast<osw::media::RecordingRelay*>(s->recording_ctx.get());
+        relay->Stop();
+        // Fence FS callbacks before closing the StreamClient that they use.
+        s->bugs.clear();
+        relay->EmitStopped();
+        s->recording_ctx.reset();
+        if (s->client) {
+            s->client->Close();
+            s->client.reset();
+        }
+        return;
+    }
     // Step 1: Close the StreamClient (half-close upstream, join reader thread).
     //   This stops the gRPC reader pushing more frames into the jitter buffer,
     //   but does NOT fence the FS media thread — that thread will keep firing
@@ -163,6 +219,7 @@ void ActiveMediaStreams::TearDown(std::unique_ptr<ActiveMediaStream> s) noexcept
     s->bugs.clear();
     // Step 4: Now safe to free write_ctx — FS callbacks are fenced.
     s->write_ctx.reset();
+    s->recording_ctx.reset();
     // Step 5: Release buffer.
     s->tts_buffer.reset();
     // Step 6: Release StreamClient.

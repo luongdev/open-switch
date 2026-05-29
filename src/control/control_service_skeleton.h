@@ -175,6 +175,16 @@ class ControlServiceSkeleton final : public open_switch::control::v1::ControlSer
                                  const open_switch::control::v1::StopMediaStreamRequest* req,
                                  open_switch::control::v1::StopMediaStreamResponse* resp) override;
 
+    grpc::Status StartRecordingRelay(
+        grpc::ServerContext* ctx,
+        const open_switch::control::v1::StartRecordingRelayRequest* req,
+        open_switch::control::v1::StartRecordingRelayResponse* resp) override;
+
+    grpc::Status StopRecordingRelay(
+        grpc::ServerContext* ctx,
+        const open_switch::control::v1::StopRecordingRelayRequest* req,
+        open_switch::control::v1::StopRecordingRelayResponse* resp) override;
+
     grpc::Status StartBot(grpc::ServerContext* ctx,
                           const open_switch::control::v1::StartBotRequest* req,
                           open_switch::control::v1::StartBotResponse* resp) override;

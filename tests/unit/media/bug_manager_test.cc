@@ -223,6 +223,60 @@ TEST_F(BugManagerTest, A4b_VadAlwaysGetsSmbfFirst) {
     EXPECT_NE(0u, Mock().media_bug_add_invocations[0].flags & SMBF_FIRST);
 }
 
+TEST_F(BugManagerTest, RecordingRelayWithoutInjectRejected) {
+    auto r = mgr_.Attach(FakeSession(), {Purpose::kRecordingRelay, 0, 8000, "t", "e"});
+    EXPECT_FALSE(r.ok);
+    EXPECT_EQ(grpc::StatusCode::FAILED_PRECONDITION, r.status_code);
+    EXPECT_THAT(r.error, ::testing::HasSubstr("requires an active INJECT bug"));
+    EXPECT_EQ(0, Mock().media_bug_add_calls.load());
+}
+
+TEST_F(BugManagerTest, RecordingRelayAfterTtsInjectAllowed) {
+    auto tts = mgr_.Attach(FakeSession(), {Purpose::kTtsPlayback, 0, 16000, "t", "e"});
+    ASSERT_TRUE(tts.ok) << tts.error;
+    EXPECT_TRUE(mgr_.HasInjectBug("test-channel-uuid-0001"));
+
+    auto rec_read =
+        mgr_.Attach(FakeSession(), {Purpose::kRecordingRelay, SMBF_READ_STREAM, 8000, "t", "e"});
+    ASSERT_TRUE(rec_read.ok) << rec_read.error;
+
+    auto rec_write =
+        mgr_.Attach(FakeSession(), {Purpose::kRecordingRelay, SMBF_WRITE_STREAM, 8000, "t", "e"});
+    EXPECT_TRUE(rec_write.ok) << rec_write.error;
+}
+
+TEST_F(BugManagerTest, RecordingRelayAfterVoicebotWriteInjectAllowed) {
+    auto write = mgr_.Attach(FakeSession(), {Purpose::kVoicebotDuplexWrite, 0, 16000, "t", "e"});
+    ASSERT_TRUE(write.ok) << write.error;
+    EXPECT_TRUE(mgr_.HasInjectBug("test-channel-uuid-0001"));
+
+    auto rec = mgr_.Attach(FakeSession(), {Purpose::kRecordingRelay, 0, 8000, "t", "e"});
+    EXPECT_TRUE(rec.ok) << rec.error;
+}
+
+TEST_F(BugManagerTest, RecordingRelayAfterSttOnlyRejected) {
+    auto stt = mgr_.Attach(FakeSession(), {Purpose::kSttTranscribe, 0, 16000, "t", "e"});
+    ASSERT_TRUE(stt.ok) << stt.error;
+    EXPECT_FALSE(mgr_.HasInjectBug("test-channel-uuid-0001"));
+
+    auto rec = mgr_.Attach(FakeSession(), {Purpose::kRecordingRelay, 0, 8000, "t", "e"});
+    EXPECT_FALSE(rec.ok);
+    EXPECT_EQ(grpc::StatusCode::FAILED_PRECONDITION, rec.status_code);
+}
+
+TEST_F(BugManagerTest, RecordingRelayAfterInjectDetachedRejected) {
+    auto tts = mgr_.Attach(FakeSession(), {Purpose::kTtsPlayback, 0, 16000, "t", "e"});
+    ASSERT_TRUE(tts.ok) << tts.error;
+    EXPECT_TRUE(mgr_.HasInjectBug("test-channel-uuid-0001"));
+
+    tts.handle = BugHandle{};
+    EXPECT_FALSE(mgr_.HasInjectBug("test-channel-uuid-0001"));
+
+    auto rec = mgr_.Attach(FakeSession(), {Purpose::kRecordingRelay, 0, 8000, "t", "e"});
+    EXPECT_FALSE(rec.ok);
+    EXPECT_EQ(grpc::StatusCode::FAILED_PRECONDITION, rec.status_code);
+}
+
 // ---------------------------------------------------------------------------
 // A5 — BugHandle destructor triggers Detach (mock _remove_callback called).
 // ---------------------------------------------------------------------------

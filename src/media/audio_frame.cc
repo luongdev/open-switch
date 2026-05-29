@@ -18,10 +18,14 @@ AudioFrame::AudioFrame(std::vector<std::int16_t> samples,
                        std::uint32_t sample_rate_hz,
                        std::uint32_t channels,
                        std::uint64_t seq,
-                       std::uint64_t timestamp_samples) noexcept
+                       std::uint64_t timestamp_samples,
+                       std::uint32_t channel,
+                       std::string channel_uuid) noexcept
     : samples_(std::move(samples)),
       sample_rate_hz_(sample_rate_hz),
       channels_(channels),
+      channel_(channel),
+      channel_uuid_(std::move(channel_uuid)),
       seq_(seq),
       timestamp_samples_(timestamp_samples) {}
 
@@ -56,8 +60,13 @@ std::optional<AudioFrame> AudioFrame::FromProto(const open_switch::media::v1::Au
     std::vector<std::int16_t> samples(total_samples);
     std::memcpy(samples.data(), proto.payload().data(), proto.payload().size());
 
-    return AudioFrame(
-        std::move(samples), sample_rate_hz, channels, proto.seq(), proto.timestamp_samples());
+    return AudioFrame(std::move(samples),
+                      sample_rate_hz,
+                      channels,
+                      proto.seq(),
+                      proto.timestamp_samples(),
+                      static_cast<std::uint32_t>(proto.channel()),
+                      proto.channel_uuid());
 }
 
 // ---------------------------------------------------------------------------
@@ -68,6 +77,8 @@ void AudioFrame::ToProto(open_switch::media::v1::AudioFrame* out) const noexcept
     out->set_seq(seq_);
     out->set_timestamp_samples(timestamp_samples_);
     out->set_duration_samples(duration_samples());
+    out->set_channel(static_cast<open_switch::media::v1::AudioFrame::Channel>(channel_));
+    out->set_channel_uuid(channel_uuid_);
 
     const std::size_t byte_count = samples_.size() * sizeof(std::int16_t);
     out->set_payload(reinterpret_cast<const char*>(samples_.data()), byte_count);

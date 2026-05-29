@@ -120,6 +120,10 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
     sp_log.target = &out.log_level;
     StringParam sp_acl{};
     sp_acl.target = &out.tenant_allowed_contexts;
+    StringParam sp_eavesdrop_policy{};
+    sp_eavesdrop_policy.target = &out.eavesdrop_policy;
+    StringParam sp_tenant_eavesdrop{};
+    sp_tenant_eavesdrop.target = &out.tenant_eavesdrop_policies;
     std::string pii_pipe;
     StringParam sp_pii{};
     sp_pii.target = &pii_pipe;
@@ -131,6 +135,12 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
     int int_tts_max_jitter = static_cast<int>(out.tts_max_jitter_buffer_ms);
     StringParam sp_tts_underrun{};
     sp_tts_underrun.target = &out.tts_underrun_policy;
+    int int_recording_send_ring_ms = static_cast<int>(out.recording_send_ring_ms);
+    int int_stereo_desync_warn_ms = static_cast<int>(out.stereo_desync_warn_ms);
+    int int_stereo_desync_timeout_ms = static_cast<int>(out.stereo_desync_timeout_ms);
+    int int_recording_default_rate_hz = static_cast<int>(out.recording_default_rate_hz);
+    switch_bool_t bool_warn_record_before_inject =
+        out.warn_record_before_inject ? SWITCH_TRUE : SWITCH_FALSE;
     switch_bool_t bool_silence_driver = out.silence_driver_enabled ? SWITCH_TRUE : SWITCH_FALSE;
     int int_max_silence_drivers = static_cast<int>(out.max_silence_drivers);
     int int_bot_max_targets = static_cast<int>(out.bot_max_targets);
@@ -378,6 +388,24 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
                                     &sp_acl,
                                     "tenant:ctx1,ctx2;...",
                                     "Per-tenant allowed dialplan contexts"),
+        SWITCH_CONFIG_ITEM_CALLBACK("eavesdrop_policy",
+                                    SWITCH_CONFIG_CUSTOM,
+                                    CONFIG_RELOADABLE,
+                                    nullptr,
+                                    "deny",
+                                    &StringCallback,
+                                    &sp_eavesdrop_policy,
+                                    "deny|audit|allow",
+                                    "Default eavesdrop policy on bot-marked calls"),
+        SWITCH_CONFIG_ITEM_CALLBACK("tenant_eavesdrop_policies",
+                                    SWITCH_CONFIG_CUSTOM,
+                                    CONFIG_RELOADABLE,
+                                    nullptr,
+                                    "",
+                                    &StringCallback,
+                                    &sp_tenant_eavesdrop,
+                                    "tenant:policy[:allow|deny];...",
+                                    "Per-tenant eavesdrop policy overrides"),
 
         // W6 Track C — TTS playout buffer
         SWITCH_CONFIG_ITEM("tts_jitter_buffer_ms",
@@ -421,6 +449,46 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
                                     &sp_tts_underrun,
                                     "silence|repeat_last",
                                     "TTS underrun policy (silence or repeat_last)"),
+        SWITCH_CONFIG_ITEM("recording_send_ring_ms",
+                           SWITCH_CONFIG_INT,
+                           CONFIG_RELOADABLE,
+                           &int_recording_send_ring_ms,
+                           reinterpret_cast<const void*>(static_cast<std::intptr_t>(500)),
+                           &opt_ge50,
+                           "ms",
+                           "Recording relay send-ring capacity"),
+        SWITCH_CONFIG_ITEM("stereo_desync_warn_ms",
+                           SWITCH_CONFIG_INT,
+                           CONFIG_RELOADABLE,
+                           &int_stereo_desync_warn_ms,
+                           reinterpret_cast<const void*>(static_cast<std::intptr_t>(5)),
+                           &opt_ge1,
+                           "ms",
+                           "Stereo recording desync warning threshold"),
+        SWITCH_CONFIG_ITEM("stereo_desync_timeout_ms",
+                           SWITCH_CONFIG_INT,
+                           CONFIG_RELOADABLE,
+                           &int_stereo_desync_timeout_ms,
+                           reinterpret_cast<const void*>(static_cast<std::intptr_t>(25)),
+                           &opt_ge1,
+                           "ms",
+                           "Stereo recording silence-fill timeout"),
+        SWITCH_CONFIG_ITEM("recording_default_rate_hz",
+                           SWITCH_CONFIG_INT,
+                           CONFIG_RELOADABLE,
+                           &int_recording_default_rate_hz,
+                           reinterpret_cast<const void*>(static_cast<std::intptr_t>(8000)),
+                           &opt_ge1,
+                           "hz",
+                           "Default recording relay sample rate"),
+        SWITCH_CONFIG_ITEM("warn_record_before_inject",
+                           SWITCH_CONFIG_BOOL,
+                           CONFIG_RELOADABLE,
+                           &bool_warn_record_before_inject,
+                           reinterpret_cast<const void*>(static_cast<std::intptr_t>(SWITCH_TRUE)),
+                           nullptr,
+                           "true|false",
+                           "Warn when record_session exists before bot inject attach"),
         SWITCH_CONFIG_ITEM("silence_driver_enabled",
                            SWITCH_CONFIG_BOOL,
                            CONFIG_RELOADABLE,
@@ -503,6 +571,11 @@ bool LoadConfigFromFile(const char* xml_file_name, Config& out) {
         out.tts_preroll_ms = static_cast<std::uint32_t>(int_tts_preroll);
         out.tts_high_water_ms = static_cast<std::uint32_t>(int_tts_high_water);
         out.tts_max_jitter_buffer_ms = static_cast<std::uint32_t>(int_tts_max_jitter);
+        out.recording_send_ring_ms = static_cast<std::uint32_t>(int_recording_send_ring_ms);
+        out.stereo_desync_warn_ms = static_cast<std::uint32_t>(int_stereo_desync_warn_ms);
+        out.stereo_desync_timeout_ms = static_cast<std::uint32_t>(int_stereo_desync_timeout_ms);
+        out.recording_default_rate_hz = static_cast<std::uint32_t>(int_recording_default_rate_hz);
+        out.warn_record_before_inject = (bool_warn_record_before_inject == SWITCH_TRUE);
         out.silence_driver_enabled = (bool_silence_driver == SWITCH_TRUE);
         out.max_silence_drivers = static_cast<std::uint32_t>(int_max_silence_drivers);
         out.bot_max_targets = static_cast<std::uint32_t>(int_bot_max_targets);

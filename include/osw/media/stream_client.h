@@ -27,6 +27,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -67,6 +68,8 @@ struct StreamConfig {
     std::uint32_t sample_rate_hz;  ///< 8000 or 16000
     std::uint32_t channels = 1;
     open_switch::media::v1::AudioCodec codec = open_switch::media::v1::AudioCodec::PCM_S16LE;
+    open_switch::media::v1::StreamStart::CallerSide side =
+        open_switch::media::v1::StreamStart::CALLER_SIDE_UNSPECIFIED;
     std::string traceparent;    ///< optional W3C traceparent
     std::string start_message;  ///< optional TTS opening line
     std::map<std::string, std::string> variables;
@@ -74,6 +77,9 @@ struct StreamConfig {
     /// client write side after StreamStart/StreamReady. STT/voicebot keep it
     /// false because they continue sending caller audio/control upstream.
     bool half_close_writes_after_start = false;
+    /// Bounded outgoing send ring capacity in frames. Default 256 is the
+    /// legacy W6 size; recording relay overrides this from config ms.
+    std::size_t send_ring_capacity_frames = 256;
 };
 
 class StreamClient {
@@ -129,10 +135,9 @@ class StreamClient {
   private:
     // ----------------------------------------------------------------
     // Send ring: bounded queue of outgoing AudioFrame protos.
-    // Capacity 256 ≈ 5 seconds @ 20ms ptime.
+    // Capacity defaults to 256 ≈ 5 seconds @ 20ms ptime; W7 recording
+    // relay may set a smaller per-stream capacity from config.
     // ----------------------------------------------------------------
-    static constexpr std::size_t kRingCapacity = 256;
-
     struct RingEntry {
         open_switch::media::v1::FromModule msg;
     };
@@ -140,7 +145,7 @@ class StreamClient {
     // Ring state guarded by ring_mu_.
     std::mutex ring_mu_;
     std::condition_variable ring_cv_;
-    std::vector<RingEntry> ring_;  ///< circular buffer (ring_.size() == kRingCapacity always)
+    std::vector<RingEntry> ring_;  ///< circular buffer; size is configured per stream
     std::size_t ring_head_ = 0;    ///< next-write index
     std::size_t ring_tail_ = 0;    ///< next-read index
     std::size_t ring_count_ = 0;   ///< items currently in the ring

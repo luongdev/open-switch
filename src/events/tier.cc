@@ -77,8 +77,31 @@ TierRules MakeDefaultRules() {
         r.events.emplace(n, Tier::k3Ephemeral);
     }
     // Subclass globs:
+    //   osw.recording.{relay_started,relay_stopped,warn_record_before_inject}
+    //                 → Tier 1 (operator-visible lifecycle/compliance)
+    //   osw.recording.{send_overflow,lr_desync}
+    //                 → Tier 2 (recoverable media-quality state)
+    //   osw.eavesdrop.{denied,audit,allowed,detected_post_attach}
+    //                 → Tier 1 (bot-call supervisor listen-in policy)
+    //   osw.media.bot.{started,stopped,target_attach_failed}
+    //                 → Tier 1 (bot lifecycle / partial attach failure)
+    //   osw.media.bot.target_drop
+    //                 → Tier 2 (recoverable fanout queue pressure)
     //   osw.audit.*   → Tier 1 (module's own audit channel)
     //   sofia::register, sofia::unregister → Tier 2 (state events)
+    r.subclass_globs.emplace_back("osw.recording.relay_started", Tier::k1Critical);
+    r.subclass_globs.emplace_back("osw.recording.relay_stopped", Tier::k1Critical);
+    r.subclass_globs.emplace_back("osw.recording.warn_record_before_inject", Tier::k1Critical);
+    r.subclass_globs.emplace_back("osw.recording.send_overflow", Tier::k2State);
+    r.subclass_globs.emplace_back("osw.recording.lr_desync", Tier::k2State);
+    r.subclass_globs.emplace_back("osw.eavesdrop.denied", Tier::k1Critical);
+    r.subclass_globs.emplace_back("osw.eavesdrop.audit", Tier::k1Critical);
+    r.subclass_globs.emplace_back("osw.eavesdrop.allowed", Tier::k1Critical);
+    r.subclass_globs.emplace_back("osw.eavesdrop.detected_post_attach", Tier::k1Critical);
+    r.subclass_globs.emplace_back("osw.media.bot.started", Tier::k1Critical);
+    r.subclass_globs.emplace_back("osw.media.bot.stopped", Tier::k1Critical);
+    r.subclass_globs.emplace_back("osw.media.bot.target_attach_failed", Tier::k1Critical);
+    r.subclass_globs.emplace_back("osw.media.bot.target_drop", Tier::k2State);
     r.subclass_globs.emplace_back("osw.audit.*", Tier::k1Critical);
     r.subclass_globs.emplace_back("sofia::register", Tier::k2State);
     r.subclass_globs.emplace_back("sofia::unregister", Tier::k2State);
