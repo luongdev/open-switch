@@ -32,6 +32,8 @@
 
 namespace {
 
+constexpr const char* kWriteReplaceSubsystem = "media.write_replace";
+
 #if defined(OSW_TEST_FS_MOCK)
 constexpr int kAbcTypeRead = 1;          // SWITCH_ABC_TYPE_READ
 constexpr int kAbcTypeReadPing = 5;      // SWITCH_ABC_TYPE_READ_PING
@@ -39,7 +41,6 @@ constexpr int kAbcTypeWriteReplace = 3;  // SWITCH_ABC_TYPE_WRITE_REPLACE
 constexpr int kAbcTypeInit = 0;
 constexpr int kAbcTypeClose = 8;
 #else
-constexpr const char* kWriteReplaceSubsystem = "media.write_replace";
 constexpr int kAbcTypeRead = static_cast<int>(SWITCH_ABC_TYPE_READ);
 constexpr int kAbcTypeReadPing = static_cast<int>(SWITCH_ABC_TYPE_READ_PING);
 constexpr int kAbcTypeWriteReplace = static_cast<int>(SWITCH_ABC_TYPE_WRITE_REPLACE);
@@ -132,7 +133,6 @@ extern "C" switch_bool_t OswStreamingReadTap(switch_media_bug_t* bug,
             return SWITCH_TRUE;
         }
 
-#if !defined(OSW_TEST_FS_MOCK)
         // SMBF_READ_STREAM callbacks must pull the current frame with
         // switch_core_media_bug_read. Read-replace accessors are for
         // READ_REPLACE-style bugs and do not carry plain read-stream audio.
@@ -177,12 +177,6 @@ extern "C" switch_bool_t OswStreamingReadTap(switch_media_bug_t* bug,
 
         osw::media::AudioFrame af(std::move(samples), out_rate, ch, seq, ts);
         ctx->client->SendAudio(std::move(af));
-#else
-        // In tests, switch_frame_t is opaque (incomplete type). The test injects
-        // frames through the buffer->Push path directly; the callback is invoked
-        // as a no-op in mock mode (tests drive the buffer directly).
-        (void)bug;
-#endif
 
         return SWITCH_TRUE;
     } catch (...) {
@@ -215,7 +209,6 @@ extern "C" switch_bool_t OswStreamingWriteReplace(switch_media_bug_t* bug,
             return SWITCH_TRUE;
         }
 
-#if !defined(OSW_TEST_FS_MOCK)
         // Pop samples from the jitter buffer into the FS frame. When the
         // upstream stream rate differs from the FS write rate, pop the
         // equivalent duration at stream rate and resample once per callback.
@@ -273,10 +266,6 @@ extern "C" switch_bool_t OswStreamingWriteReplace(switch_media_bug_t* bug,
                            static_cast<unsigned>(written),
                            static_cast<unsigned>(frame->datalen));
         }
-#else
-        // In tests, switch_frame_t is opaque. Tests drive the buffer directly.
-        (void)frame;
-#endif
 
         return SWITCH_TRUE;
     } catch (...) {
@@ -307,7 +296,6 @@ extern "C" switch_bool_t OswBotReadTap(switch_media_bug_t* bug,
             return SWITCH_TRUE;
         }
 
-#if !defined(OSW_TEST_FS_MOCK)
         switch_frame_t frame{};
         if (osw::raii::fs::MediaBugRead(bug, &frame, SWITCH_FALSE) != SWITCH_STATUS_SUCCESS ||
             frame.datalen == 0 || !frame.data) {
@@ -345,9 +333,6 @@ extern "C" switch_bool_t OswBotReadTap(switch_media_bug_t* bug,
             ctx->bot->OnTargetReadFrame(
                 ctx->channel_uuid, frame.timestamp, src, n_samples, out_rate, channels);
         }
-#else
-        (void)bug;
-#endif
 
         return SWITCH_TRUE;
     } catch (...) {
@@ -385,7 +370,6 @@ extern "C" switch_bool_t OswBotWriteReplace(switch_media_bug_t* bug,
             return SWITCH_TRUE;
         }
 
-#if !defined(OSW_TEST_FS_MOCK)
         auto* frame = osw::raii::fs::MediaBugGetWriteReplaceFrame(bug);
         if (!frame || !frame->data || frame->datalen == 0) {
             return SWITCH_TRUE;
@@ -429,9 +413,6 @@ extern "C" switch_bool_t OswBotWriteReplace(switch_media_bug_t* bug,
                            static_cast<unsigned>(copy_samples),
                            static_cast<unsigned>(frame->datalen));
         }
-#else
-        osw::raii::fs::MediaBugSetWriteReplaceFrame(bug, nullptr);
-#endif
 
         return SWITCH_TRUE;
     } catch (...) {
