@@ -121,9 +121,7 @@ class StartRecordingRelayHandlerTest : public ::testing::Test {
 
         sink_ = std::make_unique<RecordingSinkService>();
         grpc::ServerBuilder builder;
-        builder.AddListeningPort("127.0.0.1:0",
-                                 grpc::InsecureServerCredentials(),
-                                 &sink_port_);
+        builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &sink_port_);
         builder.RegisterService(sink_.get());
         sink_server_ = builder.BuildAndStart();
         ASSERT_NE(sink_server_, nullptr);
@@ -172,7 +170,8 @@ class StartRecordingRelayHandlerTest : public ::testing::Test {
     open_switch::control::v1::StartRecordingRelayRequest BaseRequest() const {
         open_switch::control::v1::StartRecordingRelayRequest req;
         req.mutable_header()->set_tenant_id(kTenantId);
-        req.mutable_header()->set_traceparent("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01");
+        req.mutable_header()->set_traceparent(
+            "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01");
         req.set_channel_uuid(kChannelUuid);
         req.set_relay_endpoint(Endpoint());
         return req;
@@ -286,8 +285,7 @@ TEST_F(StartRecordingRelayHandlerTest, StereoHappyPathAttachesReadWriteAndAudits
     EXPECT_EQ(starts[0].sample_rate_hz(), 16000u);
     EXPECT_EQ(starts[0].channels(), 2u);
     EXPECT_EQ(starts[0].side(), open_switch::media::v1::StreamStart::STEREO);
-    EXPECT_EQ(starts[0].traceparent(),
-              "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01");
+    EXPECT_EQ(starts[0].traceparent(), "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01");
 
     auto& m = osw::raii::fs::Mock();
     EXPECT_EQ(m.media_bug_add_calls.load(), bug_adds_before + 2);

@@ -50,22 +50,18 @@ void HandleOswEavesdropApp(switch_core_session_t* session, const char* data) noe
 
             switch_channel_t* target_channel = target.channel();
             const char* marked =
-                target_channel ? ::osw::raii::fs::ChannelGetVariable(
-                                     target_channel, kBotSessionVar)
+                target_channel ? ::osw::raii::fs::ChannelGetVariable(target_channel, kBotSessionVar)
                                : nullptr;
             if (!IsTrue(marked)) {
                 delegate_to_fs = true;
             } else {
-                const char* policy_raw = ::osw::raii::fs::ChannelGetVariable(
-                    target_channel, kEavesdropPolicyVar);
+                const char* policy_raw =
+                    ::osw::raii::fs::ChannelGetVariable(target_channel, kEavesdropPolicyVar);
                 const EavesdropPolicy policy =
                     policy_raw ? ParseEavesdropPolicy(policy_raw) : EavesdropPolicy::kDeny;
                 const bool denied = (policy == EavesdropPolicy::kDeny);
-                EmitEavesdropAudit(session,
-                                   target.get(),
-                                   policy,
-                                   "1_pre_attach",
-                                   denied ? "hangup" : "permitted");
+                EmitEavesdropAudit(
+                    session, target.get(), policy, "1_pre_attach", denied ? "hangup" : "permitted");
                 if (denied) {
                     switch_channel_t* supervisor_channel =
                         ::osw::raii::fs::SessionGetChannel(session);

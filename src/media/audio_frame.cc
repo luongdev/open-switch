@@ -60,14 +60,13 @@ std::optional<AudioFrame> AudioFrame::FromProto(const open_switch::media::v1::Au
     std::vector<std::int16_t> samples(total_samples);
     std::memcpy(samples.data(), proto.payload().data(), proto.payload().size());
 
-    return AudioFrame(
-        std::move(samples),
-        sample_rate_hz,
-        channels,
-        proto.seq(),
-        proto.timestamp_samples(),
-        static_cast<std::uint32_t>(proto.channel()),
-        proto.channel_uuid());
+    return AudioFrame(std::move(samples),
+                      sample_rate_hz,
+                      channels,
+                      proto.seq(),
+                      proto.timestamp_samples(),
+                      static_cast<std::uint32_t>(proto.channel()),
+                      proto.channel_uuid());
 }
 
 // ---------------------------------------------------------------------------

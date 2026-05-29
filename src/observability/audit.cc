@@ -40,8 +40,7 @@ namespace {
 
 constexpr const char* kSubsystem = "audit";
 
-bool EmitFullSubclass(std::string_view subclass,
-                      const std::vector<Header>& headers) noexcept {
+bool EmitFullSubclass(std::string_view subclass, const std::vector<Header>& headers) noexcept {
     if (subclass.empty()) {
         osw::log::Warn(kSubsystem, "audit::Emit refused empty subclass");
         return false;

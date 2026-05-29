@@ -60,8 +60,7 @@ TEST(ActiveBotsTest, ChannelCapacityRejectsSecondBotOnSameChannel) {
     first.bot_id = "bot-1";
     first.target_channel_uuids = {"chan-a"};
     first.session = MakeBotSession("bot-1", "chan-a");
-    ASSERT_EQ(bots.Insert(std::move(first), 1),
-              osw::control::ActiveBotInsertResult::kInserted);
+    ASSERT_EQ(bots.Insert(std::move(first), 1), osw::control::ActiveBotInsertResult::kInserted);
 
     osw::control::ActiveBot second;
     second.bot_id = "bot-2";

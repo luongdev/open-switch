@@ -50,8 +50,7 @@ void OnMediaBugStart(switch_event_t* event) noexcept {
             return;
         }
 
-        const char* marked =
-            ::osw::raii::fs::ChannelGetVariable(target_channel, kBotSessionVar);
+        const char* marked = ::osw::raii::fs::ChannelGetVariable(target_channel, kBotSessionVar);
         if (!IsTrue(marked)) {
             return;
         }
@@ -83,12 +82,11 @@ void OnMediaBugStart(switch_event_t* event) noexcept {
 }  // namespace
 
 bool BindEavesdropDetector() noexcept {
-    const switch_status_t status =
-        ::osw::raii::fs::EventBind(kBindId,
-                                   SWITCH_EVENT_MEDIA_BUG_START,
-                                   /*subclass_name=*/nullptr,
-                                   &OnMediaBugStart,
-                                   /*user_data=*/nullptr);
+    const switch_status_t status = ::osw::raii::fs::EventBind(kBindId,
+                                                              SWITCH_EVENT_MEDIA_BUG_START,
+                                                              /*subclass_name=*/nullptr,
+                                                              &OnMediaBugStart,
+                                                              /*user_data=*/nullptr);
     if (status != SWITCH_STATUS_SUCCESS) {
         osw::log::Error(kSubsystem,
                         "switch_event_bind MEDIA_BUG_START failed: status=%d",

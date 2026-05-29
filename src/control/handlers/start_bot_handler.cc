@@ -16,6 +16,7 @@
 #include <grpcpp/grpcpp.h>
 
 #include "open_switch/control/v1/control.pb.h"
+
 #include "osw/control/active_bots.h"
 #include "osw/core/config.h"
 #include "osw/events/envelope.h"
@@ -197,10 +198,9 @@ grpc::Status HandleStartBot(grpc::ServerContext* ctx,
                                              reinterpret_cast<void*>(OswBotWriteReplace),
                                              reinterpret_cast<void*>(OswBotReadTap));
     if (!attach_st.ok()) {
-        osw::audit::EmitSubclass("osw.media.bot.target_attach_failed",
-                                 {{"bot_id", bot_id},
-                                  {"tenant_id", tenant_id},
-                                  {"error", attach_st.error_message()}});
+        osw::audit::EmitSubclass(
+            "osw.media.bot.target_attach_failed",
+            {{"bot_id", bot_id}, {"tenant_id", tenant_id}, {"error", attach_st.error_message()}});
         osw::log::Warn(kSubsystem,
                        "StartBot: attach failed bot_id=%s: %s",
                        bot_id.c_str(),

@@ -41,9 +41,7 @@ using osw::media::BotSessionConfig;
 switch_core_session_t* const kFakeSession = reinterpret_cast<switch_core_session_t*>(0xD001);
 switch_media_bug_t* const kFakeBug = reinterpret_cast<switch_media_bug_t*>(0xD002);
 
-extern "C" switch_bool_t DummyBotCallback(switch_media_bug_t*,
-                                          void*,
-                                          switch_abc_type_t) noexcept {
+extern "C" switch_bool_t DummyBotCallback(switch_media_bug_t*, void*, switch_abc_type_t) noexcept {
     return SWITCH_TRUE;
 }
 
@@ -172,8 +170,7 @@ TEST_F(BotSessionTest, AttachTtsBroadcastAddsOneWriteBugPerTarget) {
     osw::media::MediaBugManager mgr;
     BotSession bot(MakeConfig(), MakeChannel());
 
-    const grpc::Status st =
-        bot.Attach(mgr, reinterpret_cast<void*>(DummyBotCallback), nullptr);
+    const grpc::Status st = bot.Attach(mgr, reinterpret_cast<void*>(DummyBotCallback), nullptr);
     ASSERT_TRUE(st.ok()) << st.error_message();
 
     EXPECT_EQ(mgr.ActiveBugCount("chan-a"), 1u);
@@ -194,8 +191,7 @@ TEST_F(BotSessionTest, AttachPartialFailureUnwindsAlreadyAttachedBugs) {
     osw::media::MediaBugManager mgr;
     BotSession bot(std::move(cfg), MakeChannel());
 
-    const grpc::Status st =
-        bot.Attach(mgr, reinterpret_cast<void*>(DummyBotCallback), nullptr);
+    const grpc::Status st = bot.Attach(mgr, reinterpret_cast<void*>(DummyBotCallback), nullptr);
     EXPECT_FALSE(st.ok());
     EXPECT_EQ(mgr.TotalActiveBugCount(), 0u);
 }

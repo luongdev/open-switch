@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-#include "osw/raii/fs_mock.h"
+#include "osw/security/eavesdrop_app.h"
 
 #include <algorithm>
 #include <mutex>
@@ -12,12 +12,11 @@
 
 #include <gtest/gtest.h>
 
-#include "osw/security/eavesdrop_app.h"
+#include "osw/raii/fs_mock.h"
 
 namespace {
 
-switch_core_session_t* const kSupervisorSession =
-    reinterpret_cast<switch_core_session_t*>(0x7201);
+switch_core_session_t* const kSupervisorSession = reinterpret_cast<switch_core_session_t*>(0x7201);
 switch_core_session_t* const kTargetSession = reinterpret_cast<switch_core_session_t*>(0x7202);
 switch_channel_t* const kChannel = reinterpret_cast<switch_channel_t*>(0x7203);
 switch_event_t* const kAuditEvent = reinterpret_cast<switch_event_t*>(0x7204);

@@ -70,8 +70,7 @@ TEST_F(TierTest, RecordingSubclassesRouteToDocumentedTiers) {
     TierClassifier c(osw::events::MakeDefaultRules());
     EXPECT_EQ(c.Classify("CUSTOM", "osw.recording.relay_started"), Tier::k1Critical);
     EXPECT_EQ(c.Classify("CUSTOM", "osw.recording.relay_stopped"), Tier::k1Critical);
-    EXPECT_EQ(c.Classify("CUSTOM", "osw.recording.warn_record_before_inject"),
-              Tier::k1Critical);
+    EXPECT_EQ(c.Classify("CUSTOM", "osw.recording.warn_record_before_inject"), Tier::k1Critical);
     EXPECT_EQ(c.Classify("CUSTOM", "osw.recording.send_overflow"), Tier::k2State);
     EXPECT_EQ(c.Classify("CUSTOM", "osw.recording.lr_desync"), Tier::k2State);
 }

@@ -90,8 +90,7 @@ bool ActiveMediaStreams::Remove(std::string_view stream_id) noexcept {
 }
 
 bool ActiveMediaStreams::RemoveIfPurpose(
-    std::string_view stream_id,
-    open_switch::media::v1::StreamStart::Purpose purpose) noexcept {
+    std::string_view stream_id, open_switch::media::v1::StreamStart::Purpose purpose) noexcept {
     std::unique_ptr<ActiveMediaStream> owned;
     {
         std::lock_guard<std::mutex> g(mu_);
@@ -125,8 +124,7 @@ void ActiveMediaStreams::RemoveForChannel(std::string_view channel_uuid) noexcep
 }
 
 std::size_t ActiveMediaStreams::RemovePurposeForChannel(
-    std::string_view channel_uuid,
-    open_switch::media::v1::StreamStart::Purpose purpose) noexcept {
+    std::string_view channel_uuid, open_switch::media::v1::StreamStart::Purpose purpose) noexcept {
     std::vector<std::unique_ptr<ActiveMediaStream>> victims;
     {
         std::lock_guard<std::mutex> g(mu_);

@@ -76,12 +76,11 @@ class StopRecordingRelayHandlerTest : public ::testing::Test {
         osw::raii::fs::MockReset();
     }
 
-    void InsertStream(
-        const std::string& stream_id,
-        const std::string& channel_uuid,
-        open_switch::media::v1::StreamStart::Purpose purpose =
-            open_switch::media::v1::StreamStart::RECORDING_RELAY,
-        bool with_recording_ctx = false) {
+    void InsertStream(const std::string& stream_id,
+                      const std::string& channel_uuid,
+                      open_switch::media::v1::StreamStart::Purpose purpose =
+                          open_switch::media::v1::StreamStart::RECORDING_RELAY,
+                      bool with_recording_ctx = false) {
         auto stream = std::make_unique<osw::control::ActiveMediaStream>();
         stream->channel_uuid = channel_uuid;
         stream->stream_id = stream_id;
@@ -194,8 +193,7 @@ TEST_F(StopRecordingRelayHandlerTest, ChannelUuidStopsOnlyRecordingRelaysForChan
 }
 
 TEST_F(StopRecordingRelayHandlerTest, StopWithRecordingContextEmitsRelayStoppedAudit) {
-    InsertStream("stream-a", "chan-a", open_switch::media::v1::StreamStart::RECORDING_RELAY,
-                 true);
+    InsertStream("stream-a", "chan-a", open_switch::media::v1::StreamStart::RECORDING_RELAY, true);
 
     open_switch::control::v1::StopRecordingRelayRequest req;
     req.set_stream_id("stream-a");

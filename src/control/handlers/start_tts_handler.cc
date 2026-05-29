@@ -231,10 +231,8 @@ grpc::Status HandleStartTts(grpc::ServerContext* /*ctx*/,
         return grpc::Status(attach.status_code, attach.error);
     }
     MaybeWarnRecordBeforeInject(sg.get(), req->channel_uuid(), tenant_id, config);
-    osw::security::MarkBotSession(sg.get(),
-                                  "tts",
-                                  osw::security::ResolveEffectivePolicy(config, tenant_id),
-                                  tenant_id);
+    osw::security::MarkBotSession(
+        sg.get(), "tts", osw::security::ResolveEffectivePolicy(config, tenant_id), tenant_id);
 
     // Allocate WriteCallbackCtx and wire it into the BugCallbackContext
     // via MediaBugManager::SetBugCallback.

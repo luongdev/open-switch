@@ -128,11 +128,10 @@ grpc::Status BotSession::Open(int open_deadline_ms) noexcept {
         }
         const std::uint64_t dropped = fanout_->Push(std::move(frame));
         if (dropped > 0) {
-            osw::audit::EmitSubclass(
-                "osw.media.bot.target_drop",
-                {{"bot_id", cfg_.bot_id},
-                 {"tenant_id", cfg_.tenant_id},
-                 {"dropped_frames", std::to_string(dropped)}});
+            osw::audit::EmitSubclass("osw.media.bot.target_drop",
+                                     {{"bot_id", cfg_.bot_id},
+                                      {"tenant_id", cfg_.tenant_id},
+                                      {"dropped_frames", std::to_string(dropped)}});
         }
         frames_recv_.fetch_add(1, std::memory_order_relaxed);
     };
@@ -182,8 +181,8 @@ grpc::Status BotSession::Attach(MediaBugManager& mgr,
     for (const auto& channel_uuid : cfg_.target_channel_uuids) {
         osw::SessionLock lock(channel_uuid.c_str());
         if (!lock) {
-            return unwind(grpc::Status(grpc::StatusCode::NOT_FOUND,
-                                       "channel not found: " + channel_uuid));
+            return unwind(
+                grpc::Status(grpc::StatusCode::NOT_FOUND, "channel not found: " + channel_uuid));
         }
 
         if (SupportsRead()) {

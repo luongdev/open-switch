@@ -76,9 +76,7 @@ class StartBotHandlerTest : public ::testing::Test {
         osw::raii::fs::MockReset();
         media_svc_ = std::make_unique<MockMediaBridgeService>();
         grpc::ServerBuilder builder;
-        builder.AddListeningPort("127.0.0.1:0",
-                                 grpc::InsecureServerCredentials(),
-                                 &bound_port_);
+        builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &bound_port_);
         builder.RegisterService(media_svc_.get());
         media_server_ = builder.BuildAndStart();
         ASSERT_NE(media_server_, nullptr);

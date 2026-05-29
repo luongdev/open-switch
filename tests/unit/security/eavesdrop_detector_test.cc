@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-#include "osw/raii/fs_mock.h"
+#include "osw/security/eavesdrop_detector.h"
 
 #include <algorithm>
 #include <mutex>
@@ -12,7 +12,7 @@
 
 #include <gtest/gtest.h>
 
-#include "osw/security/eavesdrop_detector.h"
+#include "osw/raii/fs_mock.h"
 
 namespace {
 

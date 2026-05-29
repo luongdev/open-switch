@@ -268,10 +268,8 @@ grpc::Status HandleStartVoicebot(grpc::ServerContext* /*ctx*/,
         return grpc::Status(write_attach.status_code, write_attach.error);
     }
     MaybeWarnRecordBeforeInject(sg.get(), req->channel_uuid(), tenant_id, config);
-    osw::security::MarkBotSession(sg.get(),
-                                  "voicebot",
-                                  osw::security::ResolveEffectivePolicy(config, tenant_id),
-                                  tenant_id);
+    osw::security::MarkBotSession(
+        sg.get(), "voicebot", osw::security::ResolveEffectivePolicy(config, tenant_id), tenant_id);
 
     auto write_ctx = std::make_unique<osw::control::handlers::WriteCallbackCtx>();
     write_ctx->client = client.get();

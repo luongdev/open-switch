@@ -84,14 +84,14 @@ TEST(AudioFrameTest, F4_DurationMs8kMono) {
 // ---------------------------------------------------------------------------
 TEST(AudioFrameTest, F5_ProtoRoundTrip) {
     std::vector<std::int16_t> samples(160, 7);
-    AudioFrame original(std::move(samples),
-                        8000,
-                        1,
-                        7,
-                        999,
-                        static_cast<std::uint32_t>(
-                            open_switch::media::v1::AudioFrame::BOTH_INTERLEAVED),
-                        "chan-a");
+    AudioFrame original(
+        std::move(samples),
+        8000,
+        1,
+        7,
+        999,
+        static_cast<std::uint32_t>(open_switch::media::v1::AudioFrame::BOTH_INTERLEAVED),
+        "chan-a");
 
     open_switch::media::v1::AudioFrame proto;
     original.ToProto(&proto);

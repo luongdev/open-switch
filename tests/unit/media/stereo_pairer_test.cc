@@ -108,8 +108,8 @@ TEST(StereoFramePairerTest, RingDropOldest_FrameLoss) {
 
     for (std::int16_t i = 1; i <= 17; ++i) {
         const std::int16_t sample[] = {i};
-        EXPECT_FALSE(pairer.PushLeft(static_cast<std::uint64_t>(i - 1) * kSamples20ms, sample)
-                         .has_value());
+        EXPECT_FALSE(
+            pairer.PushLeft(static_cast<std::uint64_t>(i - 1) * kSamples20ms, sample).has_value());
     }
 
     EXPECT_EQ(pairer.DroppedCount(), 1u);

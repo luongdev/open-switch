@@ -105,8 +105,7 @@ class BotSession {
 
     /// Pop the next service audio frame for a target, or nullopt when the bot
     /// is silent. Callers must passthrough unchanged on nullopt.
-    [[nodiscard]] std::optional<AudioFrame> PopWriteFrame(
-        std::string_view channel_uuid) noexcept;
+    [[nodiscard]] std::optional<AudioFrame> PopWriteFrame(std::string_view channel_uuid) noexcept;
 
     void OnTargetClose(std::string_view channel_uuid, int direction) noexcept;
 

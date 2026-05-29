@@ -855,8 +855,7 @@ inline switch_status_t MediaBugRemoveCallback(switch_core_session_t* session,
     return m.next_bug_remove_status;
 }
 
-inline std::uint32_t MediaBugCount(switch_core_session_t* session,
-                                   const char* function) noexcept {
+inline std::uint32_t MediaBugCount(switch_core_session_t* session, const char* function) noexcept {
     auto& m = Mock();
     m.media_bug_count_calls.fetch_add(1, std::memory_order_relaxed);
     {

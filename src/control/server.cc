@@ -84,9 +84,9 @@ GrpcServer::~GrpcServer() noexcept {
     }
 }
 
-void GrpcServer::SetVersions(std::string module_version, std::string freeswitch_version) {
-    module_version_ = std::move(module_version);
-    freeswitch_version_ = std::move(freeswitch_version);
+void GrpcServer::SetVersions(std::string_view module_version, std::string_view freeswitch_version) {
+    module_version_ = module_version;
+    freeswitch_version_ = freeswitch_version;
 }
 
 bool GrpcServer::Start(const Config& config) {

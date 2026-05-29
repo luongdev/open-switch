@@ -41,9 +41,9 @@ constexpr int kAbcTypeClose = static_cast<int>(SWITCH_ABC_TYPE_CLOSE);
 
 std::int16_t ReadInt16Le(const std::vector<std::uint8_t>& bytes, std::size_t sample_index) {
     const std::size_t offset = sample_index * sizeof(std::int16_t);
-    const auto value = static_cast<std::uint16_t>(bytes[offset]) |
-                       static_cast<std::uint16_t>(
-                           static_cast<std::uint16_t>(bytes[offset + 1]) << 8u);
+    const auto value =
+        static_cast<std::uint16_t>(bytes[offset]) |
+        static_cast<std::uint16_t>(static_cast<std::uint16_t>(bytes[offset + 1]) << 8u);
     return static_cast<std::int16_t>(value);
 }
 
@@ -81,9 +81,8 @@ namespace osw::media {
 RecordingRelay::RecordingRelay(StreamClient* client, RecordingRelayConfig config)
     : client_(client),
       config_(std::move(config)),
-      pairer_(StereoFramePairer::Config{config_.sample_rate_hz,
-                                        config_.desync_warn_ms,
-                                        config_.desync_timeout_ms}) {}
+      pairer_(StereoFramePairer::Config{
+          config_.sample_rate_hz, config_.desync_warn_ms, config_.desync_timeout_ms}) {}
 
 RecordingRelay::~RecordingRelay() noexcept {
     Stop();
@@ -210,12 +209,8 @@ void RecordingRelay::FlushPairedFrame(PairedFrame paired) noexcept {
 
         const std::uint64_t seq = client_->NextSeq();
         const std::uint64_t timestamp = client_->AdvanceTimestamp(paired.samples_per_channel);
-        AudioFrame frame(std::move(samples),
-                         config_.sample_rate_hz,
-                         channels,
-                         seq,
-                         timestamp,
-                         proto_channel);
+        AudioFrame frame(
+            std::move(samples), config_.sample_rate_hz, channels, seq, timestamp, proto_channel);
         if (!client_->SendAudio(std::move(frame))) {
             EmitRateLimited("osw.recording.send_overflow", &last_overflow_emit_);
         }
@@ -224,8 +219,8 @@ void RecordingRelay::FlushPairedFrame(PairedFrame paired) noexcept {
     }
 }
 
-void RecordingRelay::EmitRateLimited(
-    const char* subclass, std::chrono::steady_clock::time_point* last_emit) noexcept {
+void RecordingRelay::EmitRateLimited(const char* subclass,
+                                     std::chrono::steady_clock::time_point* last_emit) noexcept {
     if (!subclass || !last_emit) {
         return;
     }

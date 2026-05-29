@@ -45,8 +45,8 @@ grpc::Status HandleStopRecordingRelay(
 
     std::uint32_t stopped = 0;
     if (!req->stream_id().empty()) {
-        stopped = streams->RemoveIfPurpose(
-                      req->stream_id(), open_switch::media::v1::StreamStart::RECORDING_RELAY)
+        stopped = streams->RemoveIfPurpose(req->stream_id(),
+                                           open_switch::media::v1::StreamStart::RECORDING_RELAY)
                       ? 1u
                       : 0u;
     } else {

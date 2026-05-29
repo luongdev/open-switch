@@ -101,8 +101,7 @@ extern "C" switch_bool_t OswStreamingReadTap(switch_media_bug_t* bug,
     const auto* src = static_cast<const std::int16_t*>(frame.data);
     const std::uint32_t n_samples = frame.datalen / sizeof(std::int16_t);
     const std::uint32_t rate = frame.rate;
-    const std::uint32_t ch =
-        (frame.channels > 0) ? static_cast<std::uint32_t>(frame.channels) : 1;
+    const std::uint32_t ch = (frame.channels > 0) ? static_cast<std::uint32_t>(frame.channels) : 1;
 
     std::vector<std::int16_t> samples(src, src + n_samples);
 

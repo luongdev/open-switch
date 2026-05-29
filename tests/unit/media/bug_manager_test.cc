@@ -246,8 +246,7 @@ TEST_F(BugManagerTest, RecordingRelayAfterTtsInjectAllowed) {
 }
 
 TEST_F(BugManagerTest, RecordingRelayAfterVoicebotWriteInjectAllowed) {
-    auto write =
-        mgr_.Attach(FakeSession(), {Purpose::kVoicebotDuplexWrite, 0, 16000, "t", "e"});
+    auto write = mgr_.Attach(FakeSession(), {Purpose::kVoicebotDuplexWrite, 0, 16000, "t", "e"});
     ASSERT_TRUE(write.ok) << write.error;
     EXPECT_TRUE(mgr_.HasInjectBug("test-channel-uuid-0001"));
 

@@ -24,8 +24,8 @@
 
 #include "osw/media/stream_client.h"
 
-#include <chrono>
 #include <algorithm>
+#include <chrono>
 #include <future>
 
 #include "osw/observability/log.h"

@@ -34,17 +34,13 @@ std::string AuditName(EavesdropPolicy policy, std::string_view layer) {
     }
 }
 
-void AddHeader(std::vector<osw::audit::Header>* headers,
-               std::string name,
-               const char* value) {
+void AddHeader(std::vector<osw::audit::Header>* headers, std::string name, const char* value) {
     if (value && *value != '\0') {
         headers->push_back({std::move(name), value});
     }
 }
 
-void AddHeader(std::vector<osw::audit::Header>* headers,
-               std::string name,
-               std::string_view value) {
+void AddHeader(std::vector<osw::audit::Header>* headers, std::string name, std::string_view value) {
     if (!value.empty()) {
         headers->push_back({std::move(name), std::string(value)});
     }

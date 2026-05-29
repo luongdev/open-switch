@@ -423,12 +423,11 @@ MediaBugManager::AttachResult MediaBugManager::Attach(switch_core_session_t* ses
         std::lock_guard<std::mutex> lk(mu_);
 
         if (cfg.purpose == Purpose::kRecordingRelay && !HasInjectBugLocked(uuid)) {
-            validation_failure =
-                AttachResult{false,
-                             grpc::StatusCode::FAILED_PRECONDITION,
-                             "recording relay requires an active INJECT bug "
-                             "(tts_playback or voicebot_duplex_write)",
-                             BugHandle{}};
+            validation_failure = AttachResult{false,
+                                              grpc::StatusCode::FAILED_PRECONDITION,
+                                              "recording relay requires an active INJECT bug "
+                                              "(tts_playback or voicebot_duplex_write)",
+                                              BugHandle{}};
             validation_failed = true;
         } else if (cfg.purpose != Purpose::kRecordingRelay && HasPurpose(uuid, cfg.purpose)) {
             validation_failure = AttachResult{

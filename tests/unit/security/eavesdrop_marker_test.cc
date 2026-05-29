@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-#include "osw/raii/fs_mock.h"
+#include "osw/security/eavesdrop_marker.h"
 
 #include <algorithm>
 #include <mutex>
@@ -12,7 +12,7 @@
 
 #include <gtest/gtest.h>
 
-#include "osw/security/eavesdrop_marker.h"
+#include "osw/raii/fs_mock.h"
 
 namespace {
 
@@ -22,12 +22,10 @@ switch_channel_t* const kChannel = reinterpret_cast<switch_channel_t*>(0x7102);
 bool HasSetVariable(const std::string& name, const std::string& value) {
     auto& m = osw::raii::fs::Mock();
     std::lock_guard<std::mutex> g(m.capture_mu);
-    return std::any_of(m.set_variable_invocations.begin(),
-                       m.set_variable_invocations.end(),
-                       [&](const auto& cap) {
-                           return cap.channel == kChannel && cap.name == name &&
-                                  cap.value == value;
-                       });
+    return std::any_of(
+        m.set_variable_invocations.begin(), m.set_variable_invocations.end(), [&](const auto& cap) {
+            return cap.channel == kChannel && cap.name == name && cap.value == value;
+        });
 }
 
 class EavesdropMarkerTest : public ::testing::Test {

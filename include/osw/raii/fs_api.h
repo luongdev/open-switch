@@ -189,8 +189,7 @@ inline switch_status_t MediaBugRemoveCallback(switch_core_session_t* session,
 // whose bp->function matches the supplied string. Used by W7 Track B to
 // detect FS-native record_session bugs before attaching INJECT media.
 
-inline std::uint32_t MediaBugCount(switch_core_session_t* session,
-                                   const char* function) noexcept {
+inline std::uint32_t MediaBugCount(switch_core_session_t* session, const char* function) noexcept {
     if (!session || !function) {
         return 0;
     }

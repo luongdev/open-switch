@@ -162,8 +162,7 @@ ConfigValidation Validate(const Config& cfg) {
         return ConfigValidation::Fail("stereo_desync_timeout_ms must be in [1, 100]");
     }
     if (cfg.stereo_desync_warn_ms > cfg.stereo_desync_timeout_ms) {
-        return ConfigValidation::Fail(
-            "stereo_desync_warn_ms must be <= stereo_desync_timeout_ms");
+        return ConfigValidation::Fail("stereo_desync_warn_ms must be <= stereo_desync_timeout_ms");
     }
     if (cfg.recording_default_rate_hz != 8000 && cfg.recording_default_rate_hz != 16000 &&
         cfg.recording_default_rate_hz != 24000 && cfg.recording_default_rate_hz != 48000) {
