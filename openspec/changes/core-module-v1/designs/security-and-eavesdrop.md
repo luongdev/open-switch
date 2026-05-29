@@ -334,7 +334,7 @@ void OnMediaBugStart(switch_event_t* ev) {
 }
 ```
 
-**Why detection-only (and not removal):**
+**Why no bug removal:**
 
 1. **The `eavesdrop_callback` symbol is `static` in
    `src/switch_ivr_async.c:2000`** (FF-003). Our module cannot
@@ -370,15 +370,19 @@ So Layer 2's honest contract is:
   milliseconds under load.
 - **Emits a Tier-1 audit event** with target channel, target
   tenant, eavesdropper hint, and policy at detection time.
-- **Does NOT remove the bug or hang up the eavesdropper.** Audio
-  is flowing from the moment of attach until the eavesdropper's
-  dialplan ends naturally or the operator manually intervenes.
+- **Does NOT remove the FS-native bug or hang up the eavesdropper.**
+  For `deny`, Layer 2 fails closed by hanging up the bot target
+  channel immediately after audit because vanilla FS does not
+  expose a reliable module-side way to remove that bug post-attach.
+  For `audit` / `allow`, it records the post-attach event and lets
+  the eavesdrop continue.
 
-Operators relying on Layer 2 alone are **not** getting real-time
-policy enforcement; they get an audit record. The hardening
-checklist treats Layer 1 (`osw_eavesdrop` adoption) and Layer 3
-(raw-`eavesdrop` ACL deprecation) as MANDATORY for any tenant with
-a deny policy.
+Operators relying on Layer 2 alone are getting a fail-closed
+backstop for deny policy, not a clean pre-attach rejection: a small
+post-attach audio window exists before the target channel is hung
+up. The hardening checklist treats Layer 1 (`osw_eavesdrop`
+adoption) and Layer 3 (raw-`eavesdrop` ACL deprecation) as
+MANDATORY for any tenant with a deny policy.
 
 **Layer 3 — Dialplan ACL recommendation (DEFENSE-IN-DEPTH)**:
 
@@ -405,20 +409,22 @@ detection.
 - **Layer 1 requires operator adoption**: if the operator doesn't
   install the `osw_eavesdrop` app or doesn't update the dialplan,
   Layer 1 doesn't run. Operator-hardening checklist enforces this.
-- **Layer 2 is DETECTION-ONLY at v1.10.12**. The module emits an
+- **Layer 2 is post-attach at v1.10.12**. The module emits an
   audit event when an FS-native `eavesdrop` bug attaches to a
-  bot-marked session, but it does NOT remove the bug or hang up
-  the eavesdropper. Per FF-002 (thread-id gate) and FF-003 (static
-  `eavesdrop_callback`), removal from outside the eavesdropper's
-  dialplan thread is unimplementable against vanilla FS v1.10.12.
-  Round 2's "Layer 2 removes the bug on policy=deny" design was
-  factually unsound and has been removed.
-  - Audio flows from the moment of attach until the
-    eavesdropper's dialplan ends naturally. There is no module-
-    side cut-off.
-  - The audit record is the forensic / SIEM signal; treat Layer 2
-    as observability, not enforcement.
-  - For real-time enforcement, Layer 1 + Layer 3 are MANDATORY.
+  bot-marked session. For `deny`, it then hangs up the bot target
+  channel as a fail-closed backstop; it still cannot remove the bug
+  itself or hang up the eavesdropper reliably from outside the
+  eavesdropper's dialplan thread. Per FF-002 (thread-id gate) and
+  FF-003 (static `eavesdrop_callback`), removal from outside that
+  thread is unimplementable against vanilla FS v1.10.12. Round 2's
+  "Layer 2 removes the bug on policy=deny" design was factually
+  unsound and has been removed.
+  - Audio can flow from the moment of attach until the target
+    channel hangup is processed, so Layer 2 is not a substitute for
+    pre-attach denial.
+  - The audit record is the forensic / SIEM signal; `deny` also
+    triggers the target-channel fail-closed action.
+  - For true real-time prevention, Layer 1 + Layer 3 are MANDATORY.
 - **Both layers can be bypassed** by an operator with root or by an
   FS admin using `uuid_audio` / `uuid_bug` / custom modules. We
   treat that as out-of-scope (host security is the operator's
@@ -463,7 +469,7 @@ target_bot_purpose: <"voicebot" | "tts" | ...>
 supervisor_identity: <if known: SIP From URI / cert CN / API actor>
 supervisor_ip: <SIP source IP, if known>
 policy_applied: <"deny" | "audit" | "allow">
-decision: <"hangup" | "permitted" | "detected_only">
+decision: <"hangup" | "permitted" | "detected_only" | "detected_hangup_target">
 emitted_at: <timestamp>
 layer: <"1_pre_attach" | "2_post_attach_detection">
 ```
@@ -480,8 +486,9 @@ tenant-allow), and the audit still fires.
   `MEDIA_BUG_START` and emits a Tier-1 audit event with the policy
   applied. **The bug is NOT removed** — see the Layer-2 section
   above for why removal is unimplementable against vanilla FS
-  v1.10.12. Audio is exposed for the full eavesdrop duration; the
-  audit event is the only module-side response. Operators relying
+  v1.10.12. For `deny`, the module hangs up the bot target channel
+  after audit as a fail-closed backstop; audio can still be exposed
+  during the post-attach event-dispatch window. Operators relying
   on this prevention scenario MUST adopt Layer 1 (`osw_eavesdrop`
   app) and Layer 3 (raw-`eavesdrop` ACL block) — the hardening
   checklist treats both as MANDATORY for any tenant with a deny
