@@ -66,6 +66,15 @@ osw_add_unit_test(
     LIBS    osw_media
 )
 
+# --- stereo_pairer_test (W7 Track B, pure unit) -----------------------
+
+osw_add_unit_test(
+    NAME    stereo_pairer_test
+    LABEL   "media;unit;w7b"
+    SOURCES stereo_pairer_test.cc
+    LIBS    osw_media
+)
+
 # --- tts_playout_buffer_test (Track C) ---------------------------------
 #
 # TtsPlayoutBuffer lives in osw_media_fs (uses osw::audit::Emit which calls
@@ -87,4 +96,12 @@ osw_add_unit_test(
     LABEL   "media;unit;w7d"
     SOURCES bug_fanout_test.cc
     LIBS    osw_media
+)
+
+osw_add_unit_test(
+    NAME    bot_session_test
+    LABEL   "media;unit;w7d"
+    SOURCES bot_session_test.cc
+    LIBS    osw_media osw_media_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
 )

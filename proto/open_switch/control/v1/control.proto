@@ -92,6 +92,11 @@ service ControlService {
   rpc StartVoicebot(StartVoicebotRequest) returns (StartVoicebotResponse);
   rpc StopMediaStream(StopMediaStreamRequest) returns (StopMediaStreamResponse);
 
+  // W7 Track B: module-owned recording relay. The module attaches read +
+  // write stream bugs and sends mono or stereo audio to an external sink.
+  rpc StartRecordingRelay(StartRecordingRelayRequest) returns (StartRecordingRelayResponse);
+  rpc StopRecordingRelay(StopRecordingRelayRequest) returns (StopRecordingRelayResponse);
+
   // W7 Track D: logical bot facade for one or more target channels.
   rpc StartBot(StartBotRequest) returns (StartBotResponse);
   rpc StopBot(StopBotRequest) returns (StopBotResponse);
@@ -427,6 +432,32 @@ message StopMediaStreamRequest {
 
 message StopMediaStreamResponse {
   bool was_active = 1; // false if stream_id wasn't found (idempotent OK)
+  ErrorDetail error = 99;
+}
+
+message StartRecordingRelayRequest {
+  RequestHeader header = 1;
+  string channel_uuid = 2;
+  string relay_endpoint = 3; // gRPC URL of recording sink
+  bool stereo = 4; // true: L=caller, R=post-injection write side
+  uint32 sample_rate_hz = 5; // default Config.recording_default_rate_hz
+  string warn_before_inject_override = 6; // reserved for per-call policy override
+}
+
+message StartRecordingRelayResponse {
+  string stream_id = 1;
+  uint32 negotiated_rate_hz = 2;
+  ErrorDetail error = 99;
+}
+
+message StopRecordingRelayRequest {
+  RequestHeader header = 1;
+  string channel_uuid = 2;
+  string stream_id = 3; // empty = stop all recording relays on channel
+}
+
+message StopRecordingRelayResponse {
+  uint32 streams_stopped = 1;
   ErrorDetail error = 99;
 }
 

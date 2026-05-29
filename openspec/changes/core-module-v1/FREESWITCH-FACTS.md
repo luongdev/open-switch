@@ -3197,6 +3197,50 @@ file, don't touch anything else."
 
 ---
 
+## FF-035 — Dialplan app registration via `SWITCH_ADD_APP`
+
+**Claim.** A module registers a custom dialplan application by adding
+a `switch_application_interface_t` to its module interface during the
+module load path. `SWITCH_ADD_APP` is the public macro used by
+FreeSWITCH modules for this; the interface allocation is tied to the
+module interface lifetime.
+
+**Source.**
+
+- `src/include/switch_module_interfaces.h` defines
+  `switch_application_interface_t` at lines 787-805: it carries
+  `interface_name`, `application_function`, descriptions, syntax,
+  flags, lock/ref fields, parent, and next pointer.
+- `src/include/switch_loadable_module.h` defines `SWITCH_ADD_APP` as
+  the helper at lines 393-403: it allocates
+  `SWITCH_APPLICATION_INTERFACE` via
+  `switch_loadable_module_create_interface(*module_interface, ...)`
+  and populates the fields.
+- `src/include/switch_types.h` defines the calling convention at
+  lines 2473-2474:
+  `switch_application_function_t` is
+  `(switch_core_session_t*, const char*)`, and
+  `SWITCH_STANDARD_APP(name)` expands to a static function with that
+  signature.
+
+**Implications.**
+
+- The application callback runs on the dialplan thread that executes
+  the application. For `osw_eavesdrop`, this is the supervisor leg's
+  dialplan thread.
+- The callback must be re-entrant: multiple calls can execute
+  concurrently on different channels.
+- The callback must not hold a target-channel read lock across a
+  blocking IVR call such as `switch_ivr_eavesdrop_session`; it should
+  read policy, release the target lock, then delegate.
+
+**Used by**:
+
+- W7 Track A — `osw_eavesdrop` custom dialplan app registration in
+  `src/security/eavesdrop_app.cc`.
+
+---
+
 ## How to add a new FF entry
 
 If you find a previously-undocumented FreeSWITCH behaviour that

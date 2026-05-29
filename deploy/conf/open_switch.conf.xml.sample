@@ -69,7 +69,17 @@
     <!-- deny: hangup any eavesdrop attempt on bot channels (default) -->
     <!-- audit: allow but emit Tier 1 audit event -->
     <!-- allow: allow without restriction (NOT recommended) -->
-    <param name="bot_eavesdrop_policy" value="deny"/>
+    <param name="eavesdrop_policy" value="deny"/>
+    <!-- Optional: tenant-a:audit:allow;tenant-b:deny -->
+    <param name="tenant_eavesdrop_policies" value=""/>
+
+    <!-- Recording relay. StartRecordingRelay is refused until a module-owned
+         INJECT bug (StartTts or StartVoicebot write side) is already present. -->
+    <param name="recording_send_ring_ms" value="500"/>
+    <param name="stereo_desync_warn_ms" value="5"/>
+    <param name="stereo_desync_timeout_ms" value="25"/>
+    <param name="recording_default_rate_hz" value="8000"/>
+    <param name="warn_record_before_inject" value="true"/>
   </settings>
 
   <!-- Event routing: maps FS event name patterns to a tier.
@@ -85,7 +95,10 @@
     <rule match="RECORD_STOP"                tier="1"/>
     <rule match="CUSTOM" subclass="*::critical"   tier="1"/>
     <rule match="CUSTOM" subclass="osw::audit::*" tier="1"/>
-    <rule match="CUSTOM" subclass="osw::eavesdrop::*" tier="1"/>
+    <rule match="CUSTOM" subclass="osw.audit.eavesdrop.*" tier="1"/>
+    <rule match="CUSTOM" subclass="osw.recording.relay_started" tier="1"/>
+    <rule match="CUSTOM" subclass="osw.recording.relay_stopped" tier="1"/>
+    <rule match="CUSTOM" subclass="osw.recording.warn_record_before_inject" tier="1"/>
 
     <!-- Tier 2 (semi-critical, recoverable) -->
     <rule match="CHANNEL_CREATE"             tier="2"/>
@@ -99,6 +112,8 @@
     <rule match="CHANNEL_STATE"              tier="2"/>
     <rule match="CHANNEL_CALLSTATE"          tier="2"/>
     <rule match="DTMF"                       tier="2"/>
+    <rule match="CUSTOM" subclass="osw.recording.send_overflow" tier="2"/>
+    <rule match="CUSTOM" subclass="osw.recording.lr_desync" tier="2"/>
 
     <!-- Tier 3 (ephemeral, fire-and-forget) -->
     <rule match="HEARTBEAT"                  tier="3"/>

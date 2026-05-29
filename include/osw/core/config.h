@@ -119,6 +119,16 @@ struct Config {
     /// XML-loader convenience (parsed into a map by the W3 ACL code).
     std::string tenant_allowed_contexts;
 
+    // --- Eavesdrop policy (W7 Track A) --------------------------------
+    /// Module-default policy for supervisor eavesdrop on bot-marked
+    /// channels. Allowed: deny, audit, allow. Default deny.
+    std::string eavesdrop_policy = "deny";
+
+    /// Optional per-tenant overrides:
+    ///   tenant_id:policy[:allow|deny];tenant2:policy[:allow|deny]
+    /// The third token models allow_eavesdrop; deny/false forces deny.
+    std::string tenant_eavesdrop_policies;
+
     // --- Observability --------------------------------------------------
     /// Log level threshold ("trace","debug","info","warn","error","crit").
     std::string log_level = "info";
@@ -155,6 +165,27 @@ struct Config {
     /// Underrun policy: "silence" (default - clean for speech) or
     /// "repeat_last" (copies last 20 ms frame; better for music).
     std::string tts_underrun_policy = "silence";
+
+    // --- Recording relay (W7 Track B) ------------------------------------
+    /// Per-stream send-ring capacity in milliseconds of audio.
+    /// Range: 50-5000 ms. Default 500.
+    std::uint32_t recording_send_ring_ms = 500;
+
+    /// Warn when stereo read/write timestamps differ by more than this.
+    /// Must be <= stereo_desync_timeout_ms. Default 5.
+    std::uint32_t stereo_desync_warn_ms = 5;
+
+    /// Silence-fill threshold for stereo read/write desync. Must be <= 100.
+    /// Default 25.
+    std::uint32_t stereo_desync_timeout_ms = 25;
+
+    /// Default sample rate for recording relay sinks.
+    /// Allowed: 8000, 16000, 24000, 48000. Default 8000.
+    std::uint32_t recording_default_rate_hz = 8000;
+
+    /// Emit a Tier-1 warning when an INJECT bot bug is attached after an
+    /// FS-native record_session bug. Default true.
+    bool warn_record_before_inject = true;
 
     // --- Media (W6.6) ----------------------------------------------------
     /// Enable module-owned silence_stream://-1 driver threads for parked

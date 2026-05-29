@@ -235,4 +235,60 @@ TEST(ConfigValidateTest, RejectsBotLimitsOutOfRange) {
     EXPECT_FALSE(osw::Validate(c).ok);
 }
 
+TEST(ConfigValidateTest, RecordingRelayDefaultsAreValid) {
+    auto c = Defaults();
+    EXPECT_EQ(500u, c.recording_send_ring_ms);
+    EXPECT_EQ(5u, c.stereo_desync_warn_ms);
+    EXPECT_EQ(25u, c.stereo_desync_timeout_ms);
+    EXPECT_EQ(8000u, c.recording_default_rate_hz);
+    EXPECT_TRUE(c.warn_record_before_inject);
+    EXPECT_TRUE(osw::Validate(c).ok);
+}
+
+TEST(ConfigValidateTest, RejectsRecordingRelayLimitsOutOfRange) {
+    auto c = Defaults();
+    c.recording_send_ring_ms = 49;
+    EXPECT_FALSE(osw::Validate(c).ok);
+
+    c = Defaults();
+    c.recording_send_ring_ms = 5001;
+    EXPECT_FALSE(osw::Validate(c).ok);
+
+    c = Defaults();
+    c.stereo_desync_timeout_ms = 101;
+    EXPECT_FALSE(osw::Validate(c).ok);
+
+    c = Defaults();
+    c.stereo_desync_warn_ms = 26;
+    c.stereo_desync_timeout_ms = 25;
+    EXPECT_FALSE(osw::Validate(c).ok);
+
+    c = Defaults();
+    c.recording_default_rate_hz = 44100;
+    EXPECT_FALSE(osw::Validate(c).ok);
+}
+
+TEST(ConfigValidateTest, EavesdropPolicyDefaultsAreValid) {
+    auto c = Defaults();
+    EXPECT_EQ(c.eavesdrop_policy, "deny");
+    EXPECT_TRUE(c.tenant_eavesdrop_policies.empty());
+    EXPECT_TRUE(osw::Validate(c).ok);
+}
+
+TEST(ConfigValidateTest, RejectsInvalidEavesdropPolicy) {
+    auto c = Defaults();
+    c.eavesdrop_policy = "maybe";
+    const auto v = osw::Validate(c);
+    EXPECT_FALSE(v.ok);
+    EXPECT_NE(v.error.find("eavesdrop_policy"), std::string::npos);
+}
+
+TEST(ConfigValidateTest, RejectsInvalidTenantEavesdropPolicyOverride) {
+    auto c = Defaults();
+    c.tenant_eavesdrop_policies = "tenant-a:maybe";
+    const auto v = osw::Validate(c);
+    EXPECT_FALSE(v.ok);
+    EXPECT_NE(v.error.find("tenant_eavesdrop_policies"), std::string::npos);
+}
+
 }  // namespace

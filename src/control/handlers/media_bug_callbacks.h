@@ -20,6 +20,7 @@
 
 // Include FS headers or mock seam before any FS-type-using declarations.
 // Uses the canonical fs_api.h seam (same as all other FS-dependent handlers).
+#include "osw/media/bot_session.h"
 #include "osw/media/stream_client.h"
 #include "osw/media/tts_playout_buffer.h"
 #include "osw/raii/fs_api.h"
@@ -53,6 +54,18 @@ switch_bool_t OswStreamingReadTap(switch_media_bug_t* bug,
 switch_bool_t OswStreamingWriteReplace(switch_media_bug_t* bug,
                                        void* user_data,
                                        switch_abc_type_t type) noexcept;
+
+/// W7 Track D bot read tap. user_data is osw::media::BotReadTapCtx*.
+switch_bool_t OswBotReadTap(switch_media_bug_t* bug,
+                            void* user_data,
+                            switch_abc_type_t type) noexcept;
+
+/// W7 Track D bot write-replace. user_data is osw::media::BotWriteReplaceCtx*.
+/// Empty target queue means passthrough: returns SWITCH_TRUE without setting
+/// a write-replace frame.
+switch_bool_t OswBotWriteReplace(switch_media_bug_t* bug,
+                                 void* user_data,
+                                 switch_abc_type_t type) noexcept;
 
 }  // extern "C"
 

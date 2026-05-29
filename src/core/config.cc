@@ -14,6 +14,8 @@
 #include <sstream>
 #include <string>
 
+#include "osw/security/eavesdrop_policy.h"
+
 namespace osw {
 
 ConfigValidation Validate(const Config& cfg) {
@@ -39,6 +41,18 @@ ConfigValidation Validate(const Config& cfg) {
         return ConfigValidation::Fail(
             "grpc_tls_require_client_cert=true but grpc_tls_cert_path is empty — "
             "mTLS requires server cert + key");
+    }
+
+    // --- Eavesdrop policy ----------------------------------------------
+    if (!osw::security::IsKnownEavesdropPolicy(cfg.eavesdrop_policy)) {
+        return ConfigValidation::Fail("eavesdrop_policy must be deny, audit, or allow");
+    }
+    {
+        std::string error;
+        if (!osw::security::ValidateTenantEavesdropPolicies(cfg.tenant_eavesdrop_policies,
+                                                            &error)) {
+            return ConfigValidation::Fail(error);
+        }
     }
 
     // --- Ring capacities --------------------------------------------------
@@ -138,6 +152,23 @@ ConfigValidation Validate(const Config& cfg) {
             // is documented: the handler uses ParseUnderrunPolicy() which
             // also coerces. We do not fail the module load for an unknown policy.
         }
+    }
+
+    // --- Recording relay (W7 Track B) -----------------------------------
+    if (cfg.recording_send_ring_ms < 50 || cfg.recording_send_ring_ms > 5000) {
+        return ConfigValidation::Fail("recording_send_ring_ms must be in [50, 5000]");
+    }
+    if (cfg.stereo_desync_timeout_ms == 0 || cfg.stereo_desync_timeout_ms > 100) {
+        return ConfigValidation::Fail("stereo_desync_timeout_ms must be in [1, 100]");
+    }
+    if (cfg.stereo_desync_warn_ms > cfg.stereo_desync_timeout_ms) {
+        return ConfigValidation::Fail(
+            "stereo_desync_warn_ms must be <= stereo_desync_timeout_ms");
+    }
+    if (cfg.recording_default_rate_hz != 8000 && cfg.recording_default_rate_hz != 16000 &&
+        cfg.recording_default_rate_hz != 24000 && cfg.recording_default_rate_hz != 48000) {
+        return ConfigValidation::Fail(
+            "recording_default_rate_hz must be one of 8000, 16000, 24000, 48000");
     }
 
     // --- Media (W6.6) -- silence driver ---------------------------------

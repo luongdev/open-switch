@@ -80,6 +80,7 @@
 #include "osw/observability/log.h"
 #include "osw/observability/metrics_server.h"
 #include "osw/observability/prometheus.h"
+#include "osw/security/eavesdrop_detector.h"
 
 namespace osw {
 
@@ -166,6 +167,7 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
                     }
                     mod->broadcaster_.reset();
                 }
+                osw::security::UnbindEavesdropDetector();
                 if (mod->binder_) {
                     try {
                         mod->binder_->Stop();
@@ -367,6 +369,11 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
             osw::log::Error(kSubsystem, "events::Binder::Init failed; aborting load");
             return false;
         }
+        if (!osw::security::BindEavesdropDetector()) {
+            osw::log::Warn(kSubsystem,
+                           "MEDIA_BUG_START eavesdrop detector unavailable; "
+                           "Layer-2 eavesdrop audit disabled");
+        }
 
         broadcaster_ = std::make_unique<events::Broadcaster>(rings_.get(), &health_);
         broadcaster_->Start();
@@ -420,6 +427,7 @@ bool Module::Shutdown() noexcept {
 
         // 1. Signal drain — Lifecycle → kDraining; Health → kDraining.
         lifecycle_.SignalDrain();
+        osw::security::UnbindEavesdropDetector();
 
         // 2. Stop the producer side first. FF-018 unbind-under-wrlock
         //    waits for in-flight HandleEvent calls to complete before

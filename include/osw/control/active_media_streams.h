@@ -43,6 +43,10 @@ struct WriteCtxDeleter {
     void operator()(void* p) const noexcept;
 };
 
+struct RecordingCtxDeleter {
+    void operator()(void* p) const noexcept;
+};
+
 /// Per-stream data owned by the registry.
 struct ActiveMediaStream {
     std::string channel_uuid;
@@ -55,6 +59,9 @@ struct ActiveMediaStream {
     std::unique_ptr<osw::media::TtsPlayoutBuffer> tts_buffer;
     /// WriteCallbackCtx heap allocation. Freed before bugs.clear() in TearDown.
     std::unique_ptr<void, WriteCtxDeleter> write_ctx;
+    /// RecordingRelay heap allocation. Stopped before client close and freed
+    /// after media bugs are detached.
+    std::unique_ptr<void, RecordingCtxDeleter> recording_ctx;
 };
 
 /// Non-singleton registry owned by Module, injected into handlers via
@@ -77,6 +84,11 @@ class ActiveMediaStreams {
     /// buffer->SignalEndOfStream() then bugs.clear() then buffer.reset().
     bool Remove(std::string_view stream_id) noexcept;
 
+    /// Remove only when the stream exists and has the requested media-plane
+    /// purpose. Returns false for unknown ids or purpose mismatch.
+    bool RemoveIfPurpose(std::string_view stream_id,
+                         open_switch::media::v1::StreamStart::Purpose purpose) noexcept;
+
     /// Remove every stream for a channel (called from CS_DESTROY hook
     /// alongside MediaBugManager::DetachAll). Idempotent.
     void RemoveForChannel(std::string_view channel_uuid) noexcept;
@@ -84,6 +96,11 @@ class ActiveMediaStreams {
     /// Remove write-replace playback streams for a channel before attaching a
     /// new speaker-side media bug. Leaves read-only STT streams untouched.
     std::size_t RemoveWriteReplaceForChannel(std::string_view channel_uuid) noexcept;
+
+    /// Remove all streams on a channel that match a purpose.
+    std::size_t RemovePurposeForChannel(
+        std::string_view channel_uuid,
+        open_switch::media::v1::StreamStart::Purpose purpose) noexcept;
 
     [[nodiscard]] std::size_t Size() const noexcept;
 

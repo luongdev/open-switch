@@ -11,8 +11,14 @@
 #include <utility>
 
 #include "osw/control/active_media_streams.h"
+#include "osw/media/bot_session.h"
 
 namespace osw::control {
+
+ActiveBot::ActiveBot() noexcept = default;
+ActiveBot::~ActiveBot() noexcept = default;
+ActiveBot::ActiveBot(ActiveBot&&) noexcept = default;
+ActiveBot& ActiveBot::operator=(ActiveBot&&) noexcept = default;
 
 bool ActiveBots::Insert(ActiveBot bot) noexcept {
     return Insert(std::move(bot), std::numeric_limits<std::uint32_t>::max()) ==
@@ -46,9 +52,31 @@ ActiveBotInsertResult ActiveBots::Insert(ActiveBot bot,
     return ActiveBotInsertResult::kInserted;
 }
 
+void ActiveBots::Register(std::string bot_id,
+                          std::unique_ptr<osw::media::BotSession> bot) noexcept {
+    if (!bot) {
+        return;
+    }
+
+    ActiveBot active;
+    active.bot_id = std::move(bot_id);
+    active.target_channel_uuids = bot->TargetUuids();
+    active.session = std::move(bot);
+    (void)Insert(std::move(active));
+}
+
 bool ActiveBots::Contains(std::string_view bot_id) const noexcept {
     std::lock_guard<std::mutex> lk(mu_);
     return by_id_.find(std::string(bot_id)) != by_id_.end();
+}
+
+osw::media::BotSession* ActiveBots::Find(std::string_view bot_id) const noexcept {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = by_id_.find(std::string(bot_id));
+    if (it == by_id_.end()) {
+        return nullptr;
+    }
+    return it->second.session.get();
 }
 
 bool ActiveBots::ChannelAtCapacity(std::string_view channel_uuid,
@@ -80,7 +108,7 @@ bool ActiveBots::Stop(std::string_view bot_id, ActiveMediaStreams* streams) noex
         }
     }
 
-    TearDown(bot, streams);
+    TearDown(std::move(bot), streams);
     return true;
 }
 
@@ -117,8 +145,8 @@ void ActiveBots::DrainAll(ActiveMediaStreams* streams) noexcept {
         by_channel_.clear();
     }
 
-    for (const auto& bot : bots) {
-        TearDown(bot, streams);
+    for (auto& bot : bots) {
+        TearDown(std::move(bot), streams);
     }
 }
 
@@ -127,12 +155,14 @@ std::size_t ActiveBots::ActiveCount() const noexcept {
     return by_id_.size();
 }
 
-void ActiveBots::TearDown(const ActiveBot& bot, ActiveMediaStreams* streams) noexcept {
-    if (!streams) {
-        return;
+void ActiveBots::TearDown(ActiveBot bot, ActiveMediaStreams* streams) noexcept {
+    if (bot.session) {
+        bot.session->Stop();
     }
-    for (const auto& stream_id : bot.stream_ids) {
-        streams->Remove(stream_id);
+    if (streams) {
+        for (const auto& stream_id : bot.stream_ids) {
+            streams->Remove(stream_id);
+        }
     }
 }
 

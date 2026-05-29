@@ -37,6 +37,8 @@
 #ifndef OSW_RAII_FS_API_H_
 #define OSW_RAII_FS_API_H_
 
+#include <cstdint>
+
 #if defined(OSW_TEST_FS_MOCK)
 #include "osw/raii/fs_mock.h"
 #else
@@ -181,6 +183,20 @@ inline switch_status_t MediaBugRemoveCallback(switch_core_session_t* session,
     return switch_core_media_bug_remove_callback(session, callback);
 }
 
+// --- Media bug count (FF-008) ---------------------------------------
+//
+// switch_core_media_bug_count(session, function) counts active media bugs
+// whose bp->function matches the supplied string. Used by W7 Track B to
+// detect FS-native record_session bugs before attaching INJECT media.
+
+inline std::uint32_t MediaBugCount(switch_core_session_t* session,
+                                   const char* function) noexcept {
+    if (!session || !function) {
+        return 0;
+    }
+    return switch_core_media_bug_count(session, function);
+}
+
 // --- XML open_cfg / free (FF-015) ------------------------------------
 //
 // `switch_xml_open_cfg(path, &node, params)` returns the root XML* or
@@ -274,6 +290,18 @@ inline switch_status_t OriginateSession(switch_core_session_t* /*session*/,
 inline switch_channel_state_t ChannelHangup(switch_channel_t* channel,
                                             switch_call_cause_t cause) noexcept {
     return switch_channel_hangup(channel, cause);
+}
+
+// --- switch_ivr_eavesdrop_session ------------------------------------
+//
+// Used by the W7 osw_eavesdrop dialplan app after policy has allowed
+// the supervisor listen-in. The wrapper pins the V1 behaviour to
+// ED_DTMF and a null require_group, matching mod_dptools' default
+// eavesdrop semantics while keeping tests on the FS-mock seam.
+
+inline switch_status_t IvrEavesdropSession(switch_core_session_t* session,
+                                           const char* target_uuid) noexcept {
+    return switch_ivr_eavesdrop_session(session, target_uuid, nullptr, ED_DTMF);
 }
 
 // W3 Track B — Bridge / Execute / BlindTransfer (FF-023..025) ---------
@@ -448,6 +476,12 @@ inline void MediaBugSetWriteReplaceFrame(switch_media_bug_t* bug, switch_frame_t
 
 inline switch_frame_t* MediaBugGetReadReplaceFrame(switch_media_bug_t* bug) noexcept {
     return switch_core_media_bug_get_read_replace_frame(bug);
+}
+
+inline switch_status_t MediaBugRead(switch_media_bug_t* bug,
+                                    switch_frame_t* frame,
+                                    switch_bool_t fill) noexcept {
+    return switch_core_media_bug_read(bug, frame, fill);
 }
 
 }  // namespace osw::raii::fs

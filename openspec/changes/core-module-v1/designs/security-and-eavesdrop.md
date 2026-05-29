@@ -267,16 +267,17 @@ posture: **ACL-restrict `eavesdrop` per tenant** so bot-tenant
 dialplans cannot call raw `eavesdrop` at all. FS allows this via the
 dialplan ACL (operator config).
 
-**Layer 2 — `MEDIA_BUG_START` detector + audit emitter (BACKSTOP, DETECTION-ONLY)**:
+**Layer 2 — `MEDIA_BUG_START` detector + fail-closed deny backstop**:
 
 If an operator forgets Layer 1 or uses raw `eavesdrop` from a
 non-bot-tenant dialplan that targets a bot channel, the module
 detects the eavesdrop bug post-attach via the FS event bus and
-**emits a Tier-1 audit event**. It does NOT attempt to remove the
-bug. The reasons are documented honestly below; the round-2 design
-that called `switch_core_media_bug_remove_callback` from an event
-handler is fundamentally unsound against vanilla FS v1.10.12 and is
-removed.
+**emits a Tier-1 audit event**. For `deny`, it also fails closed by
+hanging up the bot-marked target channel immediately after audit. It
+does NOT attempt to remove the FS-native eavesdrop bug. The reasons
+are documented honestly below; the round-2 design that called
+`switch_core_media_bug_remove_callback` from an event handler is
+fundamentally unsound against vanilla FS v1.10.12 and is removed.
 
 **Trigger.** The module subscribes to `SWITCH_EVENT_MEDIA_BUG_START`
 events (FF-011 — `src/switch_core_media_bug.c:1014-1019` fires this
@@ -305,8 +306,9 @@ void OnMediaBugStart(switch_event_t* ev) {
 
     // Audit: an eavesdrop bug has just attached to a bot-marked target.
     // The bug is already in the chain by the time this event fires;
-    // we record the event and let Layer 1 (osw_eavesdrop) / Layer 3
-    // (raw-eavesdrop ACL) cover prevention. See "Limitations" below.
+    // for deny policy we fail closed by hanging up the target channel.
+    // We still rely on Layer 1 (osw_eavesdrop) / Layer 3
+    // (raw-eavesdrop ACL) for clean pre-attach prevention.
 
     const char* policy = switch_channel_get_variable(chan, "osw_eavesdrop_policy");
     if (!policy) policy = "deny";
@@ -323,6 +325,9 @@ void OnMediaBugStart(switch_event_t* ev) {
         /*policy=*/policy,
         /*eavesdropper_hint=*/eavesdropper_uuid,
         /*target_tenant=*/target_tenant);
+    if (policy == "deny") {
+      switch_channel_hangup(chan, SWITCH_CAUSE_CALL_REJECTED);
+    }
   } catch (...) {
     osw::log::Error("OnMediaBugStart: unknown exception");
   }
@@ -524,9 +529,9 @@ default (`deny`).
 | `eavesdrop_non_bot_unaffected` | Eavesdrop on a call without bot → no policy enforcement, no audit event |
 | `eavesdrop_layer1_osw_eavesdrop_deny` | Dialplan calls `osw_eavesdrop` on bot session with policy=deny: eavesdropper hangs up with POLICY_REJECTED + Tier 1 audit event before any bug attaches. |
 | `eavesdrop_layer1_osw_eavesdrop_audit` | Same flow with policy=audit: eavesdrop proceeds (delegates to `switch_ivr_eavesdrop_session`) + Tier 1 audit event with supervisor identity. |
-| `eavesdrop_layer2_media_bug_start_detected` | Dialplan uses raw `eavesdrop` on bot session: MEDIA_BUG_START handler matches `Media-Bug-Function == "eavesdrop"` on a session with `osw_bot_session=true`, emits Tier-1 audit event with policy at detection time, eavesdropper identity hint from `Media-Bug-Target`, and target tenant. Bug is NOT removed (FF-002 + FF-003 make removal unsound). Audio flows from the eavesdropper until the eavesdrop session ends naturally; Layer 2 records, does not prevent. |
-| `eavesdrop_layer2_policy_audit_emits` | Raw `eavesdrop` + policy=audit: audit event fired with `policy_applied="audit"`. Behaviour identical to policy=deny at the module side; the difference is only in the recorded `policy_applied` field — the prevention burden is on Layer 1 / Layer 3 regardless. |
-| `eavesdrop_layer2_no_remove_called` | Raw `eavesdrop` + policy=deny: assert the module does NOT call `switch_core_media_bug_remove_callback`. The function exists in our compile unit only for module-owned bugs; FS-native eavesdrop bugs cannot be removed via this path (FF-002 thread-id gate + FF-003 static symbol). |
+| `eavesdrop_layer2_media_bug_start_detected` | Dialplan uses raw `eavesdrop` on bot session: MEDIA_BUG_START handler matches `Media-Bug-Function == "eavesdrop"` on a session with `osw_bot_session=true`, emits Tier-1 audit event with policy at detection time, eavesdropper identity hint from `Media-Bug-Target`, and target tenant. For policy=deny, Layer 2 fails closed by hanging up the bot-marked target channel. Bug is NOT removed (FF-002 + FF-003 make removal unsound). |
+| `eavesdrop_layer2_policy_audit_emits` | Raw `eavesdrop` + policy=audit: audit event fired with `policy_applied="audit"` and no fail-closed hangup. Prevention burden remains on Layer 1 / Layer 3 for tenants where audit is not acceptable. |
+| `eavesdrop_layer2_no_remove_called` | Raw `eavesdrop` + policy=deny: assert the module does NOT call `switch_core_media_bug_remove_callback`; it uses target hangup as the fail-closed remediation. The remove-callback function exists in our compile unit only for module-owned bugs; FS-native eavesdrop bugs cannot be removed via this path (FF-002 thread-id gate + FF-003 static symbol). |
 | `eavesdrop_var_removed_after_attach` | Operator removes `osw_eavesdrop_policy` channel variable after eavesdrop attaches. Layer 2 reads NULL → falls back to default policy (deny) in the emitted audit record. The audit record is the only enforcement signal at this layer; documented behaviour. |
 | `tenant_override_allow` | Tenant ACL allow_eavesdrop=true overrides module default deny |
 | `audit_event_routed_tier1` | Audit event lands on Tier 1 sink, not Tier 2 |

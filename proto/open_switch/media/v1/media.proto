@@ -105,6 +105,11 @@ message AudioFrame {
     BOTH_INTERLEAVED = 3; // L/R/L/R 16-bit samples in payload
   }
   Channel channel = 5;
+
+  // Optional target/source channel tag for logical multi-target streams.
+  // StartBot uses one MediaBridge stream per bot, so module->service audio
+  // frames set this to the target channel UUID that produced the frame.
+  string channel_uuid = 6;
 }
 
 enum AudioCodec {

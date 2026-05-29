@@ -221,7 +221,41 @@ osw_add_unit_test(
 )
 target_include_directories(stop_media_stream_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
 
+# W7 Track B — recording relay handler tests (FS-mock seam).
+#
+# start_recording_relay_handler_test uses an in-process MediaBridge
+# service so StreamClient::Open() can complete without a production test
+# seam. Both tests reuse osw_control_media_streaming_test_helpers because
+# it compiles the recording handlers, ActiveMediaStreams, MediaBugManager,
+# RecordingRelay, and audit against OSW_TEST_FS_MOCK=1.
+osw_add_unit_test(
+    NAME    start_recording_relay_handler_test
+    LABEL   "control;unit;w7b"
+    SOURCES start_recording_relay_handler_test.cc
+    LIBS    osw_control osw_control_media_streaming_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(start_recording_relay_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
+
+osw_add_unit_test(
+    NAME    stop_recording_relay_handler_test
+    LABEL   "control;unit;w7b"
+    SOURCES stop_recording_relay_handler_test.cc
+    LIBS    osw_control osw_control_media_streaming_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(stop_recording_relay_handler_test PRIVATE ${CMAKE_SOURCE_DIR})
+
 # W7 Track D — logical bot facade tests.
+osw_add_unit_test(
+    NAME    active_bots_test
+    LABEL   "control;unit;w7d"
+    SOURCES active_bots_test.cc
+    LIBS    osw_control osw_control_media_streaming_test_helpers
+    DEFINES OSW_TEST_FS_MOCK=1
+)
+target_include_directories(active_bots_test PRIVATE ${CMAKE_SOURCE_DIR})
+
 osw_add_unit_test(
     NAME    start_bot_handler_test
     LABEL   "control;unit;w7d"

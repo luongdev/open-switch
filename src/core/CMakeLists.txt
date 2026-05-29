@@ -17,6 +17,7 @@ target_include_directories(osw_core PUBLIC
 target_compile_features(osw_core PUBLIC cxx_std_20)
 target_link_libraries(osw_core PUBLIC
     osw_observability
+    osw_security
     Threads::Threads
 )
 set_target_properties(osw_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -40,5 +41,6 @@ target_link_libraries(osw_core_fs PUBLIC
     osw_events_fs        # Binder (switch_event_bind shim)
     osw_observability
     osw_observability_fs
+    osw_security_fs
 )
 set_target_properties(osw_core_fs PROPERTIES POSITION_INDEPENDENT_CODE ON)

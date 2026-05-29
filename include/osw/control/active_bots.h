@@ -12,20 +12,35 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
 
+namespace osw::media {
+class BotSession;
+}  // namespace osw::media
+
 namespace osw::control {
 
 class ActiveMediaStreams;
 
 struct ActiveBot {
+    ActiveBot() noexcept;
+    ~ActiveBot() noexcept;
+    ActiveBot(ActiveBot&&) noexcept;
+    ActiveBot& operator=(ActiveBot&&) noexcept;
+    ActiveBot(const ActiveBot&) = delete;
+    ActiveBot& operator=(const ActiveBot&) = delete;
+
     std::string bot_id;
     std::vector<std::string> target_channel_uuids;
+    /// Legacy facade stream ids. Empty for real Track D BotSession-backed bots.
     std::vector<std::string> stream_ids;
+    /// Real Track D owner. When non-null, Stop/Drain calls BotSession::Stop().
+    std::unique_ptr<osw::media::BotSession> session;
 };
 
 enum class ActiveBotInsertResult {
@@ -46,7 +61,9 @@ class ActiveBots {
 
     bool Insert(ActiveBot bot) noexcept;
     ActiveBotInsertResult Insert(ActiveBot bot, std::uint32_t max_bots_per_channel) noexcept;
+    void Register(std::string bot_id, std::unique_ptr<osw::media::BotSession> bot) noexcept;
     [[nodiscard]] bool Contains(std::string_view bot_id) const noexcept;
+    [[nodiscard]] osw::media::BotSession* Find(std::string_view bot_id) const noexcept;
     [[nodiscard]] bool ChannelAtCapacity(std::string_view channel_uuid,
                                          std::uint32_t max_bots_per_channel) const noexcept;
 
@@ -62,7 +79,7 @@ class ActiveBots {
     [[nodiscard]] std::size_t ActiveCount() const noexcept;
 
   private:
-    static void TearDown(const ActiveBot& bot, ActiveMediaStreams* streams) noexcept;
+    static void TearDown(ActiveBot bot, ActiveMediaStreams* streams) noexcept;
     static void EraseValue(std::vector<std::string>& values, std::string_view value) noexcept;
 
     mutable std::mutex mu_;

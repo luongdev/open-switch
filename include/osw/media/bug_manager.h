@@ -31,14 +31,15 @@
 #include "osw/media/bug_handle.h"
 #include "osw/media/purpose.h"
 
-// Forward-declare the FS opaque types so this header compiles without
-// including <switch.h>.  Both production and mock TUs provide these;
-// the mock (fs_mock.h) declares them first in its own TU so we must
-// guard against redeclaration.
-#if !defined(OSW_TEST_FS_MOCK)
+// Forward-declare the FS opaque type so this header compiles without
+// including <switch.h>. In mock builds, include the mock seam because test
+// helper TUs may include this header without going through fs_api.h first.
+#if defined(OSW_TEST_FS_MOCK)
+#include "osw/raii/fs_mock.h"
+#else
 struct switch_core_session;
 using switch_core_session_t = switch_core_session;
-#endif  // !OSW_TEST_FS_MOCK
+#endif
 
 namespace osw::media {
 
@@ -102,6 +103,7 @@ class MediaBugManager {
     /// Snapshot counters for tests / Health.
     [[nodiscard]] std::size_t ActiveBugCount(std::string_view channel_uuid) const noexcept;
     [[nodiscard]] std::size_t TotalActiveBugCount() const noexcept;
+    [[nodiscard]] bool HasInjectBug(const std::string& channel_uuid) const noexcept;
 
     /// Function-pointer typedef used by the CS_DESTROY state hook to
     /// route the per-channel cleanup back into ActiveMediaStreams from
@@ -205,6 +207,7 @@ class MediaBugManager {
     // Registry helpers — called with mu_ held.
     std::uint32_t MaxRankForChannel(const std::string& uuid) const noexcept;
     bool HasPurpose(const std::string& uuid, Purpose p) const noexcept;
+    bool HasInjectBugLocked(const std::string& uuid) const noexcept;
     bool HasWriteReplaceBug(const std::string& uuid) const noexcept;
     // Lifecycle helpers — acquire/use the per-channel lock internally.
     std::shared_ptr<std::mutex> ChannelLockFor(const std::string& uuid) noexcept;

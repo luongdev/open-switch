@@ -75,6 +75,9 @@ using switch_xml_t = switch_xml*;  // FS typedefs switch_xml_t to a pointer
 struct switch_frame;
 using switch_frame_t = switch_frame;
 
+struct switch_loadable_module_interface;
+using switch_loadable_module_interface_t = switch_loadable_module_interface;
+
 // --- FS status / enum values (subset, matched to v1.10.12) -----------
 //
 // switch_types.h:1031 in v1.10.12. We do NOT include all values — just
@@ -91,6 +94,7 @@ constexpr switch_status_t SWITCH_STATUS_GENERR = 8;
 // but we keep it distinguishable from 0.
 using switch_event_types_t = int;
 constexpr switch_event_types_t SWITCH_EVENT_CUSTOM = 78;
+constexpr switch_event_types_t SWITCH_EVENT_MEDIA_BUG_START = 79;
 constexpr switch_event_types_t SWITCH_EVENT_ALL = 100;
 
 // switch_types.h:1031 — switch_stack_t. Only the two values our helpers
@@ -275,6 +279,7 @@ struct MockState {
     std::atomic<int> event_unbind_calls{0};
     std::atomic<int> media_bug_add_calls{0};
     std::atomic<int> media_bug_remove_calls{0};
+    std::atomic<int> media_bug_count_calls{0};
     std::mutex media_bug_add_block_mu;
     std::condition_variable media_bug_add_cv;
     int media_bug_add_block_remaining = 0;
@@ -295,6 +300,7 @@ struct MockState {
     // W6.6 silence driver.
     std::atomic<int> ivr_play_file_calls{0};
     std::atomic<int> ivr_broadcast_calls{0};
+    std::atomic<int> ivr_eavesdrop_session_calls{0};
 
     // Programmable return values for the next call. Set to non-default
     // to drive failure paths.
@@ -308,6 +314,7 @@ struct MockState {
     switch_media_bug_t* next_bug = nullptr;
     switch_status_t next_bug_add_status = SWITCH_STATUS_SUCCESS;
     switch_status_t next_bug_remove_status = SWITCH_STATUS_SUCCESS;
+    std::uint32_t next_media_bug_count = 0;
     switch_xml_t next_xml_root = nullptr;
     // W3 originate / hangup programmable returns.
     switch_status_t next_originate_status = SWITCH_STATUS_SUCCESS;
@@ -323,6 +330,7 @@ struct MockState {
     std::unordered_map<std::string, std::string> next_channel_variables;
     switch_status_t next_ivr_play_file_status = SWITCH_STATUS_SUCCESS;
     switch_status_t next_ivr_broadcast_status = SWITCH_STATUS_SUCCESS;
+    switch_status_t next_ivr_eavesdrop_session_status = SWITCH_STATUS_SUCCESS;
     bool ivr_play_file_block_until_break = true;
     bool channel_break_set = false;
     std::condition_variable play_file_cv;
@@ -414,6 +422,12 @@ struct MockState {
     };
     std::vector<CapturedIvrBroadcast> ivr_broadcast_invocations;
 
+    struct CapturedIvrEavesdropSession {
+        switch_core_session_t* session = nullptr;
+        std::string target_uuid;
+    };
+    std::vector<CapturedIvrEavesdropSession> ivr_eavesdrop_session_invocations;
+
     struct CapturedHoldUuid {
         std::string uuid;
         std::string message;
@@ -453,10 +467,12 @@ struct MockState {
     std::atomic<int> media_bug_get_write_replace_frame_calls{0};
     std::atomic<int> media_bug_set_write_replace_frame_calls{0};
     std::atomic<int> media_bug_get_read_replace_frame_calls{0};
+    std::atomic<int> media_bug_read_calls{0};
 
     // Programmable return values for frame accessors.
     switch_frame_t* next_write_replace_frame = nullptr;
     switch_frame_t* next_read_replace_frame = nullptr;
+    switch_status_t next_media_bug_read_status = SWITCH_STATUS_SUCCESS;
 
     struct CapturedSetWriteReplaceFrame {
         switch_media_bug_t* bug = nullptr;
@@ -483,6 +499,12 @@ struct MockState {
         switch_media_bug_callback_t callback = nullptr;
     };
     std::vector<CapturedMediaBugRemoveCallback> media_bug_remove_callback_invocations;
+
+    struct CapturedMediaBugCount {
+        switch_core_session_t* session = nullptr;
+        std::string function;
+    };
+    std::vector<CapturedMediaBugCount> media_bug_count_invocations;
 };
 
 // Single mutable instance accessed by both the (mock) shim functions and
@@ -505,6 +527,7 @@ inline void MockReset() {
     m.event_unbind_calls = 0;
     m.media_bug_add_calls = 0;
     m.media_bug_remove_calls = 0;
+    m.media_bug_count_calls = 0;
     {
         std::lock_guard<std::mutex> g(m.media_bug_add_block_mu);
         m.media_bug_add_block_remaining = 0;
@@ -524,6 +547,7 @@ inline void MockReset() {
     m.next_bug = nullptr;
     m.next_bug_add_status = SWITCH_STATUS_SUCCESS;
     m.next_bug_remove_status = SWITCH_STATUS_SUCCESS;
+    m.next_media_bug_count = 0;
     m.next_xml_root = nullptr;
     m.originate_calls = 0;
     m.channel_hangup_calls = 0;
@@ -550,10 +574,12 @@ inline void MockReset() {
     m.unhold_uuid_calls = 0;
     m.ivr_play_file_calls = 0;
     m.ivr_broadcast_calls = 0;
+    m.ivr_eavesdrop_session_calls = 0;
     m.next_set_variable_status = SWITCH_STATUS_SUCCESS;
     m.next_channel_flags = 0;
     m.next_ivr_play_file_status = SWITCH_STATUS_SUCCESS;
     m.next_ivr_broadcast_status = SWITCH_STATUS_SUCCESS;
+    m.next_ivr_eavesdrop_session_status = SWITCH_STATUS_SUCCESS;
     m.ivr_play_file_block_until_break = true;
     m.channel_break_set = false;
     m.next_hold_uuid_status = SWITCH_STATUS_SUCCESS;
@@ -574,11 +600,13 @@ inline void MockReset() {
         m.set_flag_invocations.clear();
         m.ivr_play_file_invocations.clear();
         m.ivr_broadcast_invocations.clear();
+        m.ivr_eavesdrop_session_invocations.clear();
         m.hold_uuid_invocations.clear();
         m.unhold_uuid_invocations.clear();
         // W6A.
         m.media_bug_add_invocations.clear();
         m.media_bug_remove_callback_invocations.clear();
+        m.media_bug_count_invocations.clear();
         // W6C.
         m.set_write_replace_frame_invocations.clear();
     }
@@ -587,8 +615,10 @@ inline void MockReset() {
     m.media_bug_get_write_replace_frame_calls = 0;
     m.media_bug_set_write_replace_frame_calls = 0;
     m.media_bug_get_read_replace_frame_calls = 0;
+    m.media_bug_read_calls = 0;
     m.next_write_replace_frame = nullptr;
     m.next_read_replace_frame = nullptr;
+    m.next_media_bug_read_status = SWITCH_STATUS_SUCCESS;
 }
 
 // --- Shim functions: SAME signatures as the production fs_api.h ------
@@ -598,7 +628,15 @@ inline switch_core_session_t* SessionLocate(const char* uuid) noexcept {
         return nullptr;
     }
     Mock().session_locate_calls.fetch_add(1, std::memory_order_relaxed);
-    return Mock().next_session;
+    auto* session = Mock().next_session;
+    if (session) {
+        // Keep SessionGetUuid coherent with the UUID that was just located.
+        // Existing single-session tests may still set next_bleg_uuid directly;
+        // this makes multi-target media-bug tests model per-locate UUIDs well
+        // enough without a full fake session table.
+        Mock().next_bleg_uuid = uuid;
+    }
+    return session;
 }
 
 inline void SessionRwunlock(switch_core_session_t* session) noexcept {
@@ -817,6 +855,23 @@ inline switch_status_t MediaBugRemoveCallback(switch_core_session_t* session,
     return m.next_bug_remove_status;
 }
 
+inline std::uint32_t MediaBugCount(switch_core_session_t* session,
+                                   const char* function) noexcept {
+    auto& m = Mock();
+    m.media_bug_count_calls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        MockState::CapturedMediaBugCount cap;
+        cap.session = session;
+        cap.function = function ? function : "";
+        m.media_bug_count_invocations.push_back(std::move(cap));
+    }
+    if (!session || !function) {
+        return 0;
+    }
+    return m.next_media_bug_count;
+}
+
 inline switch_status_t MediaBugRemove(switch_core_session_t* /*session*/,
                                       switch_media_bug_t** bug) noexcept {
     if (bug && *bug) {
@@ -906,6 +961,20 @@ inline switch_channel_state_t ChannelHangup(switch_channel_t* channel,
         m.hangup_invocations.push_back(cap);
     }
     return m.next_channel_hangup_state;
+}
+
+inline switch_status_t IvrEavesdropSession(switch_core_session_t* session,
+                                           const char* target_uuid) noexcept {
+    auto& m = Mock();
+    m.ivr_eavesdrop_session_calls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        MockState::CapturedIvrEavesdropSession cap;
+        cap.session = session;
+        cap.target_uuid = target_uuid ? target_uuid : "";
+        m.ivr_eavesdrop_session_invocations.push_back(std::move(cap));
+    }
+    return m.next_ivr_eavesdrop_session_status;
 }
 
 // --- switch_core_session_get_uuid wrapper ----------------------------
@@ -1174,6 +1243,17 @@ inline switch_frame_t* MediaBugGetReadReplaceFrame(switch_media_bug_t* bug) noex
     m.media_bug_get_read_replace_frame_calls.fetch_add(1, std::memory_order_relaxed);
     (void)bug;
     return m.next_read_replace_frame;
+}
+
+inline switch_status_t MediaBugRead(switch_media_bug_t* bug,
+                                    switch_frame_t* frame,
+                                    switch_bool_t fill) noexcept {
+    auto& m = Mock();
+    m.media_bug_read_calls.fetch_add(1, std::memory_order_relaxed);
+    (void)bug;
+    (void)frame;
+    (void)fill;
+    return m.next_media_bug_read_status;
 }
 
 }  // namespace osw::raii::fs

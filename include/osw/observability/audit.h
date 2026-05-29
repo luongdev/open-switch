@@ -78,12 +78,22 @@ inline constexpr std::string_view kSubclassPrefix = "osw.audit.";
 /// FF-020 "Implications"); the FS bind path auto-reserves on demand.
 bool Emit(std::string_view name, const std::vector<Header>& headers) noexcept;
 
+/// Fire a CUSTOM event using an exact subclass name. This is for documented
+/// module event families that intentionally do not live under osw.audit.*,
+/// such as W7 recording lifecycle/quality subclasses.
+bool EmitSubclass(std::string_view subclass, const std::vector<Header>& headers) noexcept;
+
 /// Convenience overload taking an initializer list of headers.
 bool Emit(std::string_view name, HeadersInit headers) noexcept;
+bool EmitSubclass(std::string_view subclass, HeadersInit headers) noexcept;
 
 /// Convenience overload for no headers.
 inline bool Emit(std::string_view name) noexcept {
     return Emit(name, std::vector<Header>{});
+}
+
+inline bool EmitSubclass(std::string_view subclass) noexcept {
+    return EmitSubclass(subclass, std::vector<Header>{});
 }
 
 }  // namespace osw::audit
