@@ -57,7 +57,7 @@ struct ActiveMediaStream {
     std::unique_ptr<osw::media::StreamClient> client;
     /// Non-null for TTS / voicebot-write streams; null for STT.
     std::unique_ptr<osw::media::TtsPlayoutBuffer> tts_buffer;
-    /// WriteCallbackCtx heap allocation. Freed before bugs.clear() in TearDown.
+    /// WriteCallbackCtx heap allocation. Freed after bugs.clear() in TearDown.
     std::unique_ptr<void, WriteCtxDeleter> write_ctx;
     /// RecordingRelay heap allocation. Stopped before client close and freed
     /// after media bugs are detached.
@@ -77,6 +77,8 @@ class ActiveMediaStreams {
     ActiveMediaStreams& operator=(ActiveMediaStreams&&) = delete;
 
     /// Insert and take ownership. Returns false if stream_id already exists.
+    /// Rejected non-null streams are torn down with the same callback-fencing
+    /// order used by Remove().
     bool Insert(std::unique_ptr<ActiveMediaStream> s) noexcept;
 
     /// Remove and tear down. Idempotent — returns false if not present.
