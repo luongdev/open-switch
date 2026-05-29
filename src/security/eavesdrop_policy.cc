@@ -33,6 +33,16 @@ std::string LowerTrim(std::string_view raw) {
     return out;
 }
 
+std::string_view TrimView(std::string_view raw) noexcept {
+    while (!raw.empty() && std::isspace(static_cast<unsigned char>(raw.front())) != 0) {
+        raw.remove_prefix(1);
+    }
+    while (!raw.empty() && std::isspace(static_cast<unsigned char>(raw.back())) != 0) {
+        raw.remove_suffix(1);
+    }
+    return raw;
+}
+
 bool SplitTenantEntry(std::string_view entry,
                       std::string_view* tenant,
                       std::string_view* policy,
@@ -41,15 +51,18 @@ bool SplitTenantEntry(std::string_view entry,
     if (first == std::string_view::npos || first == 0) {
         return false;
     }
-    *tenant = entry.substr(0, first);
+    *tenant = TrimView(entry.substr(0, first));
+    if (tenant->empty()) {
+        return false;
+    }
     const std::size_t second = entry.find(':', first + 1);
     if (second == std::string_view::npos) {
-        *policy = entry.substr(first + 1);
+        *policy = TrimView(entry.substr(first + 1));
         *gate = {};
         return !policy->empty();
     }
-    *policy = entry.substr(first + 1, second - first - 1);
-    *gate = entry.substr(second + 1);
+    *policy = TrimView(entry.substr(first + 1, second - first - 1));
+    *gate = TrimView(entry.substr(second + 1));
     return !policy->empty();
 }
 

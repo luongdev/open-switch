@@ -7,7 +7,7 @@
 // Idempotency: write methods are idempotent when `request_id` is
 // supplied. The module's per-process LRU cache (default TTL 300s)
 // returns the cached response — success OR error — for duplicate
-// `(tenant_id, request_id)` within the window. While the original
+// `(method, tenant_id, request_id)` within the window. While the original
 // is in flight, retries block on an in-flight marker with a shadow
 // deadline = min(gRPC deadline, idempotency_in_flight_max_wait).
 // See openspec/changes/core-module-v1/specs/control-api/spec.md
@@ -92,8 +92,8 @@ service ControlService {
   rpc StartVoicebot(StartVoicebotRequest) returns (StartVoicebotResponse);
   rpc StopMediaStream(StopMediaStreamRequest) returns (StopMediaStreamResponse);
 
-  // W7 Track B: module-owned recording relay. The module attaches read +
-  // write stream bugs and sends mono or stereo audio to an external sink.
+  // W7 Track B: module-owned recording relay. Mono attaches a write-stream
+  // tap for the post-injection caller-ear mix; stereo attaches read + write.
   rpc StartRecordingRelay(StartRecordingRelayRequest) returns (StartRecordingRelayResponse);
   rpc StopRecordingRelay(StopRecordingRelayRequest) returns (StopRecordingRelayResponse);
 
@@ -132,7 +132,7 @@ message ErrorDetail {
     FREESWITCH_ERROR = 6; // FS call returned non-success
     INTERNAL = 7;
     UNAVAILABLE = 8; // transient; retry safe
-    ALREADY_EXISTS = 9; // request_id reused with different method
+    ALREADY_EXISTS = 9; // duplicate resource
     FAILED_PRECONDITION = 10; // channel state wrong
     DEADLINE_EXCEEDED = 11; // gRPC deadline before completion
     UNAUTHENTICATED = 12; // API key or mTLS failure

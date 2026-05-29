@@ -39,7 +39,9 @@
 #include "osw/security/eavesdrop_policy.h"
 
 #include "src/control/control_service_skeleton.h"
+#include "src/control/handlers/idempotency_utils.h"
 #include "src/control/handlers/media_bug_callbacks.h"
+#include "src/control/handlers/media_rate.h"
 
 namespace osw::control::handlers {
 
@@ -147,9 +149,19 @@ grpc::Status HandleStartVoicebot(grpc::ServerContext* /*ctx*/,
         return grpc::Status(grpc::StatusCode::UNAVAILABLE, "media plane not initialised");
     }
 
-    auto sg = osw::control::SessionGuard::Locate(req->channel_uuid());
-    if (!sg.Valid()) {
-        return grpc::Status(grpc::StatusCode::NOT_FOUND, "channel not found");
+    {
+        auto sg = osw::control::SessionGuard::Locate(req->channel_uuid());
+        if (!sg.Valid()) {
+            return grpc::Status(grpc::StatusCode::NOT_FOUND, "channel not found");
+        }
+        grpc::Status read_rate = ValidateReadStreamRate(sg.get(), rate, "StartVoicebot read");
+        if (!read_rate.ok()) {
+            return read_rate;
+        }
+        grpc::Status write_rate = ValidateWriteStreamRate(sg.get(), rate, "StartVoicebot write");
+        if (!write_rate.ok()) {
+            return write_rate;
+        }
     }
     const std::size_t replaced = streams->RemoveWriteReplaceForChannel(req->channel_uuid());
     if (replaced > 0) {
@@ -223,6 +235,24 @@ grpc::Status HandleStartVoicebot(grpc::ServerContext* /*ctx*/,
         return open_st;
     }
 
+    auto sg = osw::control::SessionGuard::Locate(req->channel_uuid());
+    if (!sg.Valid()) {
+        client->Close();
+        return grpc::Status(grpc::StatusCode::NOT_FOUND, "channel not found");
+    }
+    grpc::Status read_rate = ValidateReadStreamRate(sg.get(), rate, "StartVoicebot read");
+    if (!read_rate.ok()) {
+        client->Close();
+        return read_rate;
+    }
+    grpc::Status write_rate = ValidateWriteStreamRate(sg.get(), rate, "StartVoicebot write");
+    if (!write_rate.ok()) {
+        client->Close();
+        return write_rate;
+    }
+    const std::uint32_t fs_read_rate = ReadMediaRate(sg.get()).sample_rate_hz;
+    const std::uint32_t fs_write_rate = WriteMediaRate(sg.get()).sample_rate_hz;
+
     // -----------------------------------------------------------------------
     // Bug 1: read tap (MID_READ, SMBF_READ_STREAM).
     // -----------------------------------------------------------------------
@@ -243,9 +273,12 @@ grpc::Status HandleStartVoicebot(grpc::ServerContext* /*ctx*/,
     }
 
     const std::uint64_t read_bug_id = osw::media::MediaBugManager::BugId(read_attach.handle);
-    // user_data for read tap is the StreamClient* (same pattern as STT).
+    auto read_ctx = std::make_unique<osw::control::handlers::ReadCallbackCtx>();
+    read_ctx->client = client.get();
+    read_ctx->stream_rate_hz = rate;
+    read_ctx->fs_rate_hz = fs_read_rate;
     bug_mgr->SetBugCallback(
-        read_bug_id, reinterpret_cast<void*>(OswStreamingReadTap), client.get());
+        read_bug_id, reinterpret_cast<void*>(OswStreamingReadTap), read_ctx.get());
 
     // -----------------------------------------------------------------------
     // Bug 2: write replace (INJECT, SMBF_WRITE_REPLACE).
@@ -275,6 +308,8 @@ grpc::Status HandleStartVoicebot(grpc::ServerContext* /*ctx*/,
     write_ctx->client = client.get();
     write_ctx->buffer = buffer.get();
     write_ctx->stream_id = stream_id;
+    write_ctx->stream_rate_hz = rate;
+    write_ctx->fs_rate_hz = fs_write_rate;
 
     const std::uint64_t write_bug_id = osw::media::MediaBugManager::BugId(write_attach.handle);
     bug_mgr->SetBugCallback(
@@ -296,6 +331,7 @@ grpc::Status HandleStartVoicebot(grpc::ServerContext* /*ctx*/,
     stream->client = std::move(client);
     stream->tts_buffer = std::move(buffer);
     stream->write_ctx = std::unique_ptr<void, osw::control::WriteCtxDeleter>(write_ctx.release());
+    stream->read_ctx = std::unique_ptr<void, osw::control::ReadCtxDeleter>(read_ctx.release());
 
     if (!streams->Insert(std::move(stream))) {
         return grpc::Status(grpc::StatusCode::INTERNAL, "stream_id collision");
@@ -332,11 +368,21 @@ grpc::Status osw::control::ControlServiceSkeleton::StartVoicebot(
     if (!config) {
         return grpc::Status(grpc::StatusCode::UNAVAILABLE, "media config not initialised");
     }
-    return osw::control::handlers::HandleStartVoicebot(
-        ctx,
-        req,
+    const std::string tenant_id = (req && req->has_header()) ? req->header().tenant_id() : "";
+    const std::string request_id = (req && req->has_header()) ? req->header().request_id() : "";
+    return osw::control::handlers::RunIdempotent(
+        idempotency_cache_.load(std::memory_order_acquire),
+        "StartVoicebot",
+        tenant_id,
+        request_id,
         resp,
-        bug_mgr_.load(std::memory_order_acquire),
-        active_media_streams_.load(std::memory_order_acquire),
-        *config);
+        [&]() {
+            return osw::control::handlers::HandleStartVoicebot(
+                ctx,
+                req,
+                resp,
+                bug_mgr_.load(std::memory_order_acquire),
+                active_media_streams_.load(std::memory_order_acquire),
+                *config);
+        });
 }

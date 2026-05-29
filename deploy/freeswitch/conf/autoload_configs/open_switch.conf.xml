@@ -70,9 +70,10 @@
          Insecure credentials are only used when cert_path is empty
          (the default; safe for private-network deploys).
 
-         Decision OQ-5 (SIGHUP via inotify): cert hot-reload does NOT
-         require a module restart. TlsReloader watches the cert
-         directory with inotify; a validated cert rebuild emits the
+         Decision OQ-5 (SIGHUP via inotify): TlsReloader watches the
+         cert directory with inotify and rebuilds credentials for
+         validation/audit. The running gRPC server does not live-swap
+         credentials in this build; a validated rebuild emits the
          osw.control.tls.reload audit event (FF-030). Apply with:
            unload mod_open_switch && load mod_open_switch
          or via operator-controlled cert rotation + inotify trigger.
@@ -178,6 +179,26 @@
     <param name="tts_high_water_ms"         value="3000"/>
     <param name="tts_max_jitter_buffer_ms"  value="5000"/>
     <param name="tts_underrun_policy"       value="silence"/>
+
+    <!-- ============================================================
+         Recording relay + bot/eavesdrop policy (W7)
+         ============================================================ -->
+    <param name="recording_send_ring_ms"       value="500"/>
+    <param name="stereo_desync_warn_ms"        value="5"/>
+    <param name="stereo_desync_timeout_ms"     value="25"/>
+    <param name="recording_default_rate_hz"    value="8000"/>
+    <param name="warn_record_before_inject"    value="true"/>
+
+    <param name="silence_driver_enabled"       value="true"/>
+    <param name="max_silence_drivers"          value="200"/>
+
+    <param name="bot_max_targets"              value="2"/>
+    <param name="bot_target_queue_ms"          value="500"/>
+    <param name="bot_drain_timeout_ms"         value="2000"/>
+    <param name="max_bots_per_channel"         value="1"/>
+
+    <param name="eavesdrop_policy"             value="deny"/>
+    <param name="tenant_eavesdrop_policies"    value=""/>
 
   </settings>
 

@@ -13,8 +13,8 @@
  *   - reader_thread_ loops stream->Read() and dispatches via
  *     StreamCallbacks.  On Read() returning false it calls Finish()
  *     and fires on_done.
- *   - Close() is idempotent: closes the ring, joins writer,
- *     calls stream->WritesDone(), joins reader.
+ *   - Close() is idempotent: closes the ring, joins writer, then joins
+ *     the reader. The writer thread owns the normal WritesDone() half-close.
  *
  * See FREESWITCH-FACTS FF-034 for gRPC bidi-stream lifetime semantics.
  *
@@ -109,7 +109,7 @@ class StreamClient {
     /// Enqueue a Control message (passed through to the writer thread).
     void SendControl(open_switch::media::v1::Control msg) noexcept;
 
-    /// Half-close the send side + join threads. Idempotent.
+    /// Close the send ring and join threads. Idempotent.
     grpc::Status Close() noexcept;
 
     [[nodiscard]] bool open() const noexcept;
@@ -202,6 +202,7 @@ class StreamClient {
 
     void ReaderLoop() noexcept;
     void WriterLoop() noexcept;
+    void WritesDoneOnce() noexcept;
 
     // Sample rate + channel count agreed after StreamReady (may differ
     // from what we requested if the server downgrades).

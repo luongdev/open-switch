@@ -8,9 +8,11 @@
 #include "osw/raii/fs_mock.h"  // IWYU pragma: keep
 // clang-format on
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
@@ -297,6 +299,40 @@ TEST_F(StartBotHandlerTest, TtsBroadcastTwoTargetsUsesOneUpstreamStreamAndTwoBug
     EXPECT_EQ(bug_mgr_->ActiveBugCount("chan-b"), 1u);
     EXPECT_EQ(bots_->ActiveCount(), 1u);
     EXPECT_EQ(streams_->Size(), 0u);
+}
+
+TEST_F(StartBotHandlerTest, MarksTargetPolicyVarsAndWarnsRecordBeforeInject) {
+    auto& m = osw::raii::fs::Mock();
+    m.next_session = kFakeSession;
+    m.next_channel = kFakeChannel;
+    m.next_bug = kFakeBug;
+    m.next_bug_add_status = SWITCH_STATUS_SUCCESS;
+    m.next_media_bug_count = 1;
+    config_.tenant_eavesdrop_policies = "tenant-a:audit";
+
+    auto req = ValidRequest();
+    req.mutable_header()->set_tenant_id("tenant-a");
+    open_switch::control::v1::StartBotResponse resp;
+    grpc::ServerContext ctx;
+
+    const grpc::Status st = svc_->StartBot(&ctx, &req, &resp);
+    ASSERT_TRUE(st.ok()) << st.error_message();
+
+    EXPECT_GE(m.event_create_subclass_calls.load(), 2);
+    EXPECT_GE(m.media_bug_count_calls.load(), 1);
+    {
+        std::lock_guard<std::mutex> g(m.capture_mu);
+        const auto has_set = [&](const std::string& name, const std::string& value) {
+            return std::any_of(
+                m.set_variable_invocations.begin(),
+                m.set_variable_invocations.end(),
+                [&](const auto& inv) { return inv.name == name && inv.value == value; });
+        };
+        EXPECT_TRUE(has_set("osw_bot_session", "true"));
+        EXPECT_TRUE(has_set("osw_bot_purpose", "tts_broadcast"));
+        EXPECT_TRUE(has_set("osw_eavesdrop_policy", "audit"));
+        EXPECT_TRUE(has_set("osw_tenant", "tenant-a"));
+    }
 }
 
 TEST_F(StartBotHandlerTest, VoicebotDuplexTwoTargetsAttachesReadAndWriteBugs) {

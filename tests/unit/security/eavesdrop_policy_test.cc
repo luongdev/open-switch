@@ -43,6 +43,15 @@ TEST(EavesdropPolicyTest, TenantOverrideWins) {
     EXPECT_EQ(osw::security::ResolveEffectivePolicy(cfg, "tenant-b"), EavesdropPolicy::kAudit);
 }
 
+TEST(EavesdropPolicyTest, TenantOverrideTrimsWhitespace) {
+    osw::Config cfg;
+    cfg.eavesdrop_policy = "deny";
+    cfg.tenant_eavesdrop_policies = " tenant-a : allow ; tenant-b : audit : allow ";
+    EXPECT_EQ(osw::security::ResolveEffectivePolicy(cfg, "tenant-a"), EavesdropPolicy::kAllow);
+    EXPECT_EQ(osw::security::ResolveEffectivePolicy(cfg, "tenant-b"), EavesdropPolicy::kAudit);
+    EXPECT_TRUE(osw::security::ValidateTenantEavesdropPolicies(cfg.tenant_eavesdrop_policies));
+}
+
 TEST(EavesdropPolicyTest, TenantGateCanForceDeny) {
     osw::Config cfg;
     cfg.eavesdrop_policy = "allow";

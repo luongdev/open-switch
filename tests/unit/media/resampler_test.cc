@@ -10,7 +10,7 @@
  * Scenarios (W6 Track B spec):
  *   R1 — Create(8000, 16000) → non-null.
  *   R2 — Create(16000, 8000) → non-null.
- *   R3 — Create(8000, 8000)  → non-null (degenerate pass-through).
+ *   R3 — Create(8000, 8000)  → nullptr; Supports() true pass-through.
  *   R4 — Create(8000, 24000) → nullptr.
  *   R5 — Create(48000, 16000) → nullptr.
  *   R6 — Upsample 160 mono samples 8→16 kHz: 320 ± 4 samples written.
@@ -93,11 +93,12 @@ TEST(ResamplerTest, R2_Create_16k_to_8k) {
 }
 
 // ---------------------------------------------------------------------------
-// R3 — Create(8000, 8000) non-null (degenerate)
+// R3 — same-rate pairs are supported as caller-side pass-through
 // ---------------------------------------------------------------------------
 TEST(ResamplerTest, R3_Create_8k_to_8k) {
     auto r = Resampler::Create(8000, 8000);
-    EXPECT_NE(r, nullptr);
+    EXPECT_EQ(r, nullptr);
+    EXPECT_TRUE(Resampler::Supports(8000, 8000));
 }
 
 // ---------------------------------------------------------------------------

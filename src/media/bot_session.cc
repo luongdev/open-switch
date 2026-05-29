@@ -18,6 +18,7 @@
 #include "osw/media/stream_client.h"
 #include "osw/observability/audit.h"
 #include "osw/observability/log.h"
+#include "osw/raii/fs_api.h"
 #include "osw/raii/session_lock.h"
 
 namespace osw::media {
@@ -67,6 +68,24 @@ grpc::Status AttachFailureStatus(const MediaBugManager::AttachResult& attach) {
         code = grpc::StatusCode::FAILED_PRECONDITION;
     }
     return grpc::Status(code, attach.error);
+}
+
+std::uint32_t SessionReadRate(switch_core_session_t* session) noexcept {
+    switch_codec_implementation_t impl{};
+    if (::osw::raii::fs::SessionGetReadImpl(session, &impl) != SWITCH_STATUS_SUCCESS) {
+        return 0;
+    }
+    return impl.actual_samples_per_second != 0 ? impl.actual_samples_per_second
+                                               : impl.samples_per_second;
+}
+
+std::uint32_t SessionWriteRate(switch_core_session_t* session) noexcept {
+    switch_codec_implementation_t impl{};
+    if (::osw::raii::fs::SessionGetWriteImpl(session, &impl) != SWITCH_STATUS_SUCCESS) {
+        return 0;
+    }
+    return impl.actual_samples_per_second != 0 ? impl.actual_samples_per_second
+                                               : impl.samples_per_second;
 }
 
 }  // namespace
@@ -204,6 +223,8 @@ grpc::Status BotSession::Attach(MediaBugManager& mgr,
             auto ctx = std::make_unique<BotReadTapCtx>();
             ctx->bot = this;
             ctx->channel_uuid = channel_uuid;
+            ctx->stream_rate_hz = cfg_.sample_rate_hz;
+            ctx->fs_rate_hz = SessionReadRate(lock.get());
             const std::uint64_t bug_id = MediaBugManager::BugId(attach.handle);
             if (!mgr.SetBugCallback(bug_id, read_tap_callback, ctx.get())) {
                 return unwind(
@@ -231,6 +252,7 @@ grpc::Status BotSession::Attach(MediaBugManager& mgr,
             auto ctx = std::make_unique<BotWriteReplaceCtx>();
             ctx->bot = this;
             ctx->channel_uuid = channel_uuid;
+            ctx->fs_rate_hz = SessionWriteRate(lock.get());
             const std::uint64_t bug_id = MediaBugManager::BugId(attach.handle);
             if (!mgr.SetBugCallback(bug_id, write_replace_callback, ctx.get())) {
                 return unwind(

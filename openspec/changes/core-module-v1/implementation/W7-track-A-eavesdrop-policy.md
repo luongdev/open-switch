@@ -437,7 +437,7 @@ void OnMediaBugStart(switch_event_t* event, void* /*user_data*/) {
                                ? "detected_hangup_target"
                                : "detected_only");
         if (effective == EavesdropPolicy::kDeny) {
-            switch_channel_hangup(target.channel(), SWITCH_CAUSE_CALL_REJECTED);
+            switch_channel_hangup(target.channel(), SWITCH_CAUSE_POLICY_REJECTED);
         }
     } catch (const std::exception& e) {
         osw::log::Error("eavesdrop_detector: exception: {}", e.what());

@@ -23,10 +23,11 @@
  *     explicitly empty (dev / loopback mode).
  *
  *   OQ-5 (SIGHUP via inotify, not signal()):
- *     This TU does not install any POSIX signal handlers. Cert hot-reload
- *     is driven by TlsReloader (src/control/tls_reloader.cc) which calls
- *     BuildServerCredentials again whenever inotify detects a cert-file
- *     change (FF-030).
+ *     This TU does not install any POSIX signal handlers. TlsReloader
+ *     (src/control/tls_reloader.cc) calls BuildServerCredentials again
+ *     whenever inotify detects a cert-file change (FF-030). The rebuilt
+ *     credentials are validated and audited; this build does not live-swap
+ *     credentials on the already-started gRPC server.
  *
  * Logger subsystem: "control.tls"
  *

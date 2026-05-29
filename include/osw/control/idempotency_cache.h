@@ -2,7 +2,7 @@
  * include/osw/control/idempotency_cache.h
  *
  * IdempotencyCache — per-process LRU cache that deduplicates gRPC write
- * RPCs (Originate, Bridge, Execute) by request_id.
+ * RPCs by method + tenant_id + request_id.
  *
  * Design:
  *   - LRU eviction at `capacity` via std::list<KeyEntryPair> +
@@ -32,6 +32,7 @@
 #include <list>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 
@@ -130,7 +131,9 @@ class IdempotencyCache {
     // -----------------------------------------------------------------------
 
     // request_ids currently being executed (Store/Cancel not yet called).
-    std::unordered_map<std::string, bool> in_flight_;  // value unused; key presence = reserved
+    // key -> reservation deadline. Expired reservations are removed lazily so
+    // an abandoned executor cannot poison a request id indefinitely.
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> in_flight_;
 
     // -----------------------------------------------------------------------
     // Synchronisation
@@ -159,6 +162,12 @@ class IdempotencyCache {
     /// iterator into lru_list_.
     void Erase(LruIterator it);
 };
+
+/// Build the cache key mandated by the control API contract. Empty
+/// request_id means idempotency is disabled and returns an empty key.
+[[nodiscard]] std::string MakeIdempotencyKey(std::string_view method,
+                                             std::string_view tenant_id,
+                                             std::string_view request_id);
 
 }  // namespace osw::control
 

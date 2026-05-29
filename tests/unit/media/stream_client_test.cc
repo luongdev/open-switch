@@ -86,8 +86,12 @@ struct MockServerState {
 
 class MockMediaBridgeService final : public open_switch::media::v1::MediaBridge::Service {
   public:
-    MockServerConfig config;
     MockServerState state;
+
+    void UpdateConfig(const std::function<void(MockServerConfig&)>& update) {
+        std::lock_guard<std::mutex> lock(config_mu_);
+        update(config_);
+    }
 
     grpc::Status Stream(
         grpc::ServerContext* ctx,
@@ -97,6 +101,7 @@ class MockMediaBridgeService final : public open_switch::media::v1::MediaBridge:
             std::lock_guard<std::mutex> lock(state.mu);
             state.server_ctx = ctx;
         }
+        const MockServerConfig cfg = SnapshotConfig();
 
         // Read the first message — must be StreamStart.
         open_switch::media::v1::FromModule req;
@@ -105,7 +110,7 @@ class MockMediaBridgeService final : public open_switch::media::v1::MediaBridge:
                                 "expected StreamStart as first message");
         }
 
-        if (config.suppress_ready) {
+        if (cfg.suppress_ready) {
             // Block until the client deadline fires. Sleep in small increments
             // so we notice when the context is cancelled.
             for (int i = 0; i < 20 && !ctx->IsCancelled(); ++i) {
@@ -114,8 +119,8 @@ class MockMediaBridgeService final : public open_switch::media::v1::MediaBridge:
             return grpc::Status::OK;
         }
 
-        if (config.ready_delay.count() > 0) {
-            std::this_thread::sleep_for(config.ready_delay);
+        if (cfg.ready_delay.count() > 0) {
+            std::this_thread::sleep_for(cfg.ready_delay);
         }
 
         // Send StreamReady.
@@ -132,7 +137,7 @@ class MockMediaBridgeService final : public open_switch::media::v1::MediaBridge:
         int frames_received = 0;
 
         // Send AudioFrames to client if configured.
-        for (int i = 0; i < config.send_audio_count; ++i) {
+        for (int i = 0; i < cfg.send_audio_count; ++i) {
             open_switch::media::v1::FromService audio_resp;
             auto* af = audio_resp.mutable_audio();
             af->set_seq(static_cast<std::uint64_t>(i));
@@ -146,11 +151,11 @@ class MockMediaBridgeService final : public open_switch::media::v1::MediaBridge:
         }
 
         // Send Transcript if configured.
-        if (!config.transcript_text.empty()) {
+        if (!cfg.transcript_text.empty()) {
             open_switch::media::v1::FromService tr_resp;
             auto* tr = tr_resp.mutable_transcript();
-            tr->set_text(config.transcript_text);
-            tr->set_final(config.transcript_final);
+            tr->set_text(cfg.transcript_text);
+            tr->set_final(cfg.transcript_final);
             stream->Write(tr_resp);
         }
 
@@ -163,13 +168,12 @@ class MockMediaBridgeService final : public open_switch::media::v1::MediaBridge:
                 ++frames_received;
 
                 // Slow read path allows overflow tests to fill the ring.
-                if (config.slow_read_delay_ms > 0) {
-                    std::this_thread::sleep_for(
-                        std::chrono::milliseconds(config.slow_read_delay_ms));
+                if (cfg.slow_read_delay_ms > 0) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(cfg.slow_read_delay_ms));
                 }
             }
 
-            if (config.cancel_mid_stream && frames_received >= config.cancel_after_frames) {
+            if (cfg.cancel_mid_stream && frames_received >= cfg.cancel_after_frames) {
                 ctx->TryCancel();
                 return grpc::Status::CANCELLED;
             }
@@ -177,6 +181,15 @@ class MockMediaBridgeService final : public open_switch::media::v1::MediaBridge:
 
         return grpc::Status::OK;
     }
+
+  private:
+    MockServerConfig SnapshotConfig() {
+        std::lock_guard<std::mutex> lock(config_mu_);
+        return config_;
+    }
+
+    std::mutex config_mu_;
+    MockServerConfig config_;
 };
 
 // ---------------------------------------------------------------------------
@@ -198,6 +211,7 @@ class StreamClientTest : public ::testing::Test {
     void TearDown() override {
         if (server_) {
             server_->Shutdown(std::chrono::system_clock::now() + std::chrono::milliseconds(500));
+            server_->Wait();
         }
     }
 
@@ -248,7 +262,7 @@ TEST_F(StreamClientTest, S1_OpenReturnsOk) {
 // S2 — Open against mock that delays StreamReady > 5s → DEADLINE_EXCEEDED
 // ---------------------------------------------------------------------------
 TEST_F(StreamClientTest, S2_OpenDeadlineExceeded) {
-    svc_->config.suppress_ready = true;
+    svc_->UpdateConfig([](MockServerConfig& cfg) { cfg.suppress_ready = true; });
 
     auto client = std::make_unique<StreamClient>(MakeChannel(), MakeConfig(), StreamCallbacks{});
     // Use a 500ms deadline so the test finishes fast.
@@ -325,7 +339,7 @@ TEST_F(StreamClientTest, S4_SendAudio100Frames) {
 // ---------------------------------------------------------------------------
 TEST_F(StreamClientTest, S5_SendAudioOverflow) {
     // Slow server reads to create backpressure through the gRPC layer.
-    svc_->config.slow_read_delay_ms = 5;
+    svc_->UpdateConfig([](MockServerConfig& cfg) { cfg.slow_read_delay_ms = 5; });
 
     auto client = std::make_unique<StreamClient>(MakeChannel(), MakeConfig(), StreamCallbacks{});
     ASSERT_TRUE(client->Open().ok());
@@ -350,7 +364,7 @@ TEST_F(StreamClientTest, S5_SendAudioOverflow) {
 // S6 — Mock sends 50 AudioFrame → on_audio invoked 50 times in order
 // ---------------------------------------------------------------------------
 TEST_F(StreamClientTest, S6_MockSendsAudio50Frames) {
-    svc_->config.send_audio_count = 50;
+    svc_->UpdateConfig([](MockServerConfig& cfg) { cfg.send_audio_count = 50; });
 
     std::atomic<int> received_count{0};
     std::vector<std::uint64_t> seqs;
@@ -388,8 +402,10 @@ TEST_F(StreamClientTest, S6_MockSendsAudio50Frames) {
 // S7 — Mock sends Transcript → on_transcript invoked with text + final flag
 // ---------------------------------------------------------------------------
 TEST_F(StreamClientTest, S7_MockSendsTranscript) {
-    svc_->config.transcript_text = "Hello world";
-    svc_->config.transcript_final = true;
+    svc_->UpdateConfig([](MockServerConfig& cfg) {
+        cfg.transcript_text = "Hello world";
+        cfg.transcript_final = true;
+    });
 
     std::atomic<int> transcript_count{0};
     std::string captured_text;
@@ -425,7 +441,7 @@ TEST_F(StreamClientTest, S7_MockSendsTranscript) {
 // S8 — Close() after S6 → returns OK, threads joined within 1s
 // ---------------------------------------------------------------------------
 TEST_F(StreamClientTest, S8_CloseAfterReceiving) {
-    svc_->config.send_audio_count = 10;
+    svc_->UpdateConfig([](MockServerConfig& cfg) { cfg.send_audio_count = 10; });
 
     std::atomic<int> received{0};
     StreamCallbacks cbs;
@@ -454,8 +470,10 @@ TEST_F(StreamClientTest, S8_CloseAfterReceiving) {
 // S9 — Mock cancels mid-stream → on_done fires with CANCELLED once
 // ---------------------------------------------------------------------------
 TEST_F(StreamClientTest, S9_MockCancelsMidStream) {
-    svc_->config.cancel_mid_stream = true;
-    svc_->config.cancel_after_frames = 5;
+    svc_->UpdateConfig([](MockServerConfig& cfg) {
+        cfg.cancel_mid_stream = true;
+        cfg.cancel_after_frames = 5;
+    });
 
     std::atomic<int> done_count{0};
     grpc::Status captured_status;

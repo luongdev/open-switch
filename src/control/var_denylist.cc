@@ -36,6 +36,13 @@ constexpr std::array<std::string_view, 13> kReservedVarPrefixes{{
     "execute_on_",             // catches execute_on_answer etc.
 }};
 
+constexpr std::array<std::string_view, 4> kReservedVarExact{{
+    "osw_bot_session",
+    "osw_bot_purpose",
+    "osw_eavesdrop_policy",
+    "osw_tenant",
+}};
+
 }  // namespace
 
 bool IsReservedVar(const std::string& name) noexcept {
@@ -49,6 +56,11 @@ bool IsReservedVar(const std::string& name) noexcept {
         lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
     }
     const std::string_view lower_sv{lower};
+    for (const auto exact : kReservedVarExact) {
+        if (lower_sv == exact) {
+            return true;
+        }
+    }
     for (const auto prefix : kReservedVarPrefixes) {
         if (lower_sv.substr(0, prefix.size()) == prefix) {
             return true;

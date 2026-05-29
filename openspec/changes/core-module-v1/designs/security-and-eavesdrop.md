@@ -326,7 +326,7 @@ void OnMediaBugStart(switch_event_t* ev) {
         /*eavesdropper_hint=*/eavesdropper_uuid,
         /*target_tenant=*/target_tenant);
     if (policy == "deny") {
-      switch_channel_hangup(chan, SWITCH_CAUSE_CALL_REJECTED);
+      switch_channel_hangup(chan, SWITCH_CAUSE_POLICY_REJECTED);
     }
   } catch (...) {
     osw::log::Error("OnMediaBugStart: unknown exception");

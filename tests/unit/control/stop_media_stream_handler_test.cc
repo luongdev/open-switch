@@ -19,6 +19,7 @@
 #include "osw/raii/fs_mock.h"  // IWYU pragma: keep
 // clang-format on
 
+#include <chrono>
 #include <memory>
 #include <string>
 
@@ -29,6 +30,7 @@
 #include "open_switch/control/v1/control.pb.h"
 
 #include "osw/control/active_media_streams.h"
+#include "osw/control/idempotency_cache.h"
 #include "osw/core/config.h"
 #include "osw/media/bug_manager.h"
 #include "osw/observability/health.h"
@@ -48,6 +50,9 @@ class StopMediaStreamHandlerTest : public ::testing::Test {
         svc_->SetMediaBugManager(bug_mgr_.get());
         svc_->SetActiveMediaStreams(streams_.get());
         svc_->SetConfig(&config_);
+        cache_ = std::make_unique<osw::control::IdempotencyCache>(
+            32, std::chrono::seconds(300), std::chrono::milliseconds(10));
+        svc_->SetIdempotencyCache(cache_.get());
     }
 
     /// Insert a minimal stream with the given stream_id.
@@ -63,6 +68,7 @@ class StopMediaStreamHandlerTest : public ::testing::Test {
     std::unique_ptr<osw::control::ControlServiceSkeleton> svc_;
     std::unique_ptr<osw::media::MediaBugManager> bug_mgr_;
     std::unique_ptr<osw::control::ActiveMediaStreams> streams_;
+    std::unique_ptr<osw::control::IdempotencyCache> cache_;
     osw::Config config_;
 };
 
@@ -150,6 +156,45 @@ TEST_F(StopMediaStreamHandlerTest, SecondStopIsIdempotent) {
     open_switch::control::v1::StopMediaStreamResponse resp2;
     const grpc::Status st2 = svc_->StopMediaStream(&ctx, &req, &resp2);
     EXPECT_TRUE(st2.ok()) << st2.error_message();
+    EXPECT_FALSE(resp2.was_active());
+}
+
+TEST_F(StopMediaStreamHandlerTest, RequestIdReplaysCachedStopResult) {
+    InsertStream("stream-idem");
+
+    open_switch::control::v1::StopMediaStreamRequest req;
+    req.mutable_header()->set_tenant_id("tenant-a");
+    req.mutable_header()->set_request_id("req-1");
+    req.set_stream_id("stream-idem");
+
+    grpc::ServerContext ctx1;
+    open_switch::control::v1::StopMediaStreamResponse resp1;
+    ASSERT_TRUE(svc_->StopMediaStream(&ctx1, &req, &resp1).ok());
+    ASSERT_TRUE(resp1.was_active());
+
+    grpc::ServerContext ctx2;
+    open_switch::control::v1::StopMediaStreamResponse resp2;
+    ASSERT_TRUE(svc_->StopMediaStream(&ctx2, &req, &resp2).ok());
+    EXPECT_TRUE(resp2.was_active());
+}
+
+TEST_F(StopMediaStreamHandlerTest, RequestIdDoesNotCollideAcrossTenants) {
+    InsertStream("stream-tenant");
+
+    open_switch::control::v1::StopMediaStreamRequest req;
+    req.mutable_header()->set_tenant_id("tenant-a");
+    req.mutable_header()->set_request_id("req-tenant");
+    req.set_stream_id("stream-tenant");
+
+    grpc::ServerContext ctx1;
+    open_switch::control::v1::StopMediaStreamResponse resp1;
+    ASSERT_TRUE(svc_->StopMediaStream(&ctx1, &req, &resp1).ok());
+    ASSERT_TRUE(resp1.was_active());
+
+    req.mutable_header()->set_tenant_id("tenant-b");
+    grpc::ServerContext ctx2;
+    open_switch::control::v1::StopMediaStreamResponse resp2;
+    ASSERT_TRUE(svc_->StopMediaStream(&ctx2, &req, &resp2).ok());
     EXPECT_FALSE(resp2.was_active());
 }
 

@@ -66,7 +66,7 @@ void OnMediaBugStart(switch_event_t* event) noexcept {
                            "2_post_attach_detection",
                            fail_closed ? "detected_hangup_target" : "detected_only");
         if (fail_closed) {
-            (void)::osw::raii::fs::ChannelHangup(target_channel, SWITCH_CAUSE_CALL_REJECTED);
+            (void)::osw::raii::fs::ChannelHangup(target_channel, SWITCH_CAUSE_POLICY_REJECTED);
             osw::log::Warn(kSubsystem,
                            "raw eavesdrop detected on deny-policy bot session; "
                            "fail-closed target hangup uuid=%s",

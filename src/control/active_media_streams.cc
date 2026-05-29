@@ -19,6 +19,10 @@ void WriteCtxDeleter::operator()(void* p) const noexcept {
     delete static_cast<osw::control::handlers::WriteCallbackCtx*>(p);
 }
 
+void ReadCtxDeleter::operator()(void* p) const noexcept {
+    delete static_cast<osw::control::handlers::ReadCallbackCtx*>(p);
+}
+
 void RecordingCtxDeleter::operator()(void* p) const noexcept {
     delete static_cast<osw::media::RecordingRelay*>(p);
 }
@@ -231,6 +235,7 @@ void ActiveMediaStreams::TearDown(std::unique_ptr<ActiveMediaStream> s) noexcept
     s->bugs.clear();
     // Step 4: Now safe to free write_ctx — FS callbacks are fenced.
     s->write_ctx.reset();
+    s->read_ctx.reset();
     s->recording_ctx.reset();
     // Step 5: Release buffer.
     s->tts_buffer.reset();

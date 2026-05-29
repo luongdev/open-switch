@@ -66,6 +66,16 @@ TEST(IdempotencyCacheTest, EmptyRequestIdBypassesCache) {
     cache.Cancel("");
 }
 
+TEST(IdempotencyCacheTest, MakeKeyIncludesMethodAndTenant) {
+    EXPECT_EQ(osw::control::MakeIdempotencyKey("StartTts", "tenant-a", "req"),
+              std::string("StartTts\x1ftenant-a\x1freq", 21));
+    EXPECT_NE(osw::control::MakeIdempotencyKey("StartTts", "tenant-a", "req"),
+              osw::control::MakeIdempotencyKey("StartStt", "tenant-a", "req"));
+    EXPECT_NE(osw::control::MakeIdempotencyKey("StartTts", "tenant-a", "req"),
+              osw::control::MakeIdempotencyKey("StartTts", "tenant-b", "req"));
+    EXPECT_TRUE(osw::control::MakeIdempotencyKey("StartTts", "tenant-a", "").empty());
+}
+
 TEST(IdempotencyCacheTest, MissReservesAndStoreHits) {
     Cache cache(16, std::chrono::seconds(300), std::chrono::seconds(30));
     const std::string key = "req-001";
@@ -256,6 +266,24 @@ TEST(IdempotencyCacheTest, InFlightWaitTimeout) {
 
     // Clean up A's slot.
     cache.Cancel(key);
+}
+
+TEST(IdempotencyCacheTest, AbandonedInFlightReservationExpires) {
+    Cache cache(16, std::chrono::seconds(300), std::chrono::milliseconds(50));
+    const std::string key = "req-abandoned";
+
+    auto r1 = cache.LookupOrReserve(key);
+    ASSERT_EQ(r1.state, State::kMiss);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(70));
+
+    auto r2 = cache.LookupOrReserve(key);
+    EXPECT_EQ(r2.state, State::kMiss);
+    cache.Store(key, MakeEntry(grpc::Status::OK, "fresh"));
+
+    auto r3 = cache.LookupOrReserve(key);
+    ASSERT_EQ(r3.state, State::kHit);
+    EXPECT_EQ(r3.entry.serialized_response, "fresh");
 }
 
 TEST(IdempotencyCacheTest, InFlightWaitTimeoutShort) {

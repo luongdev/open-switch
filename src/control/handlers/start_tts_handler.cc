@@ -34,7 +34,9 @@
 #include "osw/security/eavesdrop_policy.h"
 
 #include "src/control/control_service_skeleton.h"
+#include "src/control/handlers/idempotency_utils.h"
 #include "src/control/handlers/media_bug_callbacks.h"
+#include "src/control/handlers/media_rate.h"
 
 namespace osw::control::handlers {
 
@@ -141,10 +143,15 @@ grpc::Status HandleStartTts(grpc::ServerContext* /*ctx*/,
         return grpc::Status(grpc::StatusCode::UNAVAILABLE, "media plane not initialised");
     }
 
-    // Locate session.
-    auto sg = osw::control::SessionGuard::Locate(req->channel_uuid());
-    if (!sg.Valid()) {
-        return grpc::Status(grpc::StatusCode::NOT_FOUND, "channel not found");
+    {
+        auto sg = osw::control::SessionGuard::Locate(req->channel_uuid());
+        if (!sg.Valid()) {
+            return grpc::Status(grpc::StatusCode::NOT_FOUND, "channel not found");
+        }
+        grpc::Status rate_status = ValidateWriteStreamRate(sg.get(), rate, "StartTts write");
+        if (!rate_status.ok()) {
+            return rate_status;
+        }
     }
     const std::size_t replaced = streams->RemoveWriteReplaceForChannel(req->channel_uuid());
     if (replaced > 0) {
@@ -214,6 +221,18 @@ grpc::Status HandleStartTts(grpc::ServerContext* /*ctx*/,
         return open_st;
     }
 
+    auto sg = osw::control::SessionGuard::Locate(req->channel_uuid());
+    if (!sg.Valid()) {
+        client->Close();
+        return grpc::Status(grpc::StatusCode::NOT_FOUND, "channel not found");
+    }
+    grpc::Status rate_status = ValidateWriteStreamRate(sg.get(), rate, "StartTts write");
+    if (!rate_status.ok()) {
+        client->Close();
+        return rate_status;
+    }
+    const std::uint32_t fs_write_rate = WriteMediaRate(sg.get()).sample_rate_hz;
+
     // Attach WRITE_REPLACE media bug.
     osw::media::BugConfig bug_cfg;
     bug_cfg.purpose = osw::media::Purpose::kTtsPlayback;
@@ -240,6 +259,8 @@ grpc::Status HandleStartTts(grpc::ServerContext* /*ctx*/,
     write_ctx->client = client.get();
     write_ctx->buffer = buffer.get();
     write_ctx->stream_id = stream_id;
+    write_ctx->stream_rate_hz = rate;
+    write_ctx->fs_rate_hz = fs_write_rate;
 
     const std::uint64_t bug_id = osw::media::MediaBugManager::BugId(attach.handle);
     bug_mgr->SetBugCallback(
@@ -297,11 +318,21 @@ grpc::Status osw::control::ControlServiceSkeleton::StartTts(
     if (!config) {
         return grpc::Status(grpc::StatusCode::UNAVAILABLE, "media config not initialised");
     }
-    return osw::control::handlers::HandleStartTts(
-        ctx,
-        req,
+    const std::string tenant_id = (req && req->has_header()) ? req->header().tenant_id() : "";
+    const std::string request_id = (req && req->has_header()) ? req->header().request_id() : "";
+    return osw::control::handlers::RunIdempotent(
+        idempotency_cache_.load(std::memory_order_acquire),
+        "StartTts",
+        tenant_id,
+        request_id,
         resp,
-        bug_mgr_.load(std::memory_order_acquire),
-        active_media_streams_.load(std::memory_order_acquire),
-        *config);
+        [&]() {
+            return osw::control::handlers::HandleStartTts(
+                ctx,
+                req,
+                resp,
+                bug_mgr_.load(std::memory_order_acquire),
+                active_media_streams_.load(std::memory_order_acquire),
+                *config);
+        });
 }

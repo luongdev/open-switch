@@ -15,6 +15,7 @@
 
 #include "osw/control/idempotency_cache.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <utility>
@@ -66,14 +67,23 @@ IdempotencyCache::LookupResult IdempotencyCache::LookupOrReserve(const std::stri
     // --- Check / wait on in-flight -----------------------------------------
     auto inf_it = in_flight_.find(request_id);
     if (inf_it != in_flight_.end()) {
+        if (inf_it->second <= now) {
+            in_flight_.erase(inf_it);
+            in_flight_.emplace(request_id, now + in_flight_max_wait_);
+            return LookupResult{State::kMiss, {}};
+        }
+
         // Another thread is executing this request_id.  Wait up to
         // in_flight_max_wait_ for it to call Store or Cancel.
-        const auto deadline = std::chrono::steady_clock::now() + in_flight_max_wait_;
+        const auto deadline =
+            std::min(std::chrono::steady_clock::now() + in_flight_max_wait_, inf_it->second);
 
         const bool signalled = cv_.wait_until(lk, deadline, [&] {
             // Wake condition: either the request is no longer in-flight, or
             // there is now a cached entry for it.
-            const bool still_in_flight = (in_flight_.count(request_id) > 0);
+            const auto in_it = in_flight_.find(request_id);
+            const bool still_in_flight =
+                in_it != in_flight_.end() && in_it->second > std::chrono::steady_clock::now();
             const bool has_entry = (index_.count(request_id) > 0);
             return !still_in_flight || has_entry;
         });
@@ -93,15 +103,19 @@ IdempotencyCache::LookupResult IdempotencyCache::LookupOrReserve(const std::stri
                 Erase(list_it);
             }
         }
-        // Timeout or cancelled without a result: fall through to kMiss.
-        // The original executor's in-flight reservation may still exist; we
-        // do NOT add another one — the caller will execute independently and
-        // call Store (last-write-wins) when done.
+        auto after_wait = in_flight_.find(request_id);
+        if (after_wait != in_flight_.end() &&
+            after_wait->second <= std::chrono::steady_clock::now()) {
+            in_flight_.erase(after_wait);
+            in_flight_.emplace(request_id, std::chrono::steady_clock::now() + in_flight_max_wait_);
+        }
+        // Timeout or cancelled without a result: fall through to kMiss. If
+        // the original reservation expired, this caller now owns a fresh one.
         return LookupResult{State::kMiss, {}};
     }
 
     // --- Miss — reserve the slot -------------------------------------------
-    in_flight_.emplace(request_id, false);
+    in_flight_.emplace(request_id, now + in_flight_max_wait_);
     return LookupResult{State::kMiss, {}};
 }
 
@@ -176,6 +190,22 @@ void IdempotencyCache::EvictIfNeeded() {
 void IdempotencyCache::Erase(LruIterator it) {
     index_.erase(it->first);
     lru_list_.erase(it);
+}
+
+std::string MakeIdempotencyKey(std::string_view method,
+                               std::string_view tenant_id,
+                               std::string_view request_id) {
+    if (request_id.empty()) {
+        return {};
+    }
+    std::string key;
+    key.reserve(method.size() + tenant_id.size() + request_id.size() + 2u);
+    key.append(method);
+    key.push_back('\x1f');
+    key.append(tenant_id);
+    key.push_back('\x1f');
+    key.append(request_id);
+    return key;
 }
 
 }  // namespace osw::control

@@ -41,11 +41,18 @@
 
 #if defined(OSW_TEST_FS_MOCK)
 #include "osw/raii/fs_mock.h"
+#ifndef SWITCH_CAUSE_POLICY_REJECTED
+#define SWITCH_CAUSE_POLICY_REJECTED SWITCH_CAUSE_CALL_REJECTED
+#endif
 #else
 
 #include <ctime>  // for time_t in MediaBugLease signature
 
 #include <switch.h>  // FreeSWITCH public API (header-only at module compile time)
+
+#ifndef SWITCH_CAUSE_POLICY_REJECTED
+#define SWITCH_CAUSE_POLICY_REJECTED SWITCH_CAUSE_CALL_REJECTED
+#endif
 
 namespace osw::raii::fs {
 
@@ -221,6 +228,18 @@ inline void XmlFree(switch_xml_t xml) noexcept {
 
 inline const char* SessionGetUuid(switch_core_session_t* session) noexcept {
     return session ? switch_core_session_get_uuid(session) : nullptr;
+}
+
+inline switch_status_t SessionGetReadImpl(switch_core_session_t* session,
+                                          switch_codec_implementation_t* impp) noexcept {
+    return (session && impp) ? switch_core_session_get_read_impl(session, impp)
+                             : SWITCH_STATUS_FALSE;
+}
+
+inline switch_status_t SessionGetWriteImpl(switch_core_session_t* session,
+                                           switch_codec_implementation_t* impp) noexcept {
+    return (session && impp) ? switch_core_session_get_write_impl(session, impp)
+                             : SWITCH_STATUS_FALSE;
 }
 
 // --- switch_ivr_originate (FF-021) -----------------------------------

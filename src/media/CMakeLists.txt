@@ -100,6 +100,7 @@ if(OSW_BUILD_TESTS)
         silence_driver.cc
         recording_relay.cc
         bot_session.cc
+        resampler.cc
     )
     target_include_directories(osw_media_test_helpers
         PUBLIC
@@ -113,6 +114,11 @@ if(OSW_BUILD_TESTS)
         osw_audit_test_helpers
         Threads::Threads
     )
+    if(FREESWITCH_LIBRARY)
+        target_link_libraries(osw_media_test_helpers PUBLIC ${FREESWITCH_LIBRARY})
+    else()
+        target_link_options(osw_media_test_helpers INTERFACE -lfreeswitch)
+    endif()
     target_compile_definitions(osw_media_test_helpers PUBLIC
         OSW_TEST_FS_MOCK=1
     )
