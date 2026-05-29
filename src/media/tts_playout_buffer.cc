@@ -28,6 +28,7 @@
 
 #include "osw/observability/audit.h"
 #include "osw/observability/log.h"
+#include "osw/observability/prometheus.h"
 
 namespace osw::media {
 
@@ -260,6 +261,12 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
                            MillisBetween(first_push_at_, first_pop_at),
                            MillisBetween(preroll_reached_at_, first_pop_at),
                            MillisBetween(created_at_, first_pop_at));
+            // Honest text->audible latency: buffer creation (≈ StartTts) to the
+            // first real audio frame written to the channel (includes pre-roll).
+            if (first_audio_latency_ != nullptr) {
+                first_audio_latency_->Observe(
+                    static_cast<double>(MillisBetween(created_at_, first_pop_at)) / 1000.0);
+            }
         }
 
         if (written == out_cap_samples) {
@@ -276,6 +283,9 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
         }
 
         underrun_count_.fetch_add(1, std::memory_order_relaxed);
+        if (underrun_total_ != nullptr) {
+            underrun_total_->Inc();
+        }
         if (cfg_.underrun == UnderrunPolicy::kRepeatLast && has_last_frame_) {
             FillRepeatLast(out + written, remaining, last_frame_);
         } else {
@@ -312,6 +322,9 @@ std::uint32_t TtsPlayoutBuffer::Pop(std::int16_t* out, std::uint32_t out_cap_sam
 
     // Real underrun.
     underrun_count_.fetch_add(1, std::memory_order_relaxed);
+    if (underrun_total_ != nullptr) {
+        underrun_total_->Inc();
+    }
 
     std::uint32_t n = 0;
     if (cfg_.underrun == UnderrunPolicy::kRepeatLast && has_last_frame_) {
@@ -383,6 +396,14 @@ void TtsPlayoutBuffer::SetStreamId(std::string stream_id) noexcept {
 void TtsPlayoutBuffer::SetTenantId(std::string tenant_id) noexcept {
     std::lock_guard<std::mutex> lk(mu_);  // W6.5 P2-005 fix
     tenant_id_ = std::move(tenant_id);
+}
+
+void TtsPlayoutBuffer::SetMetrics(observability::prometheus::Histogram* first_audio_latency,
+                                  observability::prometheus::Counter* underrun_total) noexcept {
+    // Set once after construction, before the StreamClient reader thread starts
+    // pushing; plain stores are sufficient (no concurrent reader yet).
+    first_audio_latency_ = first_audio_latency;
+    underrun_total_ = underrun_total;
 }
 
 // Internal helpers — called with mu_ held.

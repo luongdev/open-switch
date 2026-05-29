@@ -112,9 +112,28 @@ class ActiveMediaStreams {
 
     [[nodiscard]] std::size_t Size() const noexcept;
 
+    /// Wire the shared TTS-playout Prometheus metrics (non-owning; owned by the
+    /// Module's registry). Handlers read these via the getters below and attach
+    /// them to each TtsPlayoutBuffer they create. Null when metrics disabled.
+    void SetTtsMetrics(observability::prometheus::Histogram* first_audio_latency,
+                       observability::prometheus::Counter* underrun_total) noexcept {
+        tts_first_audio_latency_ = first_audio_latency;
+        tts_underrun_total_ = underrun_total;
+    }
+    [[nodiscard]] observability::prometheus::Histogram* TtsFirstAudioLatency() const noexcept {
+        return tts_first_audio_latency_;
+    }
+    [[nodiscard]] observability::prometheus::Counter* TtsUnderrunTotal() const noexcept {
+        return tts_underrun_total_;
+    }
+
   private:
     mutable std::mutex mu_;
     std::unordered_map<std::string, std::unique_ptr<ActiveMediaStream>> by_id_;
+
+    // Shared TTS-playout metrics (non-owning; set once at module init).
+    observability::prometheus::Histogram* tts_first_audio_latency_ = nullptr;
+    observability::prometheus::Counter* tts_underrun_total_ = nullptr;
 
     /// Execute teardown for one stream (assumes caller has removed it from
     /// by_id_ already; called without mu_ held so client->Close() can block).

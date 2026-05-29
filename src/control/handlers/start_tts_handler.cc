@@ -179,6 +179,7 @@ grpc::Status HandleStartTts(grpc::ServerContext* /*ctx*/,
     auto buffer = std::make_unique<osw::media::TtsPlayoutBuffer>(buf_cfg);
     auto* buf_raw = buffer.get();
     buffer->SetStreamId(stream_id);
+    buffer->SetMetrics(streams->TtsFirstAudioLatency(), streams->TtsUnderrunTotal());
 
     // Build StreamClient. on_audio callback pushes into the jitter buffer.
     const std::string tenant_id = req->has_header() ? req->header().tenant_id() : std::string{};

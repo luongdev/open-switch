@@ -193,6 +193,7 @@ grpc::Status HandleStartVoicebot(grpc::ServerContext* /*ctx*/,
     auto buffer = std::make_unique<osw::media::TtsPlayoutBuffer>(buf_cfg);
     auto* buf_raw = buffer.get();
     buffer->SetStreamId(stream_id);
+    buffer->SetMetrics(streams->TtsFirstAudioLatency(), streams->TtsUnderrunTotal());
 
     // -----------------------------------------------------------------------
     // Build StreamClient — bidi stream carries mic audio up and TTS audio

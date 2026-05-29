@@ -36,6 +36,11 @@
 
 #include "osw/media/audio_frame.h"
 
+namespace osw::observability::prometheus {
+class Histogram;
+class Counter;
+}  // namespace osw::observability::prometheus
+
 namespace osw::media {
 
 /// Jitter buffer between StreamClient rx queue and the FS WRITE_REPLACE
@@ -103,6 +108,13 @@ class TtsPlayoutBuffer {
     void SetStreamId(std::string stream_id) noexcept;
     void SetTenantId(std::string tenant_id) noexcept;
 
+    /// Wire Prometheus metrics (non-owning; may be null in tests). The
+    /// first-audio latency is Observed once at the first real audio pop
+    /// (true text->audible, includes pre-roll); underruns are counted as
+    /// they occur. Set after construction by the StartTts/Voicebot handler.
+    void SetMetrics(observability::prometheus::Histogram* first_audio_latency,
+                    observability::prometheus::Counter* underrun_total) noexcept;
+
   private:
     Config cfg_;
 
@@ -152,6 +164,11 @@ class TtsPlayoutBuffer {
     // Labels for audit/metrics (set after construction).
     std::string stream_id_;
     std::string tenant_id_;
+
+    // Prometheus metrics (non-owning, set by handler after construction; null
+    // in tests / when metrics disabled).
+    observability::prometheus::Histogram* first_audio_latency_ = nullptr;
+    observability::prometheus::Counter* underrun_total_ = nullptr;
 
     // Internal helpers — called with mu_ held.
     void RecomputeDepth() noexcept;

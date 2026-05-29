@@ -318,6 +318,19 @@ bool Module::Load(switch_memory_pool_t* pool, switch_loadable_module_interface_t
         // function-pointer indirection (avoids a control→media→control
         // header cycle).
         active_media_streams_ = std::make_unique<control::ActiveMediaStreams>();
+        // Honest text->audible TTS metrics. osw_tts_first_audio_latency_seconds
+        // measures StartTts -> first real audio frame on the channel INCLUDING
+        // pre-roll — the true end-to-end number, unlike the engine's first_pcm
+        // (which excludes pre-roll + transport). Owned by the registry; the
+        // handlers attach them to each TtsPlayoutBuffer.
+        active_media_streams_->SetTtsMetrics(
+            prometheus_registry_->AddLatencyHistogram(
+                "osw_tts_first_audio_latency_seconds",
+                "Latency from StartTts to first audio frame written to the channel "
+                "(true text-to-audible; includes playout pre-roll)"),
+            prometheus_registry_->AddCounter(
+                "osw_tts_underrun_total",
+                "TTS playout buffer underruns (buffer drained mid-playback)"));
         active_bots_ = std::make_unique<control::ActiveBots>();
         silence_driver_registry_ = std::make_unique<media::SilenceDriverRegistry>(config_);
         bug_manager_ = std::make_unique<media::MediaBugManager>();
