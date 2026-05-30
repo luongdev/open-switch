@@ -198,6 +198,11 @@ grpc::Status HandleStartTts(grpc::ServerContext* /*ctx*/,
     for (const auto& [k, v] : req->variables()) {
         sc.variables[k] = v;
     }
+    // Tell the upstream TTS engine how much audio this playout buffer prerolls
+    // before first pop, so it sizes its first codec chunk to fill the buffer.
+    // First audio then pops on the first chunk instead of waiting for a later,
+    // larger one — the consumer owns the buffering need, not the producer.
+    sc.variables["playout_preroll_ms"] = std::to_string(preroll_ms);
 
     osw::media::StreamCallbacks cbs;
     cbs.on_audio = [buf_raw](osw::media::AudioFrame f) noexcept { buf_raw->Push(std::move(f)); };
